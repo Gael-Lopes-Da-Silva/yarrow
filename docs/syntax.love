@@ -179,6 +179,38 @@ global garbage_collector # all function will use by default this one
 global lifetime # all functions will use lifetime by default if used
 global unsafe # same applys here
 
+# conditions are made like this
+if true do
+    # do something
+else if false do
+    # do something
+else do
+    # do something
+end
+
+match myMutableVariable
+    case 43
+        # do something
+    end
+
+    case default
+        # else default
+    end
+end
+
+# loops are made like this
+while true do
+    # do something
+end
+
+do
+    # do something
+while true end
+
+for i in i32.range(0, 10) do
+    # do something 10 times with i as i32
+end
+
 # we can declare aliases like this
 alias MY_ALIAS as 3
 MY_ALIAS # will be replaced by 3
