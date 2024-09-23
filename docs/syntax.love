@@ -112,6 +112,20 @@ enum myThirdEnum use f32 by 0.1
     LAST # 0.2
 end
 
+# enums inheritance is done like that
+enum inheritedEnum from myEnum
+    # already has FIRST, SECOND and LAST
+    THIRD
+    FOURTH
+end
+
+# unions are declared like this
+union MyUnion # MyUnion will be one of those three
+    i32
+    bool
+    f64
+end
+
 # by default variable are like runtime constant and cannot be changed after initialization
 i32 myVariable = 32 # we need to give a value
 
@@ -161,6 +175,7 @@ end with void
 function my_unsafe_function() use unsafe do
     mutable i32 pointedValue = 376
     mutable pointer myPointer = pointedValue as ref
+    defer free myPointer
 
     (myPointer as val) = 534 # change the value of the pointed mutable variable
 
@@ -170,6 +185,7 @@ function my_unsafe_function() use unsafe do
         # no need to initialize myOtherVal because it has a default value
     }
     mutable pointer myPointerToStruct = myStruct as ref
+    defer free myPointerToStruct
 
     myPointerToStruct.myVal = 5 # auto dereferencing
 end with void
@@ -227,11 +243,18 @@ end with i32
 
 i32 addition = add 2 4
 
+# error handling is done on a function if anything in it's scope return an error union
+require "core.file" as file
+function error_handling() do
+    discard try file.read_file(, "file-name.txt") # use discard to discard returned value if any
+    # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
+end with void or ReadError
+
 # hello world
 function main() do
-    io.print_line("Hello, world!") # don't forget to require core.io (optionally as io)
-    io.print_format("{}", "Hello, space!")
-end with void
+    try io.print_line("Hello, world!") # don't forget to require core.io (optionally as io)
+    try io.print_format("{}", "Hello, space!")
+end with void or AnyError # AnyError is the default error
 
 # we can add methodes to struct like that
 implement for MyStruct
