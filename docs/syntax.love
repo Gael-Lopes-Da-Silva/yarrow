@@ -1,0 +1,259 @@
+# This is a comment
+#* This is a multiline comment *#
+
+require "core.utils" # import everything from utils into current scope
+require "core.io" as io # import everything from io into the io namespace
+
+require "custom_package" from "path to the package"
+
+require "core.math.sqrt()" # import only one function into current scope
+require "core.math.Vector2" # same but with struct
+
+from "core.math" require "sqrt(),Vector2" # import multiple things into current scope
+from "core.file" require "read_file(),Reader" as fs # also work with custom namespace
+
+# folders are like namespaces and files are a collections of function, struct, etc.
+# Ex. core is a folder with files like math.rose, file.rose, etc. Those files contains
+# functions, struct, etc. like sqrt() or Vector2
+
+# the default mathematicals operator are
+- 1 # negative
+1 + 1 # adition
+1 - 1 # substration
+1 * 1 # multiplication
+1 / 1 # division
+1 // 1 # euclidian division
+1 % 1 # reminder
+1 ^ 5 # power
+|1.34| # absolute value
+
+# the default logical operators and binari operators are
+true && true
+true || false
+! true
+true == false
+true != false
+
+1 << 4
+1 >> 4
+1 | 4
+1 & 4
+~ 1
+
+# the default types are
+u8   i8
+u16  i16
+u32  i32
+u64  i64
+u128 i128
+f16
+f32
+f64
+f128
+bool
+void
+
+string
+array
+vector
+hashmap
+stack
+queue
+
+pointer
+usize isize
+c_char
+c_short
+c_ushort
+c_int
+c_uint
+c_long
+c_ulong
+c_longlong
+c_ulonglong
+c_double
+c_longdouble
+
+# structs are declared like this
+struct MyStruct
+    i32 myVal
+    i32 myOtherVal = 43 # we have defaults
+end
+
+# by default everything is private, if we want to export a sctruct or other thing
+public MyOtherStruct
+    public i8 publicVal
+    f64 privateVal
+end
+
+# there can be inheritance
+struct MyInheritedStruct from MyStruct
+    # already has myVal and myOtherVal
+end
+
+# enums are declared like this
+enum myEnum
+    FIRST
+    SECOND
+    LAST
+end
+
+# enums use u32 by default but we can change this
+enum mySecondEnum use f32
+    FIRST # 0.0
+    SECOND # 1.0
+    LAST # 2.0
+end
+
+# by default enums use a step of 1, but we can change it
+enum myThirdEnum use f32 by 0.1
+    FIRST # 0.0
+    SECOND # 0.1
+    LAST # 0.2
+end
+
+# by default variable are like runtime constant and cannot be changed after initialization
+i32 myVariable = 32 # we need to give a value
+
+# you can declare mutable variable like this
+mutable i32 myMutableVariable = 45
+myMutableVariable = 23
+
+# you can define compile time constant like this
+constant i32 myConstant = 32 # need to be a value known at compile time
+
+# function are declared like that
+function my_function() do
+    # do things
+end with void # define return value
+
+# functions can take parameters
+function my_params(i32 first, string second) do
+    # do things with parameters
+end with void
+
+# entry point of a program is main
+function main() do
+    # do things
+end with void
+
+# we can return a code when program terminat
+function main() do
+    # do things
+    return 0
+end with i32
+
+# by default functions use garbage collector, but it can be changed
+function my_lifetime_function() use lifetime do # lifetime functions work with a borrow checker
+    # we can define a block (new scope) like this
+    block
+        mutable i32 outOfScope = 32
+    end
+
+    outOfScope = 42 # don't work because unreferenced (out of scope)
+
+    mutable i32 borrowMe = 32
+    mubable i32 borrower = borrow borrowMe # we can borrow ownership like this
+    mutable i32 copyCat = copy borrower # create a new value from borrowMe
+end with void
+
+# we can also chose manual memory management
+function my_unsafe_function() use unsafe do
+    mutable i32 pointedValue = 376
+    mutable pointer myPointer = pointedValue as ref
+
+    (myPointer as val) = 534 # change the value of the pointed mutable variable
+
+    # we can create a new struct like this
+    mutable MyStruct myStruct = {
+        myVal = 4
+        # no need to initialize myOtherVal because it has a default value
+    }
+    mutable pointer myPointerToStruct = myStruct as ref
+
+    myPointerToStruct.myVal = 5 # auto dereferencing
+end with void
+
+# to change the default memory management methode globaly use
+global garbage_collector # all function will use by default this one
+global lifetime # all functions will use lifetime by default if used
+global unsafe # same applys here
+
+# we can declare aliases like this
+alias MY_ALIAS as 3
+MY_ALIAS # will be replaced by 3
+
+alias finish <T> as end with <T>
+
+function aliased_end() do
+finish void # all finish will be replaced by end with <a type>
+
+# alias can also replace expresions like functions, conditions, etc.
+alias add <T> <U> as function () do
+    return <T> + <U> # must be two compatible types
+end with i32
+
+i32 addition = add 2 4
+
+# hello world
+function main() do
+    io.print_line("Hello, world!") # don't forget to require core.io (optionally as io)
+    io.print_format("{}", "Hello, space!")
+end with void
+
+# we can add methodes to struct like that
+implement for MyStruct
+    # here are declared methodes
+    function myMethode() do
+        self.myVal = 43 # if myMethode is used, the variable that host the struct need to be mutable
+    end with void
+
+    # constructor
+    function new(i32 myVal, i32 otherValue) do
+        return {
+            myVal # we can omit initialization if same name
+            myOtherVal = otherValue
+        }
+    end with self
+end
+
+# structure of a project
+src/
+  main.love
+build/
+  debug/
+  release/
+love.toml
+
+# the toml file work like this
+[package]
+name = myName
+version = 0.0.1
+optimization = 1 # form 0 to 3
+
+[deps]
+myDep = "link to the git repos" # require "myDeps" as myDeps to use
+
+[deps.dev]
+myDevDep = "link to the git repos"
+
+# the cli should be used like this
+love run # interpret current working directory file with main entry point
+
+love build # compile current working directory file with main entry point
+love build debug # default build methode
+love build release
+love build run # compile and run executable
+
+love alias replace # replace all alias with thier value
+
+love add name "link the a git repos"
+love update name # pull from repos
+love update * # update all
+love remove name
+
+love add name "link the a git repos" --dev # add dev dependencies
+love remove name --dev
+
+love lsp # default lsp provider
+love fmt # default formater
