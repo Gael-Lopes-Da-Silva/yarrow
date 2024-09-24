@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-yarrow-core = { path = "../yarrow-core" }
+clap = { version = "4.5.18", features = ["cargo", "derive"] }

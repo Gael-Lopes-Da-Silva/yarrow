@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "yarrow-cli",
-    "yarrow-core"
+    "yarrow_cli",
+    "yarrow_core",
+    "yarrow_fmt",
+    "yarrow_lsp",
 ]
