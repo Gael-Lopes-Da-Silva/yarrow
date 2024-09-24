@@ -1,10 +1,12 @@
+use std::process::ExitCode;
+
 mod cli;
 mod command;
 
 use crate::cli::Cli;
 use crate::command::Command;
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::new(
         std::env::args().collect(),
         vec![
@@ -20,11 +22,17 @@ fn main() {
 
     if cli.arguments.len() <= 0 {
         Cli::print_help("".to_string());
+        return ExitCode::from(0);
     }
 
     for argument in cli.arguments {
-        match argument {
-            _ => Cli::print_help("".to_string()),
+        match argument.to_lowercase().as_str() {
+            "run" => {}
+            "build" => {}
+            "help" => {}
+            _ => {}
         }
     }
+
+    return ExitCode::from(0);
 }

@@ -13,7 +13,18 @@ impl Cli {
         }
     }
 
-    pub fn print_help(command: String) {
-        println!("Yarrow v0.0.1");
+    pub fn print_help(argument: String) {
+        println!("{}", argument);
+        match argument {
+            _ => {}
+        }
+    }
+
+    pub fn print_error(message: String) {
+
+    }
+
+    pub fn print_info(message: String) {
+
     }
 }
