@@ -274,17 +274,18 @@ end
 
 # structure of a project
 src/
-  main.love
+  main.row
 build/
   debug/
   release/
-love.toml
+yarrow.toml
 
 # the toml file work like this
 [package]
 name = myName
 version = 0.0.1
 optimization = 1 # form 0 to 3
+yarrow = 0.0.1 # yarrow version
 
 [deps]
 myDep = "link to the git repos" # require "myDeps" as myDeps to use
@@ -293,22 +294,22 @@ myDep = "link to the git repos" # require "myDeps" as myDeps to use
 myDevDep = "link to the git repos"
 
 # the cli should be used like this
-love run # interpret current working directory file with main entry point
+yarrow run # interpret current working directory file with main entry point
 
-love build # compile current working directory file with main entry point
-love build debug # default build methode
-love build release
-love build run # compile and run executable
+yarrow build # compile current working directory file with main entry point
+yarrow build debug # default build methode
+yarrow build release
+yarrow build run # compile and run executable
 
-love alias replace # replace all alias with thier value
+yarrow alias replace # replace all alias with thier value
 
-love add name "link the a git repos"
-love update name # pull from repos
-love update * # update all
-love remove name
+yarrow add name "link the a git repos"
+yarrow update name # pull from repos
+yarrow update * # update all
+yarrow remove name
 
-love add name "link the a git repos" --dev # add dev dependencies
-love remove name --dev
+yarrow add name "link the a git repos" --dev # add dev dependencies
+yarrow remove name --dev
 
-love lsp # default lsp provider
-love fmt # default formater
+yarrow lsp # default lsp provider
+yarrow fmt # default formateryarrow

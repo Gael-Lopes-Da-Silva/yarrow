@@ -3,12 +3,12 @@
 version = 3
 
 [[package]]
-name = "love"
+name = "yarrow"
 version = "0.1.0"
 dependencies = [
- "love-core",
+ "yarrow-core",
 ]
 
 [[package]]
-name = "love-core"
+name = "yarrow-core"
 version = "0.1.0"

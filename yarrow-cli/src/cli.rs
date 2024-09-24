@@ -6,22 +6,14 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn new(arguments: Vec<String>) -> Self {
+    pub fn new(arguments: Vec<String>, commands: Vec<Command>) -> Self {
         Self {
             arguments,
-            commands: Self::get_commands(),
+            commands,
         }
     }
 
-    pub fn get_commands() -> Vec<Command> {
-        vec![
-            Command::new("run".to_string(), "".to_string(), vec![]),
-            Command::new(
-                "build".to_string(),
-                "".to_string(),
-                vec![Command::new("run".to_string(), "".to_string(), vec![])],
-            ),
-            Command::new("help".to_string(), "".to_string(), vec![]),
-        ]
+    pub fn print_help(command: String) {
+        println!("Yarrow v0.0.1");
     }
 }
