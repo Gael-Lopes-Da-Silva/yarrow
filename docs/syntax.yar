@@ -246,7 +246,7 @@ i32 addition = add 2 4
 # error handling is done on a function if anything in it's scope return an error union
 require "core.file" as file
 function error_handling() do
-    discard try file.read_file(, "file-name.txt") # use discard to discard returned value if any
+    discard try file.read_file("r", "file-name.txt") # use discard to discard returned value if any
     # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
 end with void or ReadError
 
