@@ -30,9 +30,21 @@ from "core.file" require "read_file(),Reader" as fs # also work with custom name
 # the default logical operators and binari operators are
 true && true
 true || false
+true and true
+true or false
+
 ! true
+not true
+
 true == false
 true != false
+1 == 1
+1 != 5
+
+1 > 1
+1 >= 1
+1 < 1
+1 <= 1
 
 1 << 4
 1 >> 4
@@ -52,6 +64,9 @@ f64
 f128
 bool
 void
+binari
+hexadecimal
+octal
 
 string
 array
@@ -248,13 +263,13 @@ require "core.file" as file
 function error_handling() do
     discard try file.read_file("r", "file-name.txt") # use discard to discard returned value if any
     # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
-end with void or ReadError
+end with void else ReadError
 
 # hello world
 function main() do
     try io.print_line("Hello, world!") # don't forget to require core.io (optionally as io)
     try io.print_format("{}", "Hello, space!")
-end with void or AnyError # AnyError is the default error
+end with void else AnyError # AnyError is the default error
 
 # we can add methodes to struct like that
 implement for MyStruct

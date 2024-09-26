@@ -1,18 +1,21 @@
+mod commands;
+mod flags;
+
 fn main() {
     let matches = clap::Command::new("")
         .version("0.0.1")
         .arg_required_else_help(true)
-        .subcommand(clap::Command::new("run").about(""))
+        .subcommand(clap::Command::new("run").about("Run the current project using the interpreter"))
         .subcommand(
             clap::Command::new("build")
-                .about("")
+                .about("Build the current project using the compiler")
                 .arg(
                     clap::Arg::new("optimization")
                         .short('O')
                         .long("optimization")
                         .value_name("number")
                         .action(clap::ArgAction::Set)
-                        .help("")
+                        .help("Change the level of optimization between 0 and 3")
                         .global(true)
                         .required(false),
                 )
@@ -21,7 +24,7 @@ fn main() {
                         .short('q')
                         .long("quiet")
                         .action(clap::ArgAction::SetTrue)
-                        .help("")
+                        .help("Do not print any debug information when compiling")
                         .global(true)
                         .required(false),
                 )
@@ -30,7 +33,7 @@ fn main() {
                         .short('v')
                         .long("verbose")
                         .action(clap::ArgAction::SetTrue)
-                        .help("")
+                        .help("Print more information when compiling")
                         .global(true)
                         .required(false),
                 )
@@ -48,31 +51,32 @@ fn main() {
 
     match matches.subcommand() {
         Some(("run", matches)) => {
-            if matches.get_flag("quiet") {
-                todo!("Implement quiet mode in run");
-            }
-
-            if matches.get_flag("verbose") {
-                todo!("Implement verbose mode in run")
-            }
-
             match matches.subcommand() {
                 _ => {
-                    todo!("Implement run command");
+                    commands::run();
                 }
             }
         }
         Some(("build", matches)) => {
             if let Some(optimization) = matches.get_one::<String>("optimization") {
-                todo!("Implement optimization level in build")
+                flags::optimization(optimization.to_string());
             }
+
+            if matches.get_flag("quiet") {
+                flags::quiet();
+            }
+
+            if matches.get_flag("verbose") {
+                flags::verbose();
+            }
+
 
             match matches.subcommand() {
                 Some(("run", matches)) => {
-                    todo!("Implement run command in build")
+                    commands::build::run();
                 }
                 _ => {
-                    todo!("Implement build command")
+                    commands::build();
                 }
             }
         }

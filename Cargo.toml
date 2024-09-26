@@ -4,5 +4,5 @@ members = [
     "yarrow_cli",
     "yarrow_core",
     "yarrow_fmt",
-    "yarrow_lsp",
+    "yarrow_lsp", "yarrow_test",
 ]

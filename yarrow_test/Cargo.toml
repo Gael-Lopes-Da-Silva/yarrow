@@ -1,5 +1,5 @@
 [package]
-name = "yarrow"
+name = "yarrow_test"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,4 +7,3 @@ edition = "2021"
 yarrow_core = { path = "../yarrow_core" }
 yarrow_fmt = { path = "../yarrow_fmt" }
 yarrow_lsp = { path = "../yarrow_lsp" }
-clap = { version = "4.5.18", features = ["cargo", "derive"] }
