@@ -61,9 +61,6 @@ f64
 f128
 bool
 void
-binari
-hexadecimal
-octal
 
 string
 array
