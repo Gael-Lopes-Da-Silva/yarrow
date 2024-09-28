@@ -1,6 +1,8 @@
 # This is a comment
 #* This is a multiline comment *#
 
+"this is as \" test"
+
 require "core.utils" # import everything from utils into current scope
 require "core.io" as io # import everything from io into the io namespace
 
@@ -17,7 +19,8 @@ from "core.file" require "read_file(),Reader" as fs # also work with custom name
 # functions, struct, etc. like sqrt() or Vector2
 
 # the default mathematicals operator are
-- 1 # negative
+-1 # negative
++1 # positive
 1 + 1 # adition
 1 - 1 # substration
 1 * 1 # multiplication
@@ -27,7 +30,7 @@ from "core.file" require "read_file(),Reader" as fs # also work with custom name
 1 ^ 5 # power
 |1.34| # absolute value
 
-# the default logical operators and binari operators are
+# the default logical operators
 true && true
 true || false
 true and true
@@ -45,12 +48,6 @@ true != false
 1 >= 1
 1 < 1
 1 <= 1
-
-1 << 4
-1 >> 4
-1 | 4
-1 & 4
-~ 1
 
 # the default types are
 u8   i8
@@ -166,7 +163,7 @@ function main() do
     # do things
 end with void
 
-# we can return a code when program terminat
+# we can return a code when program end
 function main() do
     # do things
     return 0
@@ -246,22 +243,11 @@ end
 alias MY_ALIAS as 3
 MY_ALIAS # will be replaced by 3
 
-alias finish <T> as end with <T>
-
-function aliased_end() do
-finish void # all finish will be replaced by end with <a type>
-
-# alias can also replace expresions like functions, conditions, etc.
-alias add <T> <U> as function () do
-    return <T> + <U> # must be two compatible types
-end with i32
-
-i32 addition = add 2 4
-
 # error handling is done on a function if anything in it's scope return an error union
 require "core.file" as file
+
 function error_handling() do
-    discard try file.read_file("r", "file-name.txt") # use discard to discard returned value if any
+    discard try file.read_file(file.ReadMode.READONLY, "file-name.txt") # use discard to discard returned value if any
     # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
 end with void else ReadError
 
@@ -272,7 +258,7 @@ function main() do
 end with void else AnyError # AnyError is the default error
 
 # we can add methodes to struct like that
-implement for MyStruct
+implement to MyStruct
     # here are declared methodes
     function myMethode() do
         self.myVal = 43 # if myMethode is used, the variable that host the struct need to be mutable
@@ -286,45 +272,3 @@ implement for MyStruct
         }
     end with self
 end
-
-# structure of a project
-src/
-  main.row
-build/
-  debug/
-  release/
-yarrow.toml
-
-# the toml file work like this
-[package]
-name = myName
-version = 0.0.1
-optimization = 1 # form 0 to 3
-yarrow = 0.0.1 # yarrow version
-
-[deps]
-myDep = "link to the git repos" # require "myDeps" as myDeps to use
-
-[deps.dev]
-myDevDep = "link to the git repos"
-
-# the cli should be used like this
-yarrow run # interpret current working directory file with main entry point
-
-yarrow build # compile current working directory file with main entry point
-yarrow build debug # default build methode
-yarrow build release
-yarrow build run # compile and run executable
-
-yarrow alias replace # replace all alias with thier value
-
-yarrow add name "link the a git repos"
-yarrow update name # pull from repos
-yarrow update * # update all
-yarrow remove name
-
-yarrow add name "link the a git repos" --dev # add dev dependencies
-yarrow remove name --dev
-
-yarrow lsp # default lsp provider
-yarrow fmt # default formateryarrow

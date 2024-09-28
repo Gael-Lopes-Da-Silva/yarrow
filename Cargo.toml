@@ -1,8 +1,0 @@
-[workspace]
-resolver = "2"
-members = [
-    "yarrow_cli",
-    "yarrow_core",
-    "yarrow_fmt",
-    "yarrow_lsp", "yarrow_test",
-]

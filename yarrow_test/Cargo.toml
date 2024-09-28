@@ -1,9 +1,0 @@
-[package]
-name = "yarrow_test"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-yarrow_core = { path = "../yarrow_core" }
-yarrow_fmt = { path = "../yarrow_fmt" }
-yarrow_lsp = { path = "../yarrow_lsp" }
