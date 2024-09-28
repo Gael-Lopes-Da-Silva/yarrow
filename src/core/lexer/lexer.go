@@ -71,6 +71,7 @@ func symbolHandler(lexer *Lexer, regexp *regexp.Regexp) {
 func Tokenize(input string) []Token {
     lexer := &Lexer{
         Patterns: []regexpPattern{
+            {regexp.MustCompile(`\n`), defaultHandler(NEW_LINE, "\\n")},
             {regexp.MustCompile(`\s+`), skipHandler},
 
             {regexp.MustCompile(`(?:[0-9]+(?:_[0-9]+)*)?\.[0-9]+(?:_[0-9]+)*`), floatHandler},

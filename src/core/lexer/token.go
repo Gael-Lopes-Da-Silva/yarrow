@@ -10,6 +10,7 @@ const (
 	// others
 	UNKNOWN TokenKind = iota
 	IDENTIFIER
+    NEW_LINE
 	EOF
 
 	ASSIGN                   // =
