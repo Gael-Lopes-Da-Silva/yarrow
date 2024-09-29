@@ -19,3 +19,17 @@ func parseStatement(parser *parser) ast.Statement {
         Expression: expression,
     }
 }
+
+func parseVariableStatement(parser *parser) ast.Statement {
+    name := parser.expectError(lexer.IDENTIFIER, "Inside variable declaration expected to func variable name").Value
+    parser.expect(lexer.ASSIGN)
+    value := parseExpression(parser, ASSIGNMENT)
+    parser.expect(lexer.NEW_LINE)
+
+    return ast.VariableStatement {
+        Visibility: "private",
+        Identifier: identifier,
+        Name: name,
+        Expression: value,
+    }
+}

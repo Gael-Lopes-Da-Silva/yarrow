@@ -1,13 +1,23 @@
 package ast
 
 type BlockStatement struct {
-    Body []Statement
+	Body []Statement
 }
 
-func (blockStatement BlockStatement) statement() {}
+func (block BlockStatement) astStatement() {}
 
 type ExpressionStatement struct {
-    Expression Expression
+	Expression Expression
 }
 
-func (expressionStatement ExpressionStatement) statement() {}
+func (expression ExpressionStatement) astStatement() {}
+
+type VariableStatement struct {
+	Visibility string
+	Identifier string
+	Type       Type
+	Name       string
+	Value      Expression
+}
+
+func (variable VariableStatement) astStatement() {}

@@ -1,9 +1,13 @@
 package ast
 
 type Statement interface {
-    statement()
+    astStatement()
 }
 
 type Expression interface {
-    expression()
+    astExpression()
+}
+
+type Type interface {
+    astType()
 }

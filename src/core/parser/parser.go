@@ -17,6 +17,19 @@ func createParser(tokens []lexer.Token) *parser {
     return &parser{tokens, 0}
 }
 
+func Parse(tokens []lexer.Token) ast.BlockStatement {
+    body := make([]ast.Statement, 0)
+    parser := createParser(tokens)
+
+    for parser.hasToken() {
+        body = append(body, parseStatement(parser))
+    }
+
+    return ast.BlockStatement{
+        Body: body,
+    }
+}
+
 func (parser *parser) currentToken() lexer.Token {
     return parser.tokens[parser.cursor]
 }
@@ -48,17 +61,4 @@ func (parser *parser) expectError(expectedKind lexer.TokenKind, error any) lexer
 
 func (parser *parser) expect(expectedKind lexer.TokenKind) lexer.Token {
     return parser.expectError(expectedKind, nil)
-}
-
-func Parse(tokens []lexer.Token) ast.BlockStatement {
-    body := make([]ast.Statement, 0)
-    parser := createParser(tokens)
-
-    for parser.hasToken() {
-        body = append(body, parseStatement(parser))
-    }
-
-    return ast.BlockStatement{
-        Body: body,
-    }
 }
