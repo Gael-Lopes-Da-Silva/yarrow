@@ -1,53 +1,61 @@
 # This is a comment
 #* This is a multiline comment *#
 
-"this is as \" test"
+"std.utils" require # import everything from utils into current scope
+"std.io" io require # import everything from io into the io namespace
 
-require "core.utils" # import everything from utils into current scope
-require "core.io" as io # import everything from io into the io namespace
+"path to the custom package" require
 
-require "custom_package" from "path to the package"
+"std.math.sqrt()" require # import only one function into current scope
+"std.math.Vector2" require # same but with struct
 
-require "core.math.sqrt()" # import only one function into current scope
-require "core.math.Vector2" # same but with struct
-
-from "core.math" require "sqrt(),Vector2" # import multiple things into current scope
-from "core.file" require "read_file(),Reader" as fs # also work with custom namespace
+"std.math" "sqrt(),Vector2" require # import multiple things into current scope
+"std.file" "read_file(),Reader" require # also work with custom namespace
 
 # folders are like namespaces and files are a collections of function, struct, etc.
-# Ex. core is a folder with files like math.rose, file.rose, etc. Those files contains
+# Ex. std is a folder with files like math.row, file.row, etc. Those files contains
 # functions, struct, etc. like sqrt() or Vector2
+
+#=====================
+# OPERATORS
+#=====================
 
 # the default mathematicals operator are
 -1 # negative
 +1 # positive
-1 + 1 # adition
-1 - 1 # substration
-1 * 1 # multiplication
-1 / 1 # division
-1 // 1 # euclidian division
-1 % 1 # reminder
-1 ^ 5 # power
-|1.34| # absolute value
+1 1 + # adition
+1 1 - # substration
+1 1 * # multiplication
+1 1 / # division
+1 1 // # euclidian division
+1 1 % # reminder
+1 5 ^ # power
+
+# exemple: (2 + 3) * 11 + 1
+2 3 + 11 * 1 +
 
 # the default logical operators
-true && true
-true || false
-true and true
-true or false
+true true &&
+true false ||
+true true and
+true false or
 
-! true
-not true
+true !
+true not
 
-true == false
-true != false
-1 == 1
-1 != 5
+true false ==
+true false !=
+1 1 ==
+1 5 !=
 
-1 > 1
-1 >= 1
-1 < 1
-1 <= 1
+1 1 >
+1 1 >=
+1 1 <
+1 1 <=
+
+#=====================
+# TYPES
+#=====================
 
 # the default types are
 u8   i8
@@ -83,170 +91,232 @@ c_ulonglong
 c_double
 c_longdouble
 
+# the size of a type
+u8.sizeof
+void.sizeof
+
+#=====================
+# VARIABLES
+#=====================
+
+# by default variable are like runtime constant and cannot be changed after initialization
+myVariable i32 32 end # we need to give a value
+
+# can also asign variable like this
+myVariable myOtherVariable i32 do
+    myVariable 4 5 + # myVariable contain 4 + 5
+    myOtherVariable myVariable 5 * # myOtherVariable contains myVariable * 5
+end
+
+# you can declare mutable variable like this
+mutable myMutableVariable i32 45 end
+myMutableVariable 23 # change the value
+
+# you can define compile time constant like this
+const myConstant i32 32 end # need to be a value known at compile time
+
+#=====================
+# FUNCTIONS
+#=====================
+
+# function are declared like that
+function my_function do
+    # do things
+end with void # define return value, by default void
+
+# functions can take parameters
+function my_params
+    i32 first
+    string second
+do
+    # do things with parameters
+end with void # return nothing
+
+# entry point of a program is main
+function main do
+    # do things
+end with void
+
+# we can return a code when program end
+function main do
+    # do things
+    0 return
+end with i32
+
+#=====================
+# CONTROLS
+#=====================
+
+# conditions are made like this
+1 4 < if
+    # do something
+else 4 5 > if
+    # do something
+else
+    # do something
+end
+
+# match statements are made like this
+myMutableVariable match
+    43 case
+        # do something
+    end
+
+    53 54 case
+        # do something
+    end
+
+    default
+        # else default
+    end
+end
+
+#=====================
+# LOOPS
+#=====================
+
+# loops are made like this
+(3 4 >) while # parantheses are not obligatory
+    # do something
+end
+
+(i32 theVal) 0 10 i32.range while # parantheses can be omited
+    # do something 10 times with i as i32
+do
+
+(i32 theVal) myArray while
+    # theVal contains the current iteration value
+do
+
+(i32 theVal i32 theIndex) myArray while
+    # same here
+    # theIndex contains the current iteration index
+do
+
+#=====================
+# STRUCTURES
+#=====================
+
 # structs are declared like this
-struct MyStruct
-    i32 myVal
-    i32 myOtherVal = 43 # we have defaults
+MyStruct struct
+    myVal i32
+    myOtherVal i32 43 # we have defaults
 end
 
 # by default everything is private, if we want to export a sctruct or other thing
-public MyOtherStruct
-    public i8 publicVal
-    f64 privateVal
+MyOtherStruct struct public
+    public publicVal i8
+    public privateVal f64 73.0
 end
 
 # there can be inheritance
-struct MyInheritedStruct from MyStruct
-    # already has myVal and myOtherVal
+MyInheritedStruct struct (MyStruct, MyOtherStruct)
+    # already has myVal and myOtherVal and all the vriables from MyOtherStruct
 end
+
+# struct can contains function (methods)
+MyStructWithFunction struct
+    function my_struct_func do
+    end
+end
+
+# struct can contains function (methods)
+MyStructWithFunction struct public
+    public function my_struct_func
+        a i32
+        b f32
+    do
+        # do something
+        a return
+    end with i32
+end
+
+# they can be call like that
+2 3 MyStructWithFunction.my_struct_func
+
+#=====================
+# ENUMERATIONS
+#=====================
 
 # enums are declared like this
-enum myEnum
-    FIRST
-    SECOND
-    LAST
+myEnum enum
+    FIRST # 0
+    SECOND # 1
+    LAST # 2
 end
 
-# enums use u32 by default but we can change this
-enum mySecondEnum use f32
+# make enums start at some value
+myEnum enum
+    FIRST 50
+    SECOND # 51
+    LAST # 52
+end
+
+# make enums start at some value
+myEnum enum
+    FIRST 50
+    SECOND # 51
+    THIRD 60 # can't be lower that the value above and need to be of the same type
+    LAST # 61
+end
+
+# enums use unsigned ints by default but we can change this
+mySecondEnum enum f32
     FIRST # 0.0
     SECOND # 1.0
     LAST # 2.0
 end
 
-# by default enums use a step of 1, but we can change it
-enum myThirdEnum use f32 by 0.1
+# by default enums use a step of 1, but we can change it depending on the used type
+myThirdEnum enum 0.1 f32
     FIRST # 0.0
     SECOND # 0.1
     LAST # 0.2
 end
 
-# enums inheritance is done like that
-enum inheritedEnum from myEnum
-    # already has FIRST, SECOND and LAST
-    THIRD
-    FOURTH
+myThirdEnum enum 3 u32
+    FIRST # 0
+    SECOND # 3
+    LAST # 6
 end
 
+# use an incremental step
+myThirdEnum enum 2 * u32
+    FIRST # 0
+    SECOND # 2
+    THIRD # 4
+    LAST # 8
+end
+
+#=====================
+# UNIONS
+#=====================
+
 # unions are declared like this
-union MyUnion # MyUnion will be one of those three
+MyUnion union # MyUnion will be one of those three
     i32
     bool
     f64
 end
 
-# by default variable are like runtime constant and cannot be changed after initialization
-i32 myVariable = 32 # we need to give a value
-
-# you can declare mutable variable like this
-mutable i32 myMutableVariable = 45
-myMutableVariable = 23
-
-# you can define compile time constant like this
-constant i32 myConstant = 32 # need to be a value known at compile time
-
-# function are declared like that
-function my_function() do
-    # do things
-end with void # define return value
-
-# functions can take parameters
-function my_params(i32 first, string second) do
-    # do things with parameters
-end with void
-
-# entry point of a program is main
-function main() do
-    # do things
-end with void
-
-# we can return a code when program end
-function main() do
-    # do things
-    return 0
-end with i32
-
-# by default functions use garbage collector, but it can be changed
-function my_lifetime_function() use lifetime do # lifetime functions work with a borrow checker
-    # we can define a block (new scope) like this
-    block
-        mutable i32 outOfScope = 32
-    end
-
-    outOfScope = 42 # don't work because unreferenced (out of scope)
-
-    mutable i32 borrowMe = 32
-    mubable i32 borrower = borrow borrowMe # we can borrow ownership like this
-    mutable i32 copyCat = copy borrower # create a new value from borrowMe
-end with void
-
-# we can also chose manual memory management
-function my_unsafe_function() use unsafe do
-    mutable i32 pointedValue = 376
-    mutable pointer myPointer = pointedValue as ref
-    defer free myPointer
-
-    (myPointer as val) = 534 # change the value of the pointed mutable variable
-
-    # we can create a new struct like this
-    mutable MyStruct myStruct = {
-        myVal = 4
-        # no need to initialize myOtherVal because it has a default value
-    }
-    mutable pointer myPointerToStruct = myStruct as ref
-    defer free myPointerToStruct
-
-    myPointerToStruct.myVal = 5 # auto dereferencing
-end with void
-
-# to change the default memory management methode globaly use
-global garbage_collector # all function will use by default this one
-global lifetime # all functions will use lifetime by default if used
-global unsafe # same applys here
-
-# conditions are made like this
-if true do
-    # do something
-else if false do
-    # do something
-else do
-    # do something
-end
-
-match myMutableVariable
-    case 43
-        # do something
-    end
-
-    case default
-        # else default
-    end
-end
-
-# loops are made like this
-while true do
-    # do something
-end
-
-do
-    # do something
-while true end
-
-for i in i32.range(0, 10) do
-    # do something 10 times with i as i32
-end
-
-# we can declare aliases like this
-alias MY_ALIAS as 3
-MY_ALIAS # will be replaced by 3
+#=====================
+# EXAMPLES
+#=====================
 
 # error handling is done on a function if anything in it's scope return an error union
-require "core.file" as file
+"core.file" file require
 
-function error_handling() do
-    discard try file.read_file(file.ReadMode.READONLY, "file-name.txt") # use discard to discard returned value if any
+function error_handling do
+    (file.ReadMode.READONLY "file-name.txt") file.read_file try discard # use discard to discard returned value if any
     # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
 end with void else ReadError
+
+
+
+
+
+
+
 
 # hello world
 function main() do
