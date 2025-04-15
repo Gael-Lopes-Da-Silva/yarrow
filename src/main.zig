@@ -10,17 +10,12 @@ const Literal = union(enum) {
 const TokenType = enum {
     LEFT_PAREN,
     RIGHT_PAREN,
-    LEFT_BRACE,
-    RIGHT_BRACE,
 
     COMMA,
     DOT,
     COLON,
-    SEMICOLON,
     HASH,
     DOUBLE_HASH,
-    LEFT_MULTHASH,
-    RIGHT_MULTHASH,
 
     PLUS,
     MINUS,
@@ -72,10 +67,6 @@ const TokenType = enum {
     TRY,
     DISCARD,
     REQUIRE,
-    NAMESPACE,
-
-    NEWLINE,
-    EOF,
 };
 
 const Token = struct {
@@ -134,9 +125,46 @@ const Scanner = struct {
         try keywords.put("try", TokenType.TRY);
         try keywords.put("discard", TokenType.DISCARD);
         try keywords.put("require", TokenType.REQUIRE);
-        try keywords.put("namespace", TokenType.NAMESPACE);
         try keywords.put("true", TokenType.BOOLEAN);
         try keywords.put("false", TokenType.BOOLEAN);
+
+        try keywords.put("i8", TokenType.TYPE);
+        try keywords.put("i16", TokenType.TYPE);
+        try keywords.put("i32", TokenType.TYPE);
+        try keywords.put("i64", TokenType.TYPE);
+        try keywords.put("i128", TokenType.TYPE);
+        try keywords.put("u8", TokenType.TYPE);
+        try keywords.put("u16", TokenType.TYPE);
+        try keywords.put("u32", TokenType.TYPE);
+        try keywords.put("u64", TokenType.TYPE);
+        try keywords.put("u128", TokenType.TYPE);
+        try keywords.put("f16", TokenType.TYPE);
+        try keywords.put("f32", TokenType.TYPE);
+        try keywords.put("f64", TokenType.TYPE);
+        try keywords.put("f128", TokenType.TYPE);
+        try keywords.put("bool", TokenType.TYPE);
+        try keywords.put("void", TokenType.TYPE);
+        try keywords.put("string", TokenType.TYPE);
+        try keywords.put("array", TokenType.TYPE);
+        try keywords.put("vector", TokenType.TYPE);
+        try keywords.put("hashmap", TokenType.TYPE);
+        try keywords.put("stack", TokenType.TYPE);
+        try keywords.put("queue", TokenType.TYPE);
+
+        try keywords.put("ptr", TokenType.TYPE);
+        try keywords.put("isize", TokenType.TYPE);
+        try keywords.put("usize", TokenType.TYPE);
+        try keywords.put("c_char", TokenType.TYPE);
+        try keywords.put("c_short", TokenType.TYPE);
+        try keywords.put("c_ushort", TokenType.TYPE);
+        try keywords.put("c_int", TokenType.TYPE);
+        try keywords.put("c_uint", TokenType.TYPE);
+        try keywords.put("c_long", TokenType.TYPE);
+        try keywords.put("c_ulong", TokenType.TYPE);
+        try keywords.put("c_longlong", TokenType.TYPE);
+        try keywords.put("c_ulonglong", TokenType.TYPE);
+        try keywords.put("c_double", TokenType.TYPE);
+        try keywords.put("c_longdouble", TokenType.TYPE);
 
         return Scanner{
             .start = 0,
@@ -154,7 +182,22 @@ const Scanner = struct {
         self.keyword_map.deinit();
     }
 
-    pub fn addToken(self: *Scanner, token_type: TokenType, literal: Literal) !void {
+    pub fn scan(self: *Scanner, source: []const u8) !void {
+        self.source = source;
+        const tokens = try self.scanTokens();
+        var line: usize = 1;
+        for (tokens.items) |token| {
+            while (line < token.line) {
+                line += 1;
+                std.debug.print("\n", .{});
+            }
+
+            token.print();
+        }
+        std.debug.print("\n", .{});
+    }
+
+    fn addToken(self: *Scanner, token_type: TokenType, literal: Literal) !void {
         try self.tokens.append(Token{
             .type = token_type,
             .literal = literal,
@@ -163,7 +206,7 @@ const Scanner = struct {
         });
     }
 
-    pub fn scanToken(self: *Scanner) !void {
+    fn scanToken(self: *Scanner) !void {
         const char = self.advance();
 
         switch (char) {
@@ -173,12 +216,9 @@ const Scanner = struct {
 
             '(' => try self.addToken(TokenType.LEFT_PAREN, Literal{ .void = {} }),
             ')' => try self.addToken(TokenType.RIGHT_PAREN, Literal{ .void = {} }),
-            '{' => try self.addToken(TokenType.LEFT_BRACE, Literal{ .void = {} }),
-            '}' => try self.addToken(TokenType.RIGHT_BRACE, Literal{ .void = {} }),
             ',' => try self.addToken(TokenType.COMMA, Literal{ .void = {} }),
             '.' => try self.addToken(TokenType.DOT, Literal{ .void = {} }),
             ':' => try self.addToken(TokenType.COLON, Literal{ .void = {} }),
-            ';' => try self.addToken(TokenType.SEMICOLON, Literal{ .void = {} }),
             '-' => try self.addToken(TokenType.MINUS, Literal{ .void = {} }),
             '+' => try self.addToken(TokenType.PLUS, Literal{ .void = {} }),
             '*' => try self.addToken(TokenType.MULTIPLICATION, Literal{ .void = {} }),
@@ -194,6 +234,7 @@ const Scanner = struct {
             ' ' => {},
             '\t' => {},
             '\n' => self.line += 1,
+            '\r' => self.line += 1,
 
             '"' => try self.string(),
             '0'...'9' => try self.number(),
@@ -205,7 +246,7 @@ const Scanner = struct {
         }
     }
 
-    pub fn scanTokens(self: *Scanner) !std.ArrayList(Token) {
+    fn scanTokens(self: *Scanner) !std.ArrayList(Token) {
         while (!self.isAtEnd()) {
             self.start = self.current;
             try self.scanToken();
@@ -214,7 +255,7 @@ const Scanner = struct {
         return self.tokens;
     }
 
-    pub fn number(self: *Scanner) !void {
+    fn number(self: *Scanner) !void {
         var is_int = true;
         while (std.ascii.isDigit(self.source[self.current])) _ = self.advance();
 
@@ -233,8 +274,8 @@ const Scanner = struct {
         }
     }
 
-    pub fn identifier(self: *Scanner) !void {
-        while (std.ascii.isAlphanumeric(self.source[self.current])) _ = self.advance();
+    fn identifier(self: *Scanner) !void {
+        while (std.ascii.isAlphanumeric(self.source[self.current]) or self.source[self.current] == '_') _ = self.advance();
 
         var token_type = TokenType.IDENTIFIER;
         const keyword = self.keyword_map.get(self.source[self.start..self.current]);
@@ -246,7 +287,7 @@ const Scanner = struct {
         try self.addToken(token_type, Literal{ .void = {} });
     }
 
-    pub fn string(self: *Scanner) !void {
+    fn string(self: *Scanner) !void {
         while (self.source[self.current] != '"' and !self.isAtEnd()) {
             if (self.source[self.current] == '\n') {
                 std.log.err("Invalid string literal !\n{d}", .{self.line});
@@ -267,36 +308,22 @@ const Scanner = struct {
         try self.addToken(TokenType.STRING, Literal{ .str = value });
     }
 
-    pub fn advance(self: *Scanner) u8 {
+    fn advance(self: *Scanner) u8 {
         const char = self.source[self.current];
         self.current += 1;
         return char;
     }
 
-    pub fn isAtEnd(self: Scanner) bool {
+    fn isAtEnd(self: Scanner) bool {
         return self.current >= self.source.len;
     }
 
-    pub fn match(self: *Scanner, expected: u8) bool {
+    fn match(self: *Scanner, expected: u8) bool {
         if (self.isAtEnd()) return false;
         if (self.source[self.current] != expected) return false;
 
         self.current += 1;
         return true;
-    }
-
-    pub fn scan(self: *Scanner, source: []const u8) !void {
-        self.source = source;
-        const tokens = try self.scanTokens();
-        var line: usize = 1;
-        for (tokens.items) |token| {
-            while (line < token.line) {
-                line += 1;
-                std.debug.print("\n", .{});
-            }
-
-            token.print();
-        }
     }
 };
 
@@ -342,7 +369,6 @@ const Cli = struct {
 
             if (source.len > 0 and !std.ascii.eqlIgnoreCase(source, "")) {
                 try scanner.scan(source);
-                try out.print("\n", .{});
             }
         }
     }
@@ -363,7 +389,7 @@ pub fn main() !void {
     var cli = try Cli.init(alloc);
 
     if (args.len == 1) {
-        try cli.scanPrompt();
+        // try cli.scanPrompt();
     } else if (args.len == 2) {
         try cli.scanFile(args[1]);
     } else {

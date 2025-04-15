@@ -74,7 +74,7 @@ hashmap
 stack
 queue
 
-pointer
+ptr
 usize isize
 c_char
 c_short
