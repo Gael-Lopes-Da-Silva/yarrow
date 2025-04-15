@@ -1,5 +1,4 @@
 # This is a comment
-#* This is a multiline comment *#
 
 "std.utils" require # import everything from utils into current scope
 "std.io" io require # import everything from io into the io namespace
@@ -35,8 +34,6 @@
 2 3 + 11 * 1 +
 
 # the default logical operators
-true true &&
-true false ||
 true true and
 true false or
 
@@ -120,28 +117,33 @@ const myConstant i32 32 end # need to be a value known at compile time
 #=====================
 
 # function are declared like that
-function my_function do
+my_function function do
     # do things
 end with void # define return value, by default void
 
 # functions can take parameters
-function my_params
-    i32 first
-    string second
+my_params function
+    first i32
+    second string
 do
     # do things with parameters
 end with void # return nothing
 
 # entry point of a program is main
-function main do
+main function do
     # do things
 end with void
 
 # we can return a code when program end
-function main do
+main function do
     # do things
     0 return
 end with i32
+
+# function can return errors
+my_error_function function do
+    call_to_function_that_return_error try return # we use try to check for error values and return them
+end with void else MyCustomError # the type of returned error is specified here
 
 #=====================
 # CONTROLS
@@ -182,16 +184,16 @@ end
 
 (i32 theVal) 0 10 i32.range while # parantheses can be omited
     # do something 10 times with i as i32
-do
+end
 
 (i32 theVal) myArray while
     # theVal contains the current iteration value
-do
+end
 
 (i32 theVal i32 theIndex) myArray while
     # same here
     # theIndex contains the current iteration index
-do
+end
 
 #=====================
 # STRUCTURES
@@ -204,7 +206,7 @@ MyStruct struct
 end
 
 # by default everything is private, if we want to export a sctruct or other thing
-MyOtherStruct struct public
+public MyOtherStruct struct
     public publicVal i8
     public privateVal f64 73.0
 end
@@ -216,13 +218,13 @@ end
 
 # struct can contains function (methods)
 MyStructWithFunction struct
-    function my_struct_func do
+    my_struct_func function do
     end
 end
 
 # struct can contains function (methods)
-MyStructWithFunction struct public
-    public function my_struct_func
+public MyStructWithFunction struct
+    public my_struct_func function
         a i32
         b f32
     do
@@ -306,36 +308,14 @@ end
 # error handling is done on a function if anything in it's scope return an error union
 "core.file" file require
 
-function error_handling do
+error_handling function do
     (file.ReadMode.READONLY "file-name.txt") file.read_file try discard # use discard to discard returned value if any
     # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
-end with void else ReadError
-
-
-
-
-
-
-
+end with void else file.FileError
 
 # hello world
-function main() do
-    try io.print_line("Hello, world!") # don't forget to require core.io (optionally as io)
-    try io.print_format("{}", "Hello, space!")
+"core.io" io require
+
+main function do
+    io.write_line("Hello, world!") try
 end with void else AnyError # AnyError is the default error
-
-# we can add methodes to struct like that
-implement to MyStruct
-    # here are declared methodes
-    function myMethode() do
-        self.myVal = 43 # if myMethode is used, the variable that host the struct need to be mutable
-    end with void
-
-    # constructor
-    function new(i32 myVal, i32 otherValue) do
-        return {
-            myVal # we can omit initialization if same name
-            myOtherVal = otherValue
-        }
-    end with self
-end
