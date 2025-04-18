@@ -8,68 +8,77 @@ const Literal = union(enum) {
 };
 
 const TokenType = enum {
-    COMMA,
-    DOT,
-    COLON,
-    LEFT_PAREN,
-    RIGHT_PAREN,
+    comma,
+    dot,
+    colon,
+    l_paren,
+    r_paren,
 
-    PLUS,
-    MINUS,
-    MULTIPLICATION,
-    DIVISION,
-    EUCLIDIAN,
-    REMINDER,
-    POWER,
+    plus,
+    minus,
+    multiplication,
+    division,
+    euclidian,
+    reminder,
+    power,
 
-    IDENTIFIER,
-    STRING,
-    INTEGER,
-    FLOAT,
+    identifier,
+    string,
+    integer,
+    float,
 
-    EQUAL,
-    EQUAL_EQUAL,
-    NOT_EQUAL,
-    GREATER,
-    GREATER_EQUAL,
-    LESS,
-    LESS_EQUAL,
+    equal,
+    equal_equal,
+    not_equal,
+    greater,
+    greater_equal,
+    less,
+    less_equal,
 
-    TYPE,
+    bitwise_and,
+    bitwise_or,
+    bitwise_xor,
+    l_shift,
+    r_shift,
 
-    AND,
-    OR,
-    NOT,
+    keyword_and,
+    keyword_or,
+    keyword_not,
+    keyword_function,
+    keyword_return,
+    keyword_if,
+    keyword_else,
+    keyword_match,
+    keyword_case,
+    keyword_default,
+    keyword_end,
+    keyword_do,
+    keyword_with,
+    keyword_while,
+    keyword_const,
+    keyword_mutable,
+    keyword_struct,
+    keyword_union,
+    keyword_enum,
+    keyword_public,
+    keyword_private,
+    keyword_protected,
+    keyword_try,
+    keyword_discard,
+    keyword_require,
+};
 
-    FUNCTION,
-    RETURN,
-    IF,
-    ELSE,
-    MATCH,
-    CASE,
-    DEFAULT,
-    END,
-    DO,
-    WITH,
-    WHILE,
-    CONST,
-    MUTABLE,
-    STRUCT,
-    UNION,
-    ENUM,
-    PUBLIC,
-    PRIVATE,
-    PROTECTED,
-    TRY,
-    DISCARD,
-    REQUIRE,
+const Location = struct {
+    line: usize,
+    start: usize,
+    end: usize,
 };
 
 const Token = struct {
     type: TokenType,
     lexeme: []const u8,
     literal: Literal,
-    line: usize,
+    location: Location,
 };
 
 const Keyword = struct {
@@ -77,99 +86,62 @@ const Keyword = struct {
     token: TokenType,
 };
 
-const Scanner = struct {
+const Tokenizer = struct {
     start: usize,
     current: usize,
     line: usize,
-    tokens: std.ArrayList(Token),
     source: []const u8,
     keywords: []const Keyword,
+    tokens: std.ArrayList(Token),
 
-    pub fn init(alloc: std.mem.Allocator) !Scanner {
-        return Scanner{
+    fn init(alloc: std.mem.Allocator) !Tokenizer {
+        return Tokenizer{
             .start = 0,
             .current = 0,
             .line = 1,
             .tokens = std.ArrayList(Token).init(alloc),
             .source = "",
             .keywords = &[_]Keyword{
-                .{ .name = "and", .token = TokenType.AND },
-                .{ .name = "or", .token = TokenType.OR },
-                .{ .name = "not", .token = TokenType.NOT },
-                .{ .name = "function", .token = TokenType.FUNCTION },
-                .{ .name = "return", .token = TokenType.RETURN },
-                .{ .name = "if", .token = TokenType.IF },
-                .{ .name = "else", .token = TokenType.ELSE },
-                .{ .name = "match", .token = TokenType.MATCH },
-                .{ .name = "case", .token = TokenType.CASE },
-                .{ .name = "default", .token = TokenType.DEFAULT },
-                .{ .name = "end", .token = TokenType.END },
-                .{ .name = "do", .token = TokenType.DO },
-                .{ .name = "with", .token = TokenType.WITH },
-                .{ .name = "while", .token = TokenType.WHILE },
-                .{ .name = "const", .token = TokenType.CONST },
-                .{ .name = "mutable", .token = TokenType.MUTABLE },
-                .{ .name = "struct", .token = TokenType.STRUCT },
-                .{ .name = "union", .token = TokenType.UNION },
-                .{ .name = "enum", .token = TokenType.ENUM },
-                .{ .name = "public", .token = TokenType.PUBLIC },
-                .{ .name = "private", .token = TokenType.PRIVATE },
-                .{ .name = "protected", .token = TokenType.PROTECTED },
-                .{ .name = "try", .token = TokenType.TRY },
-                .{ .name = "discard", .token = TokenType.DISCARD },
-                .{ .name = "require", .token = TokenType.REQUIRE },
-
-                .{ .name = "i8", .token = TokenType.TYPE },
-                .{ .name = "i16", .token = TokenType.TYPE },
-                .{ .name = "i32", .token = TokenType.TYPE },
-                .{ .name = "i64", .token = TokenType.TYPE },
-                .{ .name = "i128", .token = TokenType.TYPE },
-                .{ .name = "u8", .token = TokenType.TYPE },
-                .{ .name = "u16", .token = TokenType.TYPE },
-                .{ .name = "u32", .token = TokenType.TYPE },
-                .{ .name = "u64", .token = TokenType.TYPE },
-                .{ .name = "u128", .token = TokenType.TYPE },
-                .{ .name = "f16", .token = TokenType.TYPE },
-                .{ .name = "f32", .token = TokenType.TYPE },
-                .{ .name = "f64", .token = TokenType.TYPE },
-                .{ .name = "f128", .token = TokenType.TYPE },
-                .{ .name = "bool", .token = TokenType.TYPE },
-                .{ .name = "void", .token = TokenType.TYPE },
-                .{ .name = "string", .token = TokenType.TYPE },
-                .{ .name = "array", .token = TokenType.TYPE },
-                .{ .name = "vector", .token = TokenType.TYPE },
-                .{ .name = "hashmap", .token = TokenType.TYPE },
-                .{ .name = "stack", .token = TokenType.TYPE },
-                .{ .name = "queue", .token = TokenType.TYPE },
-                .{ .name = "ptr", .token = TokenType.TYPE },
-                .{ .name = "isize", .token = TokenType.TYPE },
-                .{ .name = "usize", .token = TokenType.TYPE },
-                .{ .name = "c_char", .token = TokenType.TYPE },
-                .{ .name = "c_short", .token = TokenType.TYPE },
-                .{ .name = "c_ushort", .token = TokenType.TYPE },
-                .{ .name = "c_int", .token = TokenType.TYPE },
-                .{ .name = "c_uint", .token = TokenType.TYPE },
-                .{ .name = "c_long", .token = TokenType.TYPE },
-                .{ .name = "c_ulong", .token = TokenType.TYPE },
-                .{ .name = "c_longlong", .token = TokenType.TYPE },
-                .{ .name = "c_ulonglong", .token = TokenType.TYPE },
-                .{ .name = "c_double", .token = TokenType.TYPE },
-                .{ .name = "c_longdouble", .token = TokenType.TYPE },
+                .{ .name = "and", .token = .keyword_and },
+                .{ .name = "case", .token = .keyword_case },
+                .{ .name = "const", .token = .keyword_const },
+                .{ .name = "default", .token = .keyword_default },
+                .{ .name = "discard", .token = .keyword_discard },
+                .{ .name = "do", .token = .keyword_do },
+                .{ .name = "else", .token = .keyword_else },
+                .{ .name = "end", .token = .keyword_end },
+                .{ .name = "enum", .token = .keyword_enum },
+                .{ .name = "function", .token = .keyword_function },
+                .{ .name = "if", .token = .keyword_if },
+                .{ .name = "match", .token = .keyword_match },
+                .{ .name = "mutable", .token = .keyword_mutable },
+                .{ .name = "not", .token = .keyword_not },
+                .{ .name = "or", .token = .keyword_or },
+                .{ .name = "private", .token = .keyword_private },
+                .{ .name = "protected", .token = .keyword_protected },
+                .{ .name = "public", .token = .keyword_public },
+                .{ .name = "require", .token = .keyword_require },
+                .{ .name = "return", .token = .keyword_return },
+                .{ .name = "struct", .token = .keyword_struct },
+                .{ .name = "try", .token = .keyword_try },
+                .{ .name = "union", .token = .keyword_union },
+                .{ .name = "while", .token = .keyword_while },
+                .{ .name = "with", .token = .keyword_with },
             },
         };
     }
 
-    pub fn deinit(self: *Scanner) void {
+    fn deinit(self: *Tokenizer) void {
         self.tokens.deinit();
     }
 
-    pub fn scan(self: *Scanner, source: []const u8) !std.ArrayList(Token) {
+    fn scan(self: *Tokenizer, source: []const u8) !std.ArrayList(Token) {
         self.source = source;
         try self.scanTokens();
         return self.tokens;
     }
 
-    fn lookupKeyword(self: *Scanner, key: []const u8) ?TokenType {
+    fn lookupKeyword(self: *Tokenizer, key: []const u8) ?TokenType {
         for (self.keywords) |keyword| {
             if (std.ascii.eqlIgnoreCase(keyword.name, key)) return keyword.token;
         }
@@ -177,61 +149,85 @@ const Scanner = struct {
         return null;
     }
 
-    fn isAtEnd(self: Scanner) bool {
+    fn isAtEnd(self: Tokenizer) bool {
         return self.current >= self.source.len;
     }
 
-    fn peek(self: Scanner) u8 {
+    fn peek(self: Tokenizer) u8 {
         return self.source[self.current];
     }
 
-    fn peekNext(self: Scanner) u8 {
+    fn peekNext(self: Tokenizer) u8 {
         return self.source[self.current + 1];
     }
 
-    fn advance(self: *Scanner) u8 {
+    fn advance(self: *Tokenizer) u8 {
         const char = self.peek();
         self.current += 1;
         return char;
     }
 
-    fn match(self: *Scanner, expected: u8) bool {
+    fn match(self: *Tokenizer, expected: u8) bool {
         if (self.isAtEnd() or self.peek() != expected) return false;
         self.current += 1;
         return true;
     }
 
-    fn addToken(self: *Scanner, token_type: TokenType, literal: Literal) !void {
+    fn addToken(self: *Tokenizer, token_type: TokenType, literal: Literal) !void {
         try self.tokens.append(Token{
             .type = token_type,
             .literal = literal,
-            .line = self.line,
             .lexeme = self.source[self.start..self.current],
+            .location = .{
+                .line = self.line,
+                .start = self.start,
+                .end = self.current,
+            },
         });
     }
 
-    fn scanToken(self: *Scanner) !void {
+    fn scanToken(self: *Tokenizer) !void {
         switch (self.advance()) {
             '#' => {
                 while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
             },
 
-            '(' => try self.addToken(TokenType.LEFT_PAREN, Literal{ .void = {} }),
-            ')' => try self.addToken(TokenType.RIGHT_PAREN, Literal{ .void = {} }),
-            ',' => try self.addToken(TokenType.COMMA, Literal{ .void = {} }),
-            '.' => try self.addToken(TokenType.DOT, Literal{ .void = {} }),
-            ':' => try self.addToken(TokenType.COLON, Literal{ .void = {} }),
-            '-' => try self.addToken(TokenType.MINUS, Literal{ .void = {} }),
-            '+' => try self.addToken(TokenType.PLUS, Literal{ .void = {} }),
-            '*' => try self.addToken(TokenType.MULTIPLICATION, Literal{ .void = {} }),
-            '%' => try self.addToken(TokenType.REMINDER, Literal{ .void = {} }),
-            '^' => try self.addToken(TokenType.POWER, Literal{ .void = {} }),
+            '(' => try self.addToken(.l_paren, Literal{ .void = {} }),
+            ')' => try self.addToken(.r_paren, Literal{ .void = {} }),
+            ',' => try self.addToken(.comma, Literal{ .void = {} }),
+            '.' => try self.addToken(.dot, Literal{ .void = {} }),
+            ':' => try self.addToken(.colon, Literal{ .void = {} }),
+            '-' => try self.addToken(.minus, Literal{ .void = {} }),
+            '+' => try self.addToken(.plus, Literal{ .void = {} }),
+            '%' => try self.addToken(.reminder, Literal{ .void = {} }),
 
-            '<' => try self.addToken(if (self.match('=')) TokenType.LESS_EQUAL else TokenType.LESS, Literal{ .void = {} }),
-            '>' => try self.addToken(if (self.match('=')) TokenType.GREATER_EQUAL else TokenType.GREATER, Literal{ .void = {} }),
-            '!' => try self.addToken(if (self.match('=')) TokenType.NOT_EQUAL else TokenType.NOT, Literal{ .void = {} }),
-            '=' => try self.addToken(if (self.match('=')) TokenType.EQUAL_EQUAL else TokenType.EQUAL, Literal{ .void = {} }),
-            '/' => try self.addToken(if (self.match('/')) TokenType.EUCLIDIAN else TokenType.DIVISION, Literal{ .void = {} }),
+            '&' => try self.addToken(.bitwise_and, Literal{ .void = {} }),
+            '|' => try self.addToken(.bitwise_or, Literal{ .void = {} }),
+            '^' => try self.addToken(.bitwise_xor, Literal{ .void = {} }),
+
+            '*' => try self.addToken(
+                if (self.match('*')) .power else .multiplication,
+                Literal{ .void = {} },
+            ),
+            '/' => try self.addToken(
+                if (self.match('/')) .euclidian else .division,
+                Literal{ .void = {} },
+            ),
+            '=' => try self.addToken(
+                if (self.match('=')) .equal_equal else .equal,
+                Literal{ .void = {} },
+            ),
+            '<' => try self.addToken(
+                if (self.match('=')) .less_equal else if (self.match('<')) .l_shift else .less,
+                Literal{ .void = {} },
+            ),
+
+            '>' => try self.addToken(
+                if (self.match('=')) .greater_equal else if (self.match('>')) .r_shift else .greater,
+                Literal{ .void = {} },
+            ),
+
+            '!' => if (self.match('=')) try self.addToken(.not_equal, Literal{ .void = {} }),
 
             ' ' => {},
             '\t' => {},
@@ -256,7 +252,7 @@ const Scanner = struct {
 
                 _ = self.advance();
                 const value = self.source[self.start + 1 .. self.current - 1];
-                try self.addToken(TokenType.STRING, Literal{ .str = value });
+                try self.addToken(.string, Literal{ .str = value });
             },
 
             '0'...'9' => {
@@ -268,17 +264,17 @@ const Scanner = struct {
                     while (std.ascii.isDigit(self.peek())) _ = self.advance();
 
                     const float = try std.fmt.parseFloat(f64, self.source[self.start..self.current]);
-                    try self.addToken(TokenType.FLOAT, .{ .float = float });
+                    try self.addToken(.float, .{ .float = float });
                 } else {
                     const int = try std.fmt.parseInt(i64, self.source[self.start..self.current], 10);
-                    try self.addToken(TokenType.INTEGER, .{ .int = int });
+                    try self.addToken(.integer, .{ .int = int });
                 }
             },
 
             'A'...'Z', 'a'...'z', '_' => {
                 while (std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_') _ = self.advance();
 
-                var token_type = TokenType.IDENTIFIER;
+                var token_type: TokenType = .identifier;
                 const keyword = self.lookupKeyword(self.source[self.start..self.current]);
 
                 if (keyword) |value| {
@@ -294,7 +290,7 @@ const Scanner = struct {
         }
     }
 
-    fn scanTokens(self: *Scanner) !void {
+    fn scanTokens(self: *Tokenizer) !void {
         while (!self.isAtEnd()) {
             self.start = self.current;
             try self.scanToken();
@@ -305,13 +301,13 @@ const Scanner = struct {
 const Cli = struct {
     alloc: std.mem.Allocator,
 
-    pub fn init(alloc: std.mem.Allocator) !Cli {
+    fn init(alloc: std.mem.Allocator) !Cli {
         return Cli{
             .alloc = alloc,
         };
     }
 
-    pub fn scanFile(self: *Cli, path: []const u8) !void {
+    fn scanFile(self: *Cli, path: []const u8) !void {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
             std.log.err("Failed to open file !\n{s}: {s}", .{ path, @errorName(err) });
             return;
@@ -324,18 +320,18 @@ const Cli = struct {
         };
         defer self.alloc.free(source);
 
-        var scanner = try Scanner.init(self.alloc);
+        var scanner = try Tokenizer.init(self.alloc);
         defer scanner.deinit();
 
         const tokens = try scanner.scan(source);
         _ = tokens;
     }
 
-    pub fn scanPrompt(self: *Cli) !void {
+    fn scanPrompt(self: *Cli) !void {
         const in = std.io.getStdIn().reader();
         const out = std.io.getStdOut().writer();
 
-        var scanner = try Scanner.init(self.alloc);
+        var scanner = try Tokenizer.init(self.alloc);
         defer scanner.deinit();
 
         var running = true;
