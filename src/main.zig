@@ -8,14 +8,11 @@ const Literal = union(enum) {
 };
 
 const TokenType = enum {
-    LEFT_PAREN,
-    RIGHT_PAREN,
-
     COMMA,
     DOT,
     COLON,
-    HASH,
-    DOUBLE_HASH,
+    LEFT_PAREN,
+    RIGHT_PAREN,
 
     PLUS,
     MINUS,
@@ -29,7 +26,6 @@ const TokenType = enum {
     STRING,
     INTEGER,
     FLOAT,
-    BOOLEAN,
 
     EQUAL,
     EQUAL_EQUAL,
@@ -74,127 +70,135 @@ const Token = struct {
     lexeme: []const u8,
     literal: Literal,
     line: usize,
+};
 
-    pub fn print(self: Token) void {
-        switch (self.literal) {
-            .void => std.debug.print("{s} ", .{@tagName(self.type)}),
-            .int => |value| std.debug.print("({s}: {d}) ", .{ @tagName(self.type), value }),
-            .float => |value| std.debug.print("({s}: {d:.2}) ", .{ @tagName(self.type), value }),
-            .str => |value| std.debug.print("({s}: {s}) ", .{ @tagName(self.type), value }),
-        }
-    }
+const Keyword = struct {
+    name: []const u8,
+    token: TokenType,
 };
 
 const Scanner = struct {
     start: usize,
     current: usize,
     line: usize,
-
     tokens: std.ArrayList(Token),
-    alloc: std.mem.Allocator,
-
     source: []const u8,
-
-    keyword_map: std.StringHashMap(TokenType),
+    keywords: []const Keyword,
 
     pub fn init(alloc: std.mem.Allocator) !Scanner {
-        var keywords = std.StringHashMap(TokenType).init(alloc);
-
-        try keywords.put("and", TokenType.AND);
-        try keywords.put("or", TokenType.OR);
-        try keywords.put("not", TokenType.NOT);
-        try keywords.put("function", TokenType.FUNCTION);
-        try keywords.put("return", TokenType.RETURN);
-        try keywords.put("if", TokenType.IF);
-        try keywords.put("else", TokenType.ELSE);
-        try keywords.put("match", TokenType.MATCH);
-        try keywords.put("case", TokenType.CASE);
-        try keywords.put("default", TokenType.DEFAULT);
-        try keywords.put("end", TokenType.END);
-        try keywords.put("do", TokenType.DO);
-        try keywords.put("with", TokenType.WITH);
-        try keywords.put("while", TokenType.WHILE);
-        try keywords.put("const", TokenType.CONST);
-        try keywords.put("mutable", TokenType.MUTABLE);
-        try keywords.put("struct", TokenType.STRUCT);
-        try keywords.put("union", TokenType.UNION);
-        try keywords.put("enum", TokenType.ENUM);
-        try keywords.put("public", TokenType.PUBLIC);
-        try keywords.put("private", TokenType.PRIVATE);
-        try keywords.put("protected", TokenType.PROTECTED);
-        try keywords.put("try", TokenType.TRY);
-        try keywords.put("discard", TokenType.DISCARD);
-        try keywords.put("require", TokenType.REQUIRE);
-        try keywords.put("true", TokenType.BOOLEAN);
-        try keywords.put("false", TokenType.BOOLEAN);
-
-        try keywords.put("i8", TokenType.TYPE);
-        try keywords.put("i16", TokenType.TYPE);
-        try keywords.put("i32", TokenType.TYPE);
-        try keywords.put("i64", TokenType.TYPE);
-        try keywords.put("i128", TokenType.TYPE);
-        try keywords.put("u8", TokenType.TYPE);
-        try keywords.put("u16", TokenType.TYPE);
-        try keywords.put("u32", TokenType.TYPE);
-        try keywords.put("u64", TokenType.TYPE);
-        try keywords.put("u128", TokenType.TYPE);
-        try keywords.put("f16", TokenType.TYPE);
-        try keywords.put("f32", TokenType.TYPE);
-        try keywords.put("f64", TokenType.TYPE);
-        try keywords.put("f128", TokenType.TYPE);
-        try keywords.put("bool", TokenType.TYPE);
-        try keywords.put("void", TokenType.TYPE);
-        try keywords.put("string", TokenType.TYPE);
-        try keywords.put("array", TokenType.TYPE);
-        try keywords.put("vector", TokenType.TYPE);
-        try keywords.put("hashmap", TokenType.TYPE);
-        try keywords.put("stack", TokenType.TYPE);
-        try keywords.put("queue", TokenType.TYPE);
-
-        try keywords.put("ptr", TokenType.TYPE);
-        try keywords.put("isize", TokenType.TYPE);
-        try keywords.put("usize", TokenType.TYPE);
-        try keywords.put("c_char", TokenType.TYPE);
-        try keywords.put("c_short", TokenType.TYPE);
-        try keywords.put("c_ushort", TokenType.TYPE);
-        try keywords.put("c_int", TokenType.TYPE);
-        try keywords.put("c_uint", TokenType.TYPE);
-        try keywords.put("c_long", TokenType.TYPE);
-        try keywords.put("c_ulong", TokenType.TYPE);
-        try keywords.put("c_longlong", TokenType.TYPE);
-        try keywords.put("c_ulonglong", TokenType.TYPE);
-        try keywords.put("c_double", TokenType.TYPE);
-        try keywords.put("c_longdouble", TokenType.TYPE);
-
         return Scanner{
             .start = 0,
             .current = 0,
             .line = 1,
             .tokens = std.ArrayList(Token).init(alloc),
-            .alloc = alloc,
             .source = "",
-            .keyword_map = keywords,
+            .keywords = &[_]Keyword{
+                .{ .name = "and", .token = TokenType.AND },
+                .{ .name = "or", .token = TokenType.OR },
+                .{ .name = "not", .token = TokenType.NOT },
+                .{ .name = "function", .token = TokenType.FUNCTION },
+                .{ .name = "return", .token = TokenType.RETURN },
+                .{ .name = "if", .token = TokenType.IF },
+                .{ .name = "else", .token = TokenType.ELSE },
+                .{ .name = "match", .token = TokenType.MATCH },
+                .{ .name = "case", .token = TokenType.CASE },
+                .{ .name = "default", .token = TokenType.DEFAULT },
+                .{ .name = "end", .token = TokenType.END },
+                .{ .name = "do", .token = TokenType.DO },
+                .{ .name = "with", .token = TokenType.WITH },
+                .{ .name = "while", .token = TokenType.WHILE },
+                .{ .name = "const", .token = TokenType.CONST },
+                .{ .name = "mutable", .token = TokenType.MUTABLE },
+                .{ .name = "struct", .token = TokenType.STRUCT },
+                .{ .name = "union", .token = TokenType.UNION },
+                .{ .name = "enum", .token = TokenType.ENUM },
+                .{ .name = "public", .token = TokenType.PUBLIC },
+                .{ .name = "private", .token = TokenType.PRIVATE },
+                .{ .name = "protected", .token = TokenType.PROTECTED },
+                .{ .name = "try", .token = TokenType.TRY },
+                .{ .name = "discard", .token = TokenType.DISCARD },
+                .{ .name = "require", .token = TokenType.REQUIRE },
+
+                .{ .name = "i8", .token = TokenType.TYPE },
+                .{ .name = "i16", .token = TokenType.TYPE },
+                .{ .name = "i32", .token = TokenType.TYPE },
+                .{ .name = "i64", .token = TokenType.TYPE },
+                .{ .name = "i128", .token = TokenType.TYPE },
+                .{ .name = "u8", .token = TokenType.TYPE },
+                .{ .name = "u16", .token = TokenType.TYPE },
+                .{ .name = "u32", .token = TokenType.TYPE },
+                .{ .name = "u64", .token = TokenType.TYPE },
+                .{ .name = "u128", .token = TokenType.TYPE },
+                .{ .name = "f16", .token = TokenType.TYPE },
+                .{ .name = "f32", .token = TokenType.TYPE },
+                .{ .name = "f64", .token = TokenType.TYPE },
+                .{ .name = "f128", .token = TokenType.TYPE },
+                .{ .name = "bool", .token = TokenType.TYPE },
+                .{ .name = "void", .token = TokenType.TYPE },
+                .{ .name = "string", .token = TokenType.TYPE },
+                .{ .name = "array", .token = TokenType.TYPE },
+                .{ .name = "vector", .token = TokenType.TYPE },
+                .{ .name = "hashmap", .token = TokenType.TYPE },
+                .{ .name = "stack", .token = TokenType.TYPE },
+                .{ .name = "queue", .token = TokenType.TYPE },
+                .{ .name = "ptr", .token = TokenType.TYPE },
+                .{ .name = "isize", .token = TokenType.TYPE },
+                .{ .name = "usize", .token = TokenType.TYPE },
+                .{ .name = "c_char", .token = TokenType.TYPE },
+                .{ .name = "c_short", .token = TokenType.TYPE },
+                .{ .name = "c_ushort", .token = TokenType.TYPE },
+                .{ .name = "c_int", .token = TokenType.TYPE },
+                .{ .name = "c_uint", .token = TokenType.TYPE },
+                .{ .name = "c_long", .token = TokenType.TYPE },
+                .{ .name = "c_ulong", .token = TokenType.TYPE },
+                .{ .name = "c_longlong", .token = TokenType.TYPE },
+                .{ .name = "c_ulonglong", .token = TokenType.TYPE },
+                .{ .name = "c_double", .token = TokenType.TYPE },
+                .{ .name = "c_longdouble", .token = TokenType.TYPE },
+            },
         };
     }
 
     pub fn deinit(self: *Scanner) void {
         self.tokens.deinit();
-        self.keyword_map.deinit();
     }
 
-    pub fn scan(self: *Scanner, source: []const u8) !void {
+    pub fn scan(self: *Scanner, source: []const u8) !std.ArrayList(Token) {
         self.source = source;
-        const tokens = try self.scanTokens();
-        var line: usize = 1;
-        for (tokens.items) |token| {
-            while (line < token.line) {
-                line += 1;
-                std.debug.print("\n", .{});
-            }
+        try self.scanTokens();
+        return self.tokens;
+    }
 
-            token.print();
+    fn lookupKeyword(self: *Scanner, key: []const u8) ?TokenType {
+        for (self.keywords) |keyword| {
+            if (std.ascii.eqlIgnoreCase(keyword.name, key)) return keyword.token;
         }
-        std.debug.print("\n", .{});
+
+        return null;
+    }
+
+    fn isAtEnd(self: Scanner) bool {
+        return self.current >= self.source.len;
+    }
+
+    fn peek(self: Scanner) u8 {
+        return self.source[self.current];
+    }
+
+    fn peekNext(self: Scanner) u8 {
+        return self.source[self.current + 1];
+    }
+
+    fn advance(self: *Scanner) u8 {
+        const char = self.peek();
+        self.current += 1;
+        return char;
+    }
+
+    fn match(self: *Scanner, expected: u8) bool {
+        if (self.isAtEnd() or self.peek() != expected) return false;
+        self.current += 1;
+        return true;
     }
 
     fn addToken(self: *Scanner, token_type: TokenType, literal: Literal) !void {
@@ -207,11 +211,9 @@ const Scanner = struct {
     }
 
     fn scanToken(self: *Scanner) !void {
-        const char = self.advance();
-
-        switch (char) {
+        switch (self.advance()) {
             '#' => {
-                while (self.source[self.current] != '\n' and !self.isAtEnd()) _ = self.advance();
+                while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
             },
 
             '(' => try self.addToken(TokenType.LEFT_PAREN, Literal{ .void = {} }),
@@ -236,9 +238,55 @@ const Scanner = struct {
             '\n' => self.line += 1,
             '\r' => self.line += 1,
 
-            '"' => try self.string(),
-            '0'...'9' => try self.number(),
-            'A'...'Z', 'a'...'z', '_' => try self.identifier(),
+            '"' => {
+                while (self.peek() != '"' and !self.isAtEnd()) {
+                    if (self.peek() == '\n') {
+                        std.log.err("Invalid string literal !\n{d}", .{self.line});
+                        self.line += 1;
+                        return;
+                    }
+
+                    _ = self.advance();
+                }
+
+                if (self.isAtEnd()) {
+                    std.log.err("Unterminated string !\n{d}", .{self.line});
+                    return;
+                }
+
+                _ = self.advance();
+                const value = self.source[self.start + 1 .. self.current - 1];
+                try self.addToken(TokenType.STRING, Literal{ .str = value });
+            },
+
+            '0'...'9' => {
+                while (std.ascii.isDigit(self.peek())) _ = self.advance();
+
+                if (self.peek() == '.' and std.ascii.isDigit(self.peekNext())) {
+                    _ = self.advance();
+
+                    while (std.ascii.isDigit(self.peek())) _ = self.advance();
+
+                    const float = try std.fmt.parseFloat(f64, self.source[self.start..self.current]);
+                    try self.addToken(TokenType.FLOAT, .{ .float = float });
+                } else {
+                    const int = try std.fmt.parseInt(i64, self.source[self.start..self.current], 10);
+                    try self.addToken(TokenType.INTEGER, .{ .int = int });
+                }
+            },
+
+            'A'...'Z', 'a'...'z', '_' => {
+                while (std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_') _ = self.advance();
+
+                var token_type = TokenType.IDENTIFIER;
+                const keyword = self.lookupKeyword(self.source[self.start..self.current]);
+
+                if (keyword) |value| {
+                    token_type = value;
+                }
+
+                try self.addToken(token_type, Literal{ .void = {} });
+            },
 
             else => {
                 std.log.err("Unexpected character !\n{d}", .{self.line});
@@ -246,84 +294,11 @@ const Scanner = struct {
         }
     }
 
-    fn scanTokens(self: *Scanner) !std.ArrayList(Token) {
+    fn scanTokens(self: *Scanner) !void {
         while (!self.isAtEnd()) {
             self.start = self.current;
             try self.scanToken();
         }
-
-        return self.tokens;
-    }
-
-    fn number(self: *Scanner) !void {
-        var is_int = true;
-        while (std.ascii.isDigit(self.source[self.current])) _ = self.advance();
-
-        if (self.source[self.current] == '.' and std.ascii.isDigit(self.source[self.current + 1])) {
-            is_int = false;
-            _ = self.advance();
-            while (std.ascii.isDigit(self.source[self.current])) _ = self.advance();
-        }
-
-        if (is_int) {
-            const int = try std.fmt.parseInt(i64, self.source[self.start..self.current], 10);
-            try self.addToken(TokenType.INTEGER, .{ .int = int });
-        } else {
-            const float = try std.fmt.parseFloat(f64, self.source[self.start..self.current]);
-            try self.addToken(TokenType.FLOAT, .{ .float = float });
-        }
-    }
-
-    fn identifier(self: *Scanner) !void {
-        while (std.ascii.isAlphanumeric(self.source[self.current]) or self.source[self.current] == '_') _ = self.advance();
-
-        var token_type = TokenType.IDENTIFIER;
-        const keyword = self.keyword_map.get(self.source[self.start..self.current]);
-
-        if (keyword) |value| {
-            token_type = value;
-        }
-
-        try self.addToken(token_type, Literal{ .void = {} });
-    }
-
-    fn string(self: *Scanner) !void {
-        while (self.source[self.current] != '"' and !self.isAtEnd()) {
-            if (self.source[self.current] == '\n') {
-                std.log.err("Invalid string literal !\n{d}", .{self.line});
-                self.line += 1;
-                return;
-            }
-
-            _ = self.advance();
-        }
-
-        if (self.isAtEnd()) {
-            std.log.err("Unterminated string !\n{d}", .{self.line});
-            return;
-        }
-
-        _ = self.advance();
-        const value = self.source[self.start + 1 .. self.current - 1];
-        try self.addToken(TokenType.STRING, Literal{ .str = value });
-    }
-
-    fn advance(self: *Scanner) u8 {
-        const char = self.source[self.current];
-        self.current += 1;
-        return char;
-    }
-
-    fn isAtEnd(self: Scanner) bool {
-        return self.current >= self.source.len;
-    }
-
-    fn match(self: *Scanner, expected: u8) bool {
-        if (self.isAtEnd()) return false;
-        if (self.source[self.current] != expected) return false;
-
-        self.current += 1;
-        return true;
     }
 };
 
@@ -352,7 +327,8 @@ const Cli = struct {
         var scanner = try Scanner.init(self.alloc);
         defer scanner.deinit();
 
-        try scanner.scan(source);
+        const tokens = try scanner.scan(source);
+        _ = tokens;
     }
 
     pub fn scanPrompt(self: *Cli) !void {
@@ -362,13 +338,20 @@ const Cli = struct {
         var scanner = try Scanner.init(self.alloc);
         defer scanner.deinit();
 
-        while (true) {
+        var running = true;
+        while (running) {
             try out.print("> ", .{});
             const source = try in.readUntilDelimiterAlloc(self.alloc, '\n', std.math.maxInt(usize));
             defer self.alloc.free(source);
 
+            if (std.ascii.eqlIgnoreCase(source, "quit")) {
+                running = false;
+                break;
+            }
+
             if (source.len > 0 and !std.ascii.eqlIgnoreCase(source, "")) {
-                try scanner.scan(source);
+                const tokens = try scanner.scan(source);
+                _ = tokens;
             }
         }
     }
@@ -389,7 +372,7 @@ pub fn main() !void {
     var cli = try Cli.init(alloc);
 
     if (args.len == 1) {
-        // try cli.scanPrompt();
+        try cli.scanPrompt();
     } else if (args.len == 2) {
         try cli.scanFile(args[1]);
     } else {
