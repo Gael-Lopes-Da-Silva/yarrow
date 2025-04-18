@@ -28,7 +28,7 @@
 1 1 / # division
 1 1 // # euclidian division
 1 1 % # reminder
-1 5 ^ # power
+1 5 ** # power
 
 # exemple: (2 + 3) * 11 + 1
 2 3 + 11 * 1 +
@@ -49,6 +49,13 @@ true false !=
 1 1 >=
 1 1 <
 1 1 <=
+
+# bitwise operators
+1 1 &
+1 5 |
+4 5 ^
+5 6 <<
+6 7 >>
 
 #=====================
 # TYPES
@@ -107,7 +114,7 @@ end
 
 # you can declare mutable variable like this
 mutable myMutableVariable i32 45 end
-myMutableVariable 23 # change the value
+set myMutableVariable 23 # change the value
 
 # you can define compile time constant like this
 const myConstant i32 32 end # need to be a value known at compile time
@@ -142,7 +149,7 @@ end with i32
 
 # function can return errors
 my_error_function function do
-    call_to_function_that_return_error try return # we use try to check for error values and return them
+    call_to_function_that_return_error try return # we use try to check for error values and return them, if no error return result
 end with void else MyCustomError # the type of returned error is specified here
 
 #=====================
