@@ -1,87 +1,91 @@
 const std = @import("std");
 
-const TokenType = enum {
-    // Delimiters
-    L_paren,
-    R_paren,
-    Comma,
-
-    // Operators
-    Dot,
-    Plus,
-    Minus,
-    Multiplication,
-    Division,
-    Euclidian,
-    Reminder,
-    Power,
-
-    Equal_equal,
-    Not_equal,
-    Greater,
-    Greater_equal,
-    Less,
-    Less_equal,
-
-    Bitwise_and,
-    Bitwise_or,
-    Bitwise_xor,
-    L_shift,
-    R_shift,
-
-    // Literals
-    Identifier,
-    String,
-    Integer,
-    Float,
-
-    // Keywords
-    And,
-    Call,
-    Case,
-    Catch,
-    Const,
-    Default,
-    Defer,
-    Discard,
-    Do,
-    Else,
-    End,
-    Enum,
-    Function,
-    If,
-    Match,
-    Mutable,
-    Not,
-    Or,
-    Private,
-    Protected,
-    Public,
-    Require,
-    Return,
-    Struct,
-    Try,
-    Union,
-    While,
-    With,
-
-    Drop,
-    Dup,
-    Over,
-    Rot,
-    Set,
-    Swap,
-};
-
-const Token = struct {
-    type: TokenType,
-    lexeme: []const u8,
-    line: usize,
-    start: usize,
-    end: usize,
-};
-
 const Tokenizer = struct {
+    const TokenType = enum {
+        L_paren,
+        R_paren,
+        Comma,
+
+        Dot,
+        Plus,
+        Minus,
+        Multiplication,
+        Division,
+        Euclidian,
+        Reminder,
+        Power,
+
+        Equal_equal,
+        Not_equal,
+        Greater,
+        Greater_equal,
+        Less,
+        Less_equal,
+
+        Bitwise_and,
+        Bitwise_or,
+        Bitwise_xor,
+        L_shift,
+        R_shift,
+
+        Identifier,
+        String,
+        Integer,
+        Float,
+
+        And,
+        Call,
+        Case,
+        Catch,
+        Const,
+        Default,
+        Defer,
+        Discard,
+        Do,
+        Else,
+        End,
+        Enum,
+        Function,
+        If,
+        Match,
+        Mutable,
+        Not,
+        Or,
+        Private,
+        Protected,
+        Public,
+        Require,
+        Return,
+        Struct,
+        Try,
+        Union,
+        While,
+        With,
+
+        Drop,
+        Dup,
+        Over,
+        Rot,
+        Set,
+        Swap,
+    };
+
+    const Literal = union(enum) {
+        Void,
+        Int: i64,
+        Float: f64,
+        String: []const u8,
+    };
+
+    const Token = struct {
+        type: TokenType,
+        lexeme: []const u8,
+        literal: Literal,
+        line: usize,
+        start: usize,
+        end: usize,
+    };
+
     const Keyword = struct {
         name: []const u8,
         token: TokenType,
@@ -96,7 +100,7 @@ const Tokenizer = struct {
     keywords: []const Keyword,
     tokens: std.ArrayList(Token),
 
-    fn init(alloc: std.mem.Allocator) !Tokenizer {
+    fn init(alloc: std.mem.Allocator) Tokenizer {
         return Tokenizer{
             .start = 0,
             .current = 0,
@@ -149,7 +153,7 @@ const Tokenizer = struct {
         self.tokens.deinit();
     }
 
-    fn scan(self: *Tokenizer, source: []const u8) !std.ArrayList(Token) {
+    fn tokenize(self: *Tokenizer, source: []const u8) !std.ArrayList(Token) {
         self.source = source;
         try self.scanTokens();
         return self.tokens;
@@ -189,58 +193,79 @@ const Tokenizer = struct {
         return true;
     }
 
-    fn addToken(self: *Tokenizer, token_type: TokenType) !void {
+    fn addToken(self: *Tokenizer, token_type: TokenType, literal: Literal) !void {
         try self.tokens.append(Token{
             .type = token_type,
             .lexeme = self.source[self.start..self.current],
+            .literal = literal,
             .line = self.line,
             .start = self.column,
             .end = self.current,
         });
     }
 
-    fn scanToken(self: *Tokenizer) !void {
-        switch (self.advance()) {
-            '#' => {
-                while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
-            },
+    fn scanTokens(self: *Tokenizer) !void {
+        while (!self.isAtEnd()) {
+            self.start = self.current;
 
-            '(' => try self.addToken(.L_paren),
-            ')' => try self.addToken(.R_paren),
-            ',' => try self.addToken(.Comma),
-            '.' => try self.addToken(.Dot),
-            '-' => try self.addToken(.Minus),
-            '+' => try self.addToken(.Plus),
-            '%' => try self.addToken(.Reminder),
+            switch (self.advance()) {
+                '#' => {
+                    while (self.peek() != '\n' and !self.isAtEnd()) _ = self.advance();
+                },
 
-            '&' => try self.addToken(.Bitwise_and),
-            '|' => try self.addToken(.Bitwise_or),
-            '^' => try self.addToken(.Bitwise_xor),
+                '(' => try self.addToken(.L_paren, .{ .Void = {} }),
+                ')' => try self.addToken(.R_paren, .{ .Void = {} }),
+                ',' => try self.addToken(.Comma, .{ .Void = {} }),
+                '.' => try self.addToken(.Dot, .{ .Void = {} }),
+                '-' => try self.addToken(.Minus, .{ .Void = {} }),
+                '+' => try self.addToken(.Plus, .{ .Void = {} }),
+                '%' => try self.addToken(.Reminder, .{ .Void = {} }),
 
-            '*' => try self.addToken(
-                if (self.match('*')) .Power else .Multiplication,
-            ),
-            '/' => try self.addToken(
-                if (self.match('/')) .Euclidian else .Division,
-            ),
-            '<' => try self.addToken(
-                if (self.match('=')) .Less_equal else if (self.match('<')) .L_shift else .Less,
-            ),
-            '>' => try self.addToken(
-                if (self.match('=')) .Greater_equal else if (self.match('>')) .R_shift else .Greater,
-            ),
+                '&' => try self.addToken(.Bitwise_and, .{ .Void = {} }),
+                '|' => try self.addToken(.Bitwise_or, .{ .Void = {} }),
+                '^' => try self.addToken(.Bitwise_xor, .{ .Void = {} }),
 
-            '=' => if (self.match('=')) try self.addToken(.Equal_equal),
-            '!' => if (self.match('=')) try self.addToken(.Not_equal),
+                '*' => try self.addToken(
+                    if (self.match('*')) .Power else .Multiplication,
+                    .{ .Void = {} },
+                ),
+                '/' => try self.addToken(
+                    if (self.match('/')) .Euclidian else .Division,
+                    .{ .Void = {} },
+                ),
+                '<' => try self.addToken(
+                    if (self.match('=')) .Less_equal else if (self.match('<')) .L_shift else .Less,
+                    .{ .Void = {} },
+                ),
+                '>' => try self.addToken(
+                    if (self.match('=')) .Greater_equal else if (self.match('>')) .R_shift else .Greater,
+                    .{ .Void = {} },
+                ),
 
-            '\n', '\r' => {
-                self.line += 1;
-                self.column = 1;
-            },
+                '=' => if (self.match('=')) try self.addToken(.Equal_equal, .{ .Void = {} }),
+                '!' => if (self.match('=')) try self.addToken(.Not_equal, .{ .Void = {} }),
 
-            '"' => {
-                while (!self.isAtEnd() and self.peek() != '"') {
-                    if (self.peek() == '\n') {
+                '\n', '\r' => {
+                    self.line += 1;
+                    self.column = 1;
+                },
+
+                '"' => {
+                    while (!self.isAtEnd() and self.peek() != '"') {
+                        if (self.peek() == '\n') {
+                            std.debug.print("[ERROR] Unterminated string literal !\n", .{});
+                            if (!std.ascii.eqlIgnoreCase(self.path, "")) std.debug.print("| {s}:{d}:{d}\n", .{
+                                self.path,
+                                self.current,
+                                self.column,
+                            });
+                            return;
+                        }
+
+                        _ = self.advance();
+                    }
+
+                    if (self.isAtEnd()) {
                         std.debug.print("[ERROR] Unterminated string literal !\n", .{});
                         if (!std.ascii.eqlIgnoreCase(self.path, "")) std.debug.print("| {s}:{d}:{d}\n", .{
                             self.path,
@@ -251,67 +276,226 @@ const Tokenizer = struct {
                     }
 
                     _ = self.advance();
-                }
+                    try self.addToken(.String, .{ .String = self.source[self.start + 1 .. self.current - 1] });
+                },
 
-                if (self.isAtEnd()) {
-                    std.debug.print("[ERROR] Unterminated string literal !\n", .{});
+                '0'...'9' => {
+                    while (!self.isAtEnd() and std.ascii.isDigit(self.peek())) _ = self.advance();
+
+                    if (!self.isAtEnd() and self.peek() == '.' and std.ascii.isDigit(self.peekNext())) {
+                        _ = self.advance();
+
+                        while (!self.isAtEnd() and std.ascii.isDigit(self.peek())) _ = self.advance();
+
+                        try self.addToken(.Float, .{ .Float = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
+                    } else {
+                        try self.addToken(.Integer, .{ .Int = try std.fmt.parseInt(i32, self.source[self.start..self.current], 10) });
+                    }
+                },
+
+                'A'...'Z', 'a'...'z', '_' => {
+                    while (!self.isAtEnd() and (std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_')) _ = self.advance();
+
+                    var token_type: TokenType = .Identifier;
+                    const keyword = self.lookupKeyword(self.source[self.start..self.current]);
+
+                    if (keyword) |value| {
+                        token_type = value;
+                    }
+
+                    try self.addToken(token_type, .{ .Void = {} });
+                },
+
+                ' ', '\t' => {},
+
+                else => {
+                    std.debug.print("[ERROR] Unexpected character found !\n", .{});
                     if (!std.ascii.eqlIgnoreCase(self.path, "")) std.debug.print("| {s}:{d}:{d}\n", .{
                         self.path,
                         self.current,
                         self.column,
                     });
-                    return;
-                }
-
-                _ = self.advance();
-                try self.addToken(.String);
-            },
-
-            '0'...'9' => {
-                while (!self.isAtEnd() and std.ascii.isDigit(self.peek())) _ = self.advance();
-
-                if (!self.isAtEnd() and self.peek() == '.' and std.ascii.isDigit(self.peekNext())) {
-                    _ = self.advance();
-
-                    while (!self.isAtEnd() and std.ascii.isDigit(self.peek())) _ = self.advance();
-
-                    try self.addToken(.Float);
-                } else {
-                    try self.addToken(.Integer);
-                }
-            },
-
-            'A'...'Z', 'a'...'z', '_' => {
-                while (!self.isAtEnd() and (std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_')) _ = self.advance();
-
-                var token_type: TokenType = .Identifier;
-                const keyword = self.lookupKeyword(self.source[self.start..self.current]);
-
-                if (keyword) |value| {
-                    token_type = value;
-                }
-
-                try self.addToken(token_type);
-            },
-
-            ' ', '\t' => {},
-
-            else => {
-                std.debug.print("[ERROR] Unexpected character found !\n", .{});
-                if (!std.ascii.eqlIgnoreCase(self.path, "")) std.debug.print("| {s}:{d}:{d}\n", .{
-                    self.path,
-                    self.current,
-                    self.column,
-                });
-            },
+                },
+            }
         }
     }
+};
 
-    fn scanTokens(self: *Tokenizer) !void {
-        while (!self.isAtEnd()) {
-            self.start = self.current;
-            try self.scanToken();
+const Parser = struct {
+    const Instruction = union(enum) {
+        Plus,
+        Minus,
+        Multiplication,
+        Division,
+        Euclidian,
+        Reminder,
+        Power,
+
+        Equal_equal,
+        Not_equal,
+        Greater,
+        Greater_equal,
+        Less,
+        Less_equal,
+
+        Bitwise_and,
+        Bitwise_or,
+        Bitwise_xor,
+        L_shift,
+        R_shift,
+
+        And,
+        Not,
+        Or,
+
+        Drop,
+        Dup,
+        Over,
+        Rot,
+        Set,
+        Swap,
+
+        PushInt: i64,
+        PushFloat: f64,
+        PushString: []const u8,
+
+        Load: []const u8,
+        Store: []const u8,
+    };
+
+    instructions: std.ArrayList(Instruction),
+
+    fn init(alloc: std.mem.Allocator) Parser {
+        return Parser{
+            .instructions = std.ArrayList(Instruction).init(alloc),
+        };
+    }
+
+    fn deinit(self: *Parser) void {
+        self.instructions.deinit();
+    }
+
+    fn parse(self: *Parser, tokens: std.ArrayList(Tokenizer.Token)) !std.ArrayList(Instruction) {
+        for (tokens.items) |token| {
+            switch (token.type) {
+                .Integer => try self.instructions.append(.{ .PushInt = token.literal.Int }),
+                .Float => try self.instructions.append(.{ .PushFloat = token.literal.Float }),
+                .String => try self.instructions.append(.{ .PushString = token.literal.String }),
+                .Identifier => try self.instructions.append(.{ .Load = token.lexeme }),
+
+                .And => try self.instructions.append(.And),
+                .Or => try self.instructions.append(.Or),
+                .Not => try self.instructions.append(.Not),
+
+                .Plus => try self.instructions.append(.Plus),
+                .Minus => try self.instructions.append(.Minus),
+                .Multiplication => try self.instructions.append(.Multiplication),
+                .Division => try self.instructions.append(.Division),
+                .Euclidian => try self.instructions.append(.Euclidian),
+                .Reminder => try self.instructions.append(.Reminder),
+                .Power => try self.instructions.append(.Power),
+
+                .Equal_equal => try self.instructions.append(.Equal_equal),
+                .Not_equal => try self.instructions.append(.Not_equal),
+                .Greater => try self.instructions.append(.Greater),
+                .Greater_equal => try self.instructions.append(.Greater_equal),
+                .Less => try self.instructions.append(.Less),
+                .Less_equal => try self.instructions.append(.Less_equal),
+
+                .Bitwise_and => try self.instructions.append(.Bitwise_and),
+                .Bitwise_or => try self.instructions.append(.Bitwise_or),
+                .Bitwise_xor => try self.instructions.append(.Bitwise_xor),
+                .L_shift => try self.instructions.append(.L_shift),
+                .R_shift => try self.instructions.append(.R_shift),
+
+                .Drop => try self.instructions.append(.Drop),
+                .Dup => try self.instructions.append(.Dup),
+                .Over => try self.instructions.append(.Over),
+                .Rot => try self.instructions.append(.Rot),
+                .Set => try self.instructions.append(.Set),
+                .Swap => try self.instructions.append(.Swap),
+
+                else => {},
+            }
         }
+
+        return self.instructions;
+    }
+};
+
+const Interpreter = struct {
+    const Value = union(enum) {
+        Int: i64,
+        Float: f64,
+        Bool: bool,
+        String: []const u8,
+    };
+
+    stack: std.ArrayList(Value),
+
+    fn init(alloc: std.mem.Allocator) Interpreter {
+        return Interpreter{
+            .stack = std.ArrayList(Value).init(alloc),
+        };
+    }
+
+    fn deinit(self: *Interpreter) void {
+        self.stack.deinit();
+    }
+
+    fn push(self: *Interpreter, value: Value) !void {
+        try self.stack.append(value);
+    }
+
+    fn drop(self: *Interpreter) !Value {
+        if (self.stack.items.len <= 0) return error.StackUnderflow;
+        return self.stack.pop();
+    }
+
+    fn interpret(self: *Interpreter, instructions: std.ArrayList(Parser.Instruction)) !void {
+        for (instructions.items) |instruction| {
+            switch (instruction) {
+                .PushInt => |value| {
+                    try self.push(.{ .Int = value });
+                },
+                .PushFloat => |value| {
+                    try self.push(.{ .Float = value });
+                },
+                .PushString => |value| {
+                    try self.push(.{ .String = value });
+                },
+
+                .Plus => {
+                    const b = try self.drop();
+                    const a = try self.drop();
+
+                    const result = switch (a) {
+                        .Int => switch (b) {
+                            .Int => Value{ .Int = a.Int + b.Int },
+
+                            else => return error.TypeMismatch,
+                        },
+                        .Float => switch (b) {
+                            .Float => Value{ .Float = a.Float + b.Float },
+
+                            else => return error.TypeMismatch,
+                        },
+
+                        else => return error.TypeMismatch,
+                    };
+
+                    try self.push(result);
+                },
+
+                else => {},
+            }
+        }
+    }
+};
+
+const Compiler = struct {
+    fn compile(instructions: std.ArrayList(Parser.Instruction)) !void {
+        _ = instructions;
     }
 };
 
@@ -337,12 +521,12 @@ const Cli = struct {
         };
         defer self.alloc.free(source);
 
-        var scanner = try Tokenizer.init(self.alloc);
+        var scanner = Tokenizer.init(self.alloc);
         scanner.path = path;
         defer scanner.deinit();
 
         if (source.len > 0 and !std.ascii.eqlIgnoreCase(source, "")) {
-            const tokens = try scanner.scan(source);
+            const tokens = try scanner.tokenize(source);
             _ = tokens;
         }
     }
@@ -351,9 +535,15 @@ const Cli = struct {
         const in = std.io.getStdIn().reader();
         const out = std.io.getStdOut().writer();
 
+        // var parser = Parser.init(self.alloc);
+        // defer parser.deinit();
+        //
+        // var interpreter = Interpreter.init(self.alloc);
+        // defer interpreter.deinit();
+
         while (true) {
-            var scanner = try Tokenizer.init(self.alloc);
-            defer scanner.deinit();
+            var tokenizer = Tokenizer.init(self.alloc);
+            defer tokenizer.deinit();
 
             try out.print("> ", .{});
             const source = try in.readUntilDelimiterAlloc(self.alloc, '\n', std.math.maxInt(usize));
@@ -361,10 +551,14 @@ const Cli = struct {
 
             if (std.ascii.eqlIgnoreCase(source, "quit")) break;
             if (std.ascii.eqlIgnoreCase(source, "exit")) break;
+            // if (std.ascii.eqlIgnoreCase(source, "print")) std.debug.print("{?}\n", .{interpreter.stack});
 
             if (source.len > 0 and !std.ascii.eqlIgnoreCase(source, "")) {
-                const tokens = try scanner.scan(source);
-                _ = tokens;
+                const tokens = try tokenizer.tokenize(source);
+
+                std.debug.print("{d}\n", .{tokens.items.len});
+                // const instructions = try parser.parse(tokens);
+                // try interpreter.interpret(instructions);
             }
         }
     }
