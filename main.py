@@ -199,65 +199,64 @@ class Tokenizer:
             case "!":
                 if self.match("="): self.add_token(TokenType.NOT_EQUAL)
 
+            case "\"":
+                self.handle_strings()
+
             case "-":
                 if not self.eof() and self.peek().isdigit():
-                    while not self.eof() and self.peek().isdigit(): self.advance()
-
-                    if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
-                        self.advance()
-                        while not self.eof() and self.peek().isdigit(): self.advance()
-                        self.add_token(TokenType.FLOAT)
-                    else:
-                        self.add_token(TokenType.INTEGER)
+                    self.handle_numbers()
                 else:
                     self.add_token(TokenType.MINUS)
 
             case "+":
                 if not self.eof() and self.peek().isdigit():
-                    while not self.eof() and self.peek().isdigit(): self.advance()
-
-                    if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
-                        self.advance()
-                        while not self.eof() and self.peek().isdigit(): self.advance()
-                        self.add_token(TokenType.FLOAT)
-                    else:
-                        self.add_token(TokenType.INTEGER)
+                    self.handle_numbers()
                 else:
                     self.add_token(TokenType.PLUS)
 
-            case "\"":
-                while not self.eof() and self.peek() != "\"":
-                    if self.peek() == "\n":
-                        # TODO: set error
-                        return
-                    self.advance()
-
-                if self.eof():
-                    # TODO: set error
-                    return
-
-                self.advance()
-                self.add_token(TokenType.STRING)
-
             case _ if char.isdigit():
-                while not self.eof() and self.peek().isdigit(): self.advance()
-
-                if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
-                    self.advance()
-                    while not self.eof() and self.peek().isdigit(): self.advance()
-                    self.add_token(TokenType.FLOAT)
-                else:
-                    self.add_token(TokenType.INTEGER)
+                self.handle_numbers()
 
             case _ if char.isalpha() or char == "_":
-                while not self.eof() and (self.peek().isalnum() or self.peek() == "_"): self.advance()
-                text = self.source[self.start:self.current]
-                token_type = self.get_keyword(text) or TokenType.IDENTIFIER
-                self.add_token(token_type)
+                self.handle_identifiers()
 
             case _:
                 # TODO: set error
                 pass
+
+    def handle_numbers(self) -> None:
+        while not self.eof() and self.peek().isdigit(): self.advance()
+
+        if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
+            self.advance()
+            while not self.eof() and self.peek().isdigit(): self.advance()
+            self.add_token(TokenType.FLOAT)
+        else:
+            self.add_token(TokenType.INTEGER)
+
+    def handle_strings(self) -> None:
+        while not self.eof() and self.peek() != "\"":
+            # if self.peek() == "\\":
+            #     self.advance()
+
+            if self.peek() == "\n":
+                # TODO: set error
+                return
+            self.advance()
+
+        if self.eof():
+            # TODO: set error
+            return
+
+        self.advance()
+        self.add_token(TokenType.STRING)
+
+    def handle_identifiers(self) -> None:
+        while not self.eof() and (self.peek().isalnum() or self.peek() == "_"): self.advance()
+        text = self.source[self.start:self.current]
+        token_type = self.get_keyword(text) or TokenType.IDENTIFIER
+        self.add_token(token_type)
+
 
     def tokenize(self, source: str) -> list:
         self.source = source
@@ -275,27 +274,36 @@ class Tokenizer:
 class Instruction:
     name: str
     value: any
+    token: Token
 
 class Parser:
     def __init__(self):
         self.instructions = []
+        self.tokens = []
 
     def parse(self, tokens: list) -> list:
         self.instructions.clear()
+        self.tokens = tokens
 
-        for token in tokens:
+        for token in self.tokens:
             match token.type:
-                case TokenType.INTEGER: self.instructions.append(Instruction("PushInt", int(token.lexeme)))
-                case TokenType.FLOAT: self.instructions.append(Instruction("PushFloat", float(token.lexeme)))
-                case TokenType.STRING: self.instructions.append(Instruction("PushString", token.lexeme[1:len(token.lexeme)-1]))
+                case TokenType.INTEGER: self.instructions.append(Instruction("PushInt", int(token.lexeme), token))
+                case TokenType.FLOAT: self.instructions.append(Instruction("PushFloat", float(token.lexeme), token))
+                case TokenType.STRING: self.instructions.append(Instruction("PushString", token.lexeme[1:len(token.lexeme)-1], token))
 
-                case TokenType.PLUS: self.instructions.append(Instruction("Plus", token.lexeme))
-                case TokenType.MINUS: self.instructions.append(Instruction("Minus", token.lexeme))
-                case TokenType.MULTIPLICATION: self.instructions.append(Instruction("Multiplication", token.lexeme))
-                case TokenType.DIVISION: self.instructions.append(Instruction("Division", token.lexeme))
-                case TokenType.EUCLIDIAN: self.instructions.append(Instruction("Euclidian", token.lexeme))
-                case TokenType.REMINDER: self.instructions.append(Instruction("Reminder", token.lexeme))
-                case TokenType.POWER: self.instructions.append(Instruction("Power", token.lexeme))
+                case TokenType.PLUS: self.instructions.append(Instruction("Plus", token.lexeme, token))
+                case TokenType.MINUS: self.instructions.append(Instruction("Minus", token.lexeme, token))
+                case TokenType.MULTIPLICATION: self.instructions.append(Instruction("Multiplication", token.lexeme, token))
+                case TokenType.DIVISION: self.instructions.append(Instruction("Division", token.lexeme, token))
+                case TokenType.EUCLIDIAN: self.instructions.append(Instruction("Euclidian", token.lexeme, token))
+                case TokenType.REMINDER: self.instructions.append(Instruction("Reminder", token.lexeme, token))
+                case TokenType.POWER: self.instructions.append(Instruction("Power", token.lexeme, token))
+
+                case TokenType.DROP: self.instructions.append(Instruction("Drop", token.lexeme, token))
+                case TokenType.DUP: self.instructions.append(Instruction("Dup", token.lexeme, token))
+                case TokenType.OVER: self.instructions.append(Instruction("Over", token.lexeme, token))
+                case TokenType.ROT: self.instructions.append(Instruction("Rot", token.lexeme, token))
+                case TokenType.SWAP: self.instructions.append(Instruction("Swap", token.lexeme, token))
 
                 case _:
                     # TODO: warn when token is found without instruction
@@ -308,76 +316,149 @@ class Interpreter:
         self.stack = []
         self.functions = []
         self.calls = []
+        self.instructions = []
 
     def interpret(self, instructions: list) -> None:
-        for instruction in instructions:
+        self.instructions = instructions
+
+        for instruction in self.instructions:
             match instruction.name:
                 case "PushInt": self.stack.append(instruction.value)
                 case "PushFloat": self.stack.append(instruction.value)
                 case "PushString": self.stack.append(instruction.value)
 
                 case "Plus":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a + b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a + b)
 
                 case "Minus":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a - b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a - b)
 
                 case "Multiplication":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a * b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a * b)
 
                 case "Division":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a / b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a / b)
 
                 case "Euclidian":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a // b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a // b)
 
                 case "Reminder":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a % b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a % b)
 
                 case "Power":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
                     b = self.stack.pop()
                     a = self.stack.pop()
 
-                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a ** b)
-                    else:
+                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                         # TODO: set error
-                        pass
+                        break
+
+                    self.stack.append(a ** b)
+
+                case "Drop":
+                    if len(self.stack) < 1:
+                        # TODO: set error
+                        break
+
+                    self.stack.pop()
+
+                case "Dup":
+                    if len(self.stack) < 1:
+                        # TODO: set error
+                        break
+
+                    self.stack.append(self.stack[-1])
+
+                case "Over":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
+                    self.stack.append(self.stack[-2])
+
+                case "Rot":
+                    if len(self.stack) < 3:
+                        # TODO: set error
+                        break
+
+                    self.stack[-3], self.stack[-2], self.stack[-1] = self.stack[-2], self.stack[-1], self.stack[-3]
+
+                case "Swap":
+                    if len(self.stack) < 2:
+                        # TODO: set error
+                        break
+
+                    self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
 
                 case _:
                     pass
