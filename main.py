@@ -1,6 +1,5 @@
 from sys import argv
 from enum import Enum
-from typing import Union
 from dataclasses import dataclass
 
 class TokenType(Enum):
@@ -176,8 +175,6 @@ class Tokenizer:
             case ")": self.add_token(TokenType.R_PAREN)
             case ",": self.add_token(TokenType.COMMA)
             case ".": self.add_token(TokenType.DOT)
-            case "-": self.add_token(TokenType.MINUS)
-            case "+": self.add_token(TokenType.PLUS)
             case "%": self.add_token(TokenType.REMINDER)
             case "&": self.add_token(TokenType.BITWISE_AND)
             case "|": self.add_token(TokenType.BITWISE_OR)
@@ -201,6 +198,32 @@ class Tokenizer:
 
             case "!":
                 if self.match("="): self.add_token(TokenType.NOT_EQUAL)
+
+            case "-":
+                if not self.eof() and self.peek().isdigit():
+                    while not self.eof() and self.peek().isdigit(): self.advance()
+
+                    if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
+                        self.advance()
+                        while not self.eof() and self.peek().isdigit(): self.advance()
+                        self.add_token(TokenType.FLOAT)
+                    else:
+                        self.add_token(TokenType.INTEGER)
+                else:
+                    self.add_token(TokenType.MINUS)
+
+            case "+":
+                if not self.eof() and self.peek().isdigit():
+                    while not self.eof() and self.peek().isdigit(): self.advance()
+
+                    if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
+                        self.advance()
+                        while not self.eof() and self.peek().isdigit(): self.advance()
+                        self.add_token(TokenType.FLOAT)
+                    else:
+                        self.add_token(TokenType.INTEGER)
+                else:
+                    self.add_token(TokenType.PLUS)
 
             case "\"":
                 while not self.eof() and self.peek() != "\"":
@@ -248,57 +271,10 @@ class Tokenizer:
 
         return self.tokens
 
-class BaseInstruction(Enum):
-    PLUS = "Plus"
-    MINUS = "Minus"
-    MULTIPLICATION = "Multiplication"
-    DIVISION = "Division"
-    EUCLIDIAN = "Euclidian"
-    REMINDER = "Reminder"
-    POWER = "Power"
-    EQUAL_EQUAL = "Equal_equal"
-    NOT_EQUAL = "Not_equal"
-    GREATER = "Greater"
-    GREATER_EQUAL = "Greater_equal"
-    LESS = "Less"
-    LESS_EQUAL = "Less_equal"
-    BITWISE_AND = "Bitwise_and"
-    BITWISE_OR = "Bitwise_or"
-    BITWISE_XOR = "Bitwise_xor"
-    L_SHIFT = "L_shift"
-    R_SHIFT = "R_shift"
-    AND = "And"
-    NOT = "Not"
-    OR = "Or"
-    DROP = "Drop"
-    DUP = "Dup"
-    OVER = "Over"
-    ROT = "Rot"
-    SET = "Set"
-    SWAP = "Swap"
-
 @dataclass
-class PushInt:
-    value: int
-
-@dataclass
-class PushFloat:
-    value: float
-
-@dataclass
-class PushString:
-    value: str
-
-@dataclass
-class Load:
-    value: str
-
-Instruction = Union[
-    BaseInstruction,
-    PushInt,
-    PushFloat,
-    PushString,
-]
+class Instruction:
+    name: str
+    value: any
 
 class Parser:
     def __init__(self):
@@ -309,42 +285,17 @@ class Parser:
 
         for token in tokens:
             match token.type:
-                case TokenType.INTEGER: self.instructions.append(PushInt(int(token.lexeme)))
-                case TokenType.FLOAT: self.instructions.append(PushFloat(float(token.lexeme)))
-                case TokenType.STRING: self.instructions.append(PushString(token.lexeme[1:len(token.lexeme)-1]))
-                case TokenType.IDENTIFIER: self.instructions.append(Load(token.lexeme))
+                case TokenType.INTEGER: self.instructions.append(Instruction("PushInt", int(token.lexeme)))
+                case TokenType.FLOAT: self.instructions.append(Instruction("PushFloat", float(token.lexeme)))
+                case TokenType.STRING: self.instructions.append(Instruction("PushString", token.lexeme[1:len(token.lexeme)-1]))
 
-                case TokenType.AND: self.instructions.append(BaseInstruction.AND)
-                case TokenType.OR: self.instructions.append(BaseInstruction.OR)
-                case TokenType.NOT: self.instructions.append(BaseInstruction.NOT)
-
-                case TokenType.PLUS: self.instructions.append(BaseInstruction.PLUS)
-                case TokenType.MINUS: self.instructions.append(BaseInstruction.MINUS)
-                case TokenType.MULTIPLICATION: self.instructions.append(BaseInstruction.MULTIPLICATION)
-                case TokenType.DIVISION: self.instructions.append(BaseInstruction.DIVISION)
-                case TokenType.EUCLIDIAN: self.instructions.append(BaseInstruction.EUCLIDIAN)
-                case TokenType.REMINDER: self.instructions.append(BaseInstruction.REMINDER)
-                case TokenType.POWER: self.instructions.append(BaseInstruction.POWER)
-
-                case TokenType.EQUAL_EQUAL: self.instructions.append(BaseInstruction.EQUAL_EQUAL)
-                case TokenType.NOT_EQUAL: self.instructions.append(BaseInstruction.NOT_EQUAL)
-                case TokenType.GREATER: self.instructions.append(BaseInstruction.GREATER)
-                case TokenType.GREATER_EQUAL: self.instructions.append(BaseInstruction.GREATER_EQUAL)
-                case TokenType.LESS: self.instructions.append(BaseInstruction.LESS)
-                case TokenType.LESS_EQUAL: self.instructions.append(BaseInstruction.LESS_EQUAL)
-
-                case TokenType.BITWISE_AND: self.instructions.append(BaseInstruction.BITWISE_AND)
-                case TokenType.BITWISE_OR: self.instructions.append(BaseInstruction.BITWISE_OR)
-                case TokenType.BITWISE_XOR: self.instructions.append(BaseInstruction.BITWISE_XOR)
-                case TokenType.L_SHIFT: self.instructions.append(BaseInstruction.L_SHIFT)
-                case TokenType.R_SHIFT: self.instructions.append(BaseInstruction.R_SHIFT)
-
-                case TokenType.DROP: self.instructions.append(BaseInstruction.DROP)
-                case TokenType.DUP: self.instructions.append(BaseInstruction.DUP)
-                case TokenType.OVER: self.instructions.append(BaseInstruction.OVER)
-                case TokenType.ROT: self.instructions.append(BaseInstruction.ROT)
-                case TokenType.SET: self.instructions.append(BaseInstruction.SET)
-                case TokenType.SWAP: self.instructions.append(BaseInstruction.SWAP)
+                case TokenType.PLUS: self.instructions.append(Instruction("Plus", token.lexeme))
+                case TokenType.MINUS: self.instructions.append(Instruction("Minus", token.lexeme))
+                case TokenType.MULTIPLICATION: self.instructions.append(Instruction("Multiplication", token.lexeme))
+                case TokenType.DIVISION: self.instructions.append(Instruction("Division", token.lexeme))
+                case TokenType.EUCLIDIAN: self.instructions.append(Instruction("Euclidian", token.lexeme))
+                case TokenType.REMINDER: self.instructions.append(Instruction("Reminder", token.lexeme))
+                case TokenType.POWER: self.instructions.append(Instruction("Power", token.lexeme))
 
                 case _:
                     # TODO: warn when token is found without instruction
@@ -355,19 +306,75 @@ class Parser:
 class Interpreter:
     def __init__(self):
         self.stack = []
+        self.functions = []
+        self.calls = []
 
     def interpret(self, instructions: list) -> None:
         for instruction in instructions:
-            match instruction:
-                case PushInt(value): self.stack.append(value)
-                case PushFloat(value): self.stack.append(value)
-                case PushFloat(value): self.stack.append(value)
+            match instruction.name:
+                case "PushInt": self.stack.append(instruction.value)
+                case "PushFloat": self.stack.append(instruction.value)
+                case "PushString": self.stack.append(instruction.value)
 
-                case BaseInstruction.PLUS:
+                case "Plus":
                     b = self.stack.pop()
                     a = self.stack.pop()
 
                     if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a + b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Minus":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a - b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Multiplication":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a * b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Division":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a / b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Euclidian":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a // b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Reminder":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a % b)
+                    else:
+                        # TODO: set error
+                        pass
+
+                case "Power":
+                    b = self.stack.pop()
+                    a = self.stack.pop()
+
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a ** b)
                     else:
                         # TODO: set error
                         pass
