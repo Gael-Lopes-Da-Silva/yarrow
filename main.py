@@ -233,6 +233,7 @@ class Tokenizer:
                 self.add_token(token_type)
 
             case _:
+                # TODO: set error
                 pass
 
     def tokenize(self, source: str) -> list:
@@ -310,7 +311,7 @@ class Parser:
             match token.type:
                 case TokenType.INTEGER: self.instructions.append(PushInt(int(token.lexeme)))
                 case TokenType.FLOAT: self.instructions.append(PushFloat(float(token.lexeme)))
-                case TokenType.STRING: self.instructions.append(PushString(token.lexeme))
+                case TokenType.STRING: self.instructions.append(PushString(token.lexeme[1:len(token.lexeme)-1]))
                 case TokenType.IDENTIFIER: self.instructions.append(Load(token.lexeme))
 
                 case TokenType.AND: self.instructions.append(BaseInstruction.AND)
@@ -346,6 +347,7 @@ class Parser:
                 case TokenType.SWAP: self.instructions.append(BaseInstruction.SWAP)
 
                 case _:
+                    # TODO: warn when token is found without instruction
                     pass
 
         return self.instructions
@@ -366,10 +368,19 @@ class Interpreter:
                     a = self.stack.pop()
 
                     if isinstance(a, (int, float)) and isinstance(b, (int, float)): self.stack.append(a + b)
-                    else: pass
+                    else:
+                        # TODO: set error
+                        pass
 
                 case _:
                     pass
+
+class Compiler:
+    def __init__(self):
+        pass
+
+    def compile(self, instructions: list) -> None:
+        pass
 
 class Cli:
     def __init__(self):
@@ -380,12 +391,17 @@ class Cli:
             with open(path, "r", encoding="utf-8") as file:
                 source = file.read().strip()
         except Exception:
+            # TODO: set error
             pass
 
+        tokenizer = Tokenizer()
+        parser = Parser()
+
         if source != "":
-            tokenizer = Tokenizer()
             tokenizer.path = path
             tokens = tokenizer.tokenize(source)
+            instructions = parser.parse(tokens)
+            print(instructions)
 
     def scan_prompt(self) -> None:
         tokenizer = Tokenizer()
@@ -396,6 +412,7 @@ class Cli:
             try:
                 source = input("> ").strip()
             except Exception:
+                # TODO: set error
                 break
 
             if source.lower() in ("quit", "exit"): break
@@ -408,12 +425,13 @@ class Cli:
                 print(interpreter.stack)
 
 def main():
-    args = argv
     cli = Cli()
 
-    if len(args) == 1: cli.scan_prompt()
-    elif len(args) == 2: cli.scan_file(args[1])
-    else: print("Too many arguments !")
+    if len(argv) == 1: cli.scan_prompt()
+    elif len(argv) == 2: cli.scan_file(argv[1])
+    else:
+        # TODO: print help or something
+        pass
 
 if __name__ == "__main__":
     main()
