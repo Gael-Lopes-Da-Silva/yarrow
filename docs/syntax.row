@@ -36,8 +36,6 @@
 # the default logical operators
 true true and
 true false or
-
-true !
 true not
 
 true false ==
@@ -150,7 +148,7 @@ end with i32
 # function can return errors
 function my_error_function do
     call_to_function_that_return_error try return # we use try to check for error values and return them, if no error return result
-end with void else MyCustomError # the type of returned error is specified here
+end with void # the type of returned error is specified here
 
 #=====================
 # CONTROLS
@@ -225,15 +223,15 @@ end
 
 # struct can contains function (methods)
 MyStructWithFunction struct
-    my_struct_func function do
+    function my_struct_func do
     end
 end
 
 # struct can contains function (methods)
 public MyStructWithFunction struct
-    public my_struct_func function
-        a i32
-        b f32
+    public function my_struct_func
+        i32 a
+        f32 b
     do
         # do something
         a return
@@ -307,22 +305,3 @@ MyUnion union # MyUnion will be one of those three
     bool
     f64
 end
-
-#=====================
-# EXAMPLES
-#=====================
-
-# error handling is done on a function if anything in it's scope return an error union
-"core.file" file require
-
-error_handling function do
-    (file.ReadMode.READONLY "file-name.txt") file.read_file try discard # use discard to discard returned value if any
-    # read_file return File struct or FileErrors enum whitch contains all file related errors like ReadError
-end with void else file.FileError
-
-# hello world
-"core.io" io require
-
-main function do
-    io.write_line("Hello, world!") try
-end with void else AnyError # AnyError is the default error

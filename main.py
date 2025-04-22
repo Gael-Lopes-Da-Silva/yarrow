@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 SOURCE: str = ""
 PATH: str = ""
+REPL: bool = False
 
 @dataclass
 class Color:
@@ -78,6 +79,7 @@ class TokenType(Enum):
     STRING = "String"
     INTEGER = "Integer"
     FLOAT = "Float"
+    BOOLEAN = "Boolean"
     TYPE = "Type"
     AND = "And"
     CALL = "Call"
@@ -176,6 +178,9 @@ class Tokenizer:
             Keyword("union", TokenType.UNION),
             Keyword("while", TokenType.WHILE),
             Keyword("with", TokenType.WITH),
+
+            Keyword("true", TokenType.BOOLEAN),
+            Keyword("false", TokenType.BOOLEAN),
 
             Keyword("i8", TokenType.TYPE),
             Keyword("i16", TokenType.TYPE),
@@ -367,7 +372,8 @@ class Tokenizer:
                     "location": self.get_location(),
                     "location_message": "close the string with the corresponding quotes"
                 })
-                exit(1)
+                if not REPL: exit(1)
+                else: return
 
             self.advance()
 
@@ -376,7 +382,8 @@ class Tokenizer:
                 "location": self.get_location(),
                 "location_message": "close the string with the corresponding quotes"
             })
-            exit(1)
+            if not REPL: exit(1)
+            else: return
 
         self.advance()
         self.add_token(TokenType.STRING)
@@ -417,6 +424,7 @@ class Parser:
             case TokenType.INTEGER: return Instruction("PushInt", int(token.lexeme), token)
             case TokenType.FLOAT: return Instruction("PushFloat", float(token.lexeme), token)
             case TokenType.STRING: return Instruction("PushString", token.lexeme[1:-1], token)
+            case TokenType.BOOLEAN: return Instruction("PushBoolean", token.lexeme.lower() == "true", token)
 
             case TokenType.PLUS: return Instruction("Plus", token.lexeme, token)
             case TokenType.MINUS: return Instruction("Minus", token.lexeme, token)
@@ -425,6 +433,17 @@ class Parser:
             case TokenType.EUCLIDIAN: return Instruction("Euclidian", token.lexeme, token)
             case TokenType.REMINDER: return Instruction("Reminder", token.lexeme, token)
             case TokenType.POWER: return Instruction("Power", token.lexeme, token)
+
+            case TokenType.AND: return Instruction("And", token.lexeme, token)
+            case TokenType.OR: return Instruction("Or", token.lexeme, token)
+            case TokenType.NOT: return Instruction("Not", token.lexeme, token)
+
+            case TokenType.EQUAL_EQUAL: return Instruction("EqualEqual", token.lexeme, token)
+            case TokenType.NOT_EQUAL: return Instruction("NotEqual", token.lexeme, token)
+            case TokenType.GREATER: return Instruction("Greater", token.lexeme, token)
+            case TokenType.GREATER_EQUAL: return Instruction("GreaterEqual", token.lexeme, token)
+            case TokenType.LESS: return Instruction("Less", token.lexeme, token)
+            case TokenType.LESS_EQUAL: return Instruction("LessEquale", token.lexeme, token)
 
             case TokenType.DROP: return Instruction("Drop", token.lexeme, token)
             case TokenType.DUP: return Instruction("Dup", token.lexeme, token)
@@ -443,7 +462,8 @@ class Parser:
                 "location": self.tokens[self.current - 1].location,
                 "location_message": "give it a name and open a body with `do ... end`"
             })
-            exit(1)
+            if not REPL: exit(1)
+            else: return
 
         params = []
         while not self.eof() and not self.peek().type == TokenType.DO:
@@ -455,7 +475,8 @@ class Parser:
                     "location": self.peek().location,
                     "location_message": "a function parameter is composed of a type and a name"
                 })
-                exit(1)
+                if not REPL: exit(1)
+                else: return
 
             if param_type is None and param_name is None:
                 self.advance()
@@ -466,13 +487,15 @@ class Parser:
                     "location": param_name.location,
                     "location_message": "give it one of the available types"
                 })
-                exit(1)
+                if not REPL: exit(1)
+                else: return
             elif param_name is None:
                 Log.print(LogType.ERROR, "Parameter without name !", {
                     "location": param_type.location,
                     "location_message": "give it a name"
                 })
-                exit(1)
+                if not REPL: exit(1)
+                else: return
 
             params.append({"type": param_type, "name": param_name})
 
@@ -481,7 +504,8 @@ class Parser:
                 "location": name.location,
                 "location_message": "open a function body with `do ... end`"
             })
-            exit(1)
+            if not REPL: exit(1)
+            else: return
 
         self.advance()
 
@@ -501,7 +525,8 @@ class Parser:
                 "location": name.location,
                 "location_message": "close a function body with `end`"
             })
-            exit(1)
+            if not REPL: exit(1)
+            else: return
 
         return_type = None
         if not self.eof() and self.peek().type == TokenType.WITH:
@@ -513,7 +538,8 @@ class Parser:
                     "location_message": "should have a type after `with`"
                 })
                 Log.print(LogType.INFO, "If you don't want to specify a return type, don't put a `with`. It will return `void` by default !", {})
-                exit(1)
+                if not REPL: exit(1)
+                else: return
             return_type = result
 
         return Instruction("Function", {"parameters": params, "body": body, "return_type": return_type}, name)
@@ -536,154 +562,107 @@ class Parser:
 class Interpreter:
     def __init__(self):
         self.stack = []
-        self.functions = []
-        self.calls = []
         self.instructions = []
+
+    def binary_operator(self, instruction, operator, expected_type, type_name, extra_check = None) -> None:
+        if len(self.stack) < 2:
+            Log.print(LogType.ERROR, "Stack underflow !", {
+                "location": instruction.token.location,
+                "location_message": "there must be at least two elements on the stack"
+            })
+            if not REPL: exit(1)
+            return
+
+        b = self.stack.pop()
+        a = self.stack.pop()
+
+        if not isinstance(a, expected_type) or not isinstance(b, expected_type):
+            Log.print(LogType.ERROR, "Type mismatch !", {
+                "location": instruction.token.location,
+                "location_message": f"must be of type {type_name}"
+            })
+            if not REPL: exit(1)
+            return
+
+        if extra_check and (extra_check(a) or extra_check(b)):
+            Log.print(LogType.ERROR, "Type mismatch !", {
+                "location": instruction.token.location,
+                "location_message": f"must be of type {type_name}"
+            })
+            if not REPL: exit(1)
+            return
+
+        self.stack.append(operator(a, b))
+
+    def stack_operator(self, size: int, instruction: Instruction) -> bool:
+        if len(self.stack) < size:
+            Log.print(LogType.ERROR, "Stack underflow !", {
+                "location": instruction.token.location,
+                "location_message": f"there must be at least {"one" if size == 1 else ("two" if size == 2 else "three")} element{'s' if size > 1 else ''} on the stack"
+            })
+            if not REPL: exit(1)
+            else: return False
+        return True
 
     def interpret(self, instructions: list) -> None:
         self.instructions = instructions
 
         for instruction in self.instructions:
             match instruction.name:
-                case "PushInt": self.stack.append(instruction.value)
-                case "PushFloat": self.stack.append(instruction.value)
-                case "PushString": self.stack.append(instruction.value)
+                case "PushInt" | "PushFloat" | "PushString" | "PushBoolean":
+                    self.stack.append(instruction.value)
 
-                case "Plus":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
+                case "Plus": self.binary_operator(instruction, (lambda a, b: a + b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Minus": self.binary_operator(instruction, (lambda a, b: a - b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Multiplication": self.binary_operator(instruction, (lambda a, b: a * b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Division": self.binary_operator(instruction, (lambda a, b: a / b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Euclidian": self.binary_operator(instruction, (lambda a, b: a // b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Reminder": self.binary_operator(instruction, (lambda a, b: a % b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
+                case "Power": self.binary_operator(instruction, (lambda a, b: a ** b), (int, float), "int or float", (lambda x: isinstance(x, bool)))
 
-                    b = self.stack.pop()
+                case "And": self.binary_operator(instruction, (lambda a, b: a and b), bool, "boolean")
+                case "Or": self.binary_operator(instruction, (lambda a, b: a or b), bool, "boolean")
+
+                case "Not":
+                    if len(self.stack) < 1:
+                        Log.print(LogType.ERROR, "Stack underflow !", {
+                            "location": instruction.token.location,
+                            "location_message": "there must be at least one element on the stack"
+                        })
+                        if not REPL: exit(1)
+                        else: return
+
                     a = self.stack.pop()
 
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
+                    if not isinstance(a, bool):
+                        Log.print(LogType.ERROR, "Type mismatch !", {
+                            "location": instruction.token.location,
+                            "location_message": "must be of type boolean"
+                        })
+                        if not REPL: exit(1)
+                        else: return
 
-                    self.stack.append(a + b)
-
-                case "Minus":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a - b)
-
-                case "Multiplication":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a * b)
-
-                case "Division":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a / b)
-
-                case "Euclidian":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a // b)
-
-                case "Reminder":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a % b)
-
-                case "Power":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    b = self.stack.pop()
-                    a = self.stack.pop()
-
-                    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(a ** b)
+                    self.stack.append(not a)
 
                 case "Drop":
-                    if len(self.stack) < 1:
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.pop()
+                    if self.stack_operator(1, instruction):
+                        self.stack.pop()
 
                 case "Dup":
-                    if len(self.stack) < 1:
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(self.stack[-1])
+                    if self.stack_operator(1, instruction):
+                        self.stack.append(self.stack[-1])
 
                 case "Over":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack.append(self.stack[-2])
+                    if self.stack_operator(2, instruction):
+                        self.stack.append(self.stack[-2])
 
                 case "Rot":
-                    if len(self.stack) < 3:
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack[-3], self.stack[-2], self.stack[-1] = self.stack[-2], self.stack[-1], self.stack[-3]
+                    if self.stack_operator(3, instruction):
+                        self.stack[-3], self.stack[-2], self.stack[-1] = self.stack[-2], self.stack[-1], self.stack[-3]
 
                 case "Swap":
-                    if len(self.stack) < 2:
-                        # TODO: set error
-                        exit(1)
-
-                    self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
-
-                case _:
-                    pass
+                    if self.stack_operator(2, instruction):
+                        self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
 
 class Compiler:
     def __init__(self):
@@ -696,6 +675,7 @@ class Cli:
     def scan_file(self, path: str) -> None:
         global SOURCE
         global PATH
+        global REPL
 
         PATH = path
 
@@ -719,6 +699,9 @@ class Cli:
     def scan_prompt(self) -> None:
         global SOURCE
         global PATH
+        global REPL
+
+        REPL = True
 
         tokenizer = Tokenizer()
         parser = Parser()
