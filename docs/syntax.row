@@ -124,31 +124,31 @@ const myConstant i32 32 end # need to be a value known at compile time
 #=====================
 
 # function are declared like that
-my_function function do
+function my_function do
     # do things
 end with void # define return value, by default void
 
 # functions can take parameters
-my_params function
-    first i32
-    second string
+function my_params
+    i32 first
+    string second
 do
     # do things with parameters
 end with void # return nothing
 
 # entry point of a program is main
-main function do
+function main do
     # do things
 end with void
 
 # we can return a code when program end
-main function do
+function main do
     # do things
     0 return
 end with i32
 
 # function can return errors
-my_error_function function do
+function my_error_function do
     call_to_function_that_return_error try return # we use try to check for error values and return them, if no error return result
 end with void else MyCustomError # the type of returned error is specified here
 
