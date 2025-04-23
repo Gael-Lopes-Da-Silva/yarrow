@@ -77,6 +77,7 @@ class TokenType(Enum):
     R_PAREN = "R_paren"
     COMMA = "Comma"
     DOT = "Dot"
+
     PLUS = "Plus"
     MINUS = "Minus"
     MULTIPLICATION = "Multiplication"
@@ -84,51 +85,56 @@ class TokenType(Enum):
     EUCLIDIAN = "Euclidian"
     REMINDER = "Reminder"
     POWER = "Power"
+
     EQUAL_EQUAL = "Equal_equal"
     NOT_EQUAL = "Not_equal"
     GREATER = "Greater"
     GREATER_EQUAL = "Greater_equal"
     LESS = "Less"
     LESS_EQUAL = "Less_equal"
+
     BITWISE_AND = "Bitwise_and"
     BITWISE_OR = "Bitwise_or"
     BITWISE_XOR = "Bitwise_xor"
     L_SHIFT = "L_shift"
     R_SHIFT = "R_shift"
+
     IDENTIFIER = "Identifier"
     STRING = "String"
     INTEGER = "Integer"
     FLOAT = "Float"
     BOOLEAN = "Boolean"
-    TYPE = "Type"
+
     AND = "And"
-    CALL = "Call"
-    CASE = "Case"
-    CATCH = "Catch"
-    CONST = "Const"
-    DEFAULT = "Default"
-    DEFER = "Defer"
-    DISCARD = "Discard"
+    NOT = "Not"
+    OR = "Or"
+
+    TYPE = "Type"
+
     DO = "Do"
     ELSE = "Else"
     END = "End"
-    ENUM = "Enum"
+    IN = "In"
+    BREAK = "Break"
+    CONTINUE = "Continue"
+    CASE = "Case"
+    CONST = "Const"
+    WHILE = "While"
+    WITH = "With"
     FUNCTION = "Function"
     IF = "If"
     MATCH = "Match"
     MUTABLE = "Mutable"
-    NOT = "Not"
-    OR = "Or"
-    PRIVATE = "Private"
-    PROTECTED = "Protected"
-    PUBLIC = "Public"
+    ENUM = "Enum"
     REQUIRE = "Require"
     RETURN = "Return"
     STRUCT = "Struct"
     TRY = "Try"
+    CATCH = "Catch"
     UNION = "Union"
-    WHILE = "While"
-    WITH = "With"
+
+    DEFER = "Defer"
+    DISCARD = "Discard"
     DROP = "Drop"
     DUP = "Dup"
     OVER = "Over"
@@ -169,41 +175,43 @@ class Tokenizer:
         self.tokens = []
         self.keywords = [
             Keyword("and", TokenType.AND),
-            Keyword("call", TokenType.CALL),
-            Keyword("case", TokenType.CASE),
-            Keyword("catch", TokenType.TRY),
-            Keyword("const", TokenType.CONST),
-            Keyword("default", TokenType.DEFAULT),
-            Keyword("defer", TokenType.DEFER),
-            Keyword("discard", TokenType.DISCARD),
-            Keyword("do", TokenType.DO),
-            Keyword("drop", TokenType.DROP),
-            Keyword("dup", TokenType.DUP),
-            Keyword("else", TokenType.ELSE),
-            Keyword("end", TokenType.END),
-            Keyword("enum", TokenType.ENUM),
-            Keyword("function", TokenType.FUNCTION),
-            Keyword("if", TokenType.IF),
-            Keyword("match", TokenType.MATCH),
-            Keyword("mutable", TokenType.MUTABLE),
             Keyword("not", TokenType.NOT),
             Keyword("or", TokenType.OR),
-            Keyword("over", TokenType.OVER),
-            Keyword("private", TokenType.PRIVATE),
-            Keyword("protected", TokenType.PROTECTED),
-            Keyword("public", TokenType.PUBLIC),
+
+            Keyword("case", TokenType.CASE),
+            Keyword("with", TokenType.WITH),
+            Keyword("catch", TokenType.TRY),
+            Keyword("const", TokenType.CONST),
+            Keyword("break", TokenType.BREAK),
+            Keyword("continue", TokenType.CONTINUE),
+            Keyword("while", TokenType.WHILE),
+            Keyword("do", TokenType.DO),
+            Keyword("else", TokenType.ELSE),
+            Keyword("end", TokenType.END),
+            Keyword("function", TokenType.FUNCTION),
+            Keyword("if", TokenType.IF),
+            Keyword("in", TokenType.IN),
+            Keyword("match", TokenType.MATCH),
+            Keyword("mutable", TokenType.MUTABLE),
             Keyword("require", TokenType.REQUIRE),
             Keyword("return", TokenType.RETURN),
-            Keyword("rot", TokenType.ROT),
             Keyword("set", TokenType.SET),
             Keyword("struct", TokenType.STRUCT),
-            Keyword("swap", TokenType.SWAP),
             Keyword("try", TokenType.TRY),
             Keyword("union", TokenType.UNION),
-            Keyword("while", TokenType.WHILE),
-            Keyword("with", TokenType.WITH),
+            Keyword("enum", TokenType.ENUM),
+            Keyword("defer", TokenType.DEFER),
+            Keyword("discard", TokenType.DISCARD),
+
+            Keyword("drop", TokenType.DROP),
+            Keyword("dup", TokenType.DUP),
+            Keyword("over", TokenType.OVER),
+            Keyword("rot", TokenType.ROT),
+            Keyword("swap", TokenType.SWAP),
+
             Keyword("true", TokenType.BOOLEAN),
             Keyword("false", TokenType.BOOLEAN),
+
             Keyword("i8", TokenType.TYPE),
             Keyword("i16", TokenType.TYPE),
             Keyword("i32", TokenType.TYPE),
@@ -218,6 +226,7 @@ class Tokenizer:
             Keyword("f32", TokenType.TYPE),
             Keyword("f64", TokenType.TYPE),
             Keyword("f128", TokenType.TYPE),
+
             Keyword("bool", TokenType.TYPE),
             Keyword("void", TokenType.TYPE),
             Keyword("string", TokenType.TYPE),
@@ -226,6 +235,7 @@ class Tokenizer:
             Keyword("hashmap", TokenType.TYPE),
             Keyword("stack", TokenType.TYPE),
             Keyword("queue", TokenType.TYPE),
+
             Keyword("ptr", TokenType.TYPE),
             Keyword("usize", TokenType.TYPE),
             Keyword("isize", TokenType.TYPE),
