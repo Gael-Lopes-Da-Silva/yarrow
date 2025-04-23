@@ -40,7 +40,7 @@ class Log:
         LogType.DEBUG: Color.GREY,
     }
 
-    def print(log_type: LogType, message: str, options: dict, *arguments: any):
+    def print(log_type: LogType, message: str, options: dict, *arguments: any) -> None:
         color = Log.COLORS.get(log_type)
         informations = ""
 
@@ -166,7 +166,7 @@ class Keyword:
 
 
 class Tokenizer:
-    def __init__(self):
+    def __init__(self) -> None:
         self.start = 0
         self.start_offset = 0
         self.current = 0
@@ -177,7 +177,6 @@ class Tokenizer:
             Keyword("and", TokenType.AND),
             Keyword("not", TokenType.NOT),
             Keyword("or", TokenType.OR),
-
             Keyword("case", TokenType.CASE),
             Keyword("with", TokenType.WITH),
             Keyword("catch", TokenType.TRY),
@@ -202,16 +201,13 @@ class Tokenizer:
             Keyword("enum", TokenType.ENUM),
             Keyword("defer", TokenType.DEFER),
             Keyword("discard", TokenType.DISCARD),
-
             Keyword("drop", TokenType.DROP),
             Keyword("dup", TokenType.DUP),
             Keyword("over", TokenType.OVER),
             Keyword("rot", TokenType.ROT),
             Keyword("swap", TokenType.SWAP),
-
             Keyword("true", TokenType.BOOLEAN),
             Keyword("false", TokenType.BOOLEAN),
-
             Keyword("i8", TokenType.TYPE),
             Keyword("i16", TokenType.TYPE),
             Keyword("i32", TokenType.TYPE),
@@ -226,7 +222,6 @@ class Tokenizer:
             Keyword("f32", TokenType.TYPE),
             Keyword("f64", TokenType.TYPE),
             Keyword("f128", TokenType.TYPE),
-
             Keyword("bool", TokenType.TYPE),
             Keyword("void", TokenType.TYPE),
             Keyword("string", TokenType.TYPE),
@@ -235,7 +230,6 @@ class Tokenizer:
             Keyword("hashmap", TokenType.TYPE),
             Keyword("stack", TokenType.TYPE),
             Keyword("queue", TokenType.TYPE),
-
             Keyword("ptr", TokenType.TYPE),
             Keyword("usize", TokenType.TYPE),
             Keyword("isize", TokenType.TYPE),
@@ -479,7 +473,7 @@ class Instruction:
 
 
 class Parser:
-    def __init__(self):
+    def __init__(self) -> None:
         self.instructions = []
         self.tokens = []
         self.current = 0
@@ -727,7 +721,12 @@ class Interpreter:
         self.instructions = []
 
     def binary_operator(
-        self, instruction, operator, expected_type, type_name, extra_check=None
+        self,
+        instruction: Instruction,
+        operator: any,
+        expected_type: any,
+        type_name: str,
+        extra_check: any = None,
     ) -> None:
         if len(self.stack) < 2:
             Log.print(
