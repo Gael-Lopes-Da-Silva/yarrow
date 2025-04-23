@@ -104,12 +104,6 @@ void.sizeof
 # by default variable are like runtime constant and cannot be changed after initialization
 myVariable i32 32 end # we need to give a value
 
-# can also asign variable like this
-myVariable myOtherVariable i32 do
-    myVariable 4 5 + # myVariable contain 4 + 5
-    myOtherVariable myVariable 5 * # myOtherVariable contains myVariable * 5
-end
-
 # you can declare mutable variable like this
 mutable myMutableVariable i32 45 end
 set myMutableVariable 23 # change the value

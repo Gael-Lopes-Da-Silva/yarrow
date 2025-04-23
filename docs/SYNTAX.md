@@ -40,10 +40,119 @@ true false !=
 
 For example, a basic math equation in Yarrow look like this:
 `(2 + 3) * 11 + 1`
-```
+```py
 2 3 + 11 * 1 +
 ```
 
-## Variables
+## Types
+Here is the list of the types you can find in Yarrow:
 ```
+u8   i8
+u16  i16
+u32  i32
+u64  i64
+u128 i128
+f16
+f32
+f64
+f128
+bool
+void
+
+string
+array
+vector
+hashmap
+stack
+queue
+
+ptr
+usize isize
+c_char
+c_short
+c_ushort
+c_int
+c_uint
+c_long
+c_ulong
+c_longlong
+c_ulonglong
+c_double
+c_longdouble
+```
+
+## Variables
+Variable are declared like this:
+```py
+# by default variable are like runtime constant and cannot be changed after initialization
+myVariable i32 32 end # we need to give a value
+
+# you can declare mutable variable like this
+mutable myMutableVariable i32 45 end
+set myMutableVariable 23 # change the value with set
+
+# you can define compile time constant like this
+const myConstant i32 32 end # need to be a value known at compile time
+```
+
+## Functions
+Functions are declared like this:
+```py
+function my_function do
+    # ...
+end # the function will return a type of void by default
+
+# to return a different type than void you need to do like this
+function my_function do
+    "a simple string" return # push a string into the stack and return it
+end with string # define return value of string
+
+# functions can take parameters
+function my_params
+    i32 firstParam
+    string secondParam
+do
+    # ...
+end
+
+# the main entrypoint of a program is main
+function main do
+    # ...
+end
+```
+
+## Control Flows
+The language possess two common control flow:
+```py
+# if else statements are done like this
+1 4 < if
+    # ...
+else 4 5 > if
+    # ...
+else
+    # ...
+end
+
+# switch case statements are done line this
+myMutableVariable match
+    43 case
+        # ...
+    end
+
+    53 54 case
+        # ...
+    end
+
+    else
+        # ...
+    end
+end
+```
+
+## Loops
+```py
+```
+
+## Data Structures
+```py
 ```
