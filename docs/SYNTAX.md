@@ -150,7 +150,23 @@ end
 ```
 
 ## Loops
+Loops in Yarrow only use the `while` keyword:
 ```py
+while 3 4 >
+    # ...
+    break # to break out of the loop
+    continue # to continue to the next iteration without doing what's bellow
+end
+
+# you can also iterate throught a iterable data structure like arrays
+while i32 theVal in myArray
+    # will loop until theVal has read all value of myArray
+end
+
+# it is also possible to get the index while iterating throught data structures
+while i32 value i32 index in myArray
+    # ...
+end
 ```
 
 ## Data Structures
