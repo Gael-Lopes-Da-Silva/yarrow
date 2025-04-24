@@ -715,7 +715,7 @@ class Parser:
                 LogType.ERROR,
                 "Function without body !",
                 {
-                    "location": name.location,
+                    "location": token.location,
                     "location_message": "open a function body with `do ... end`",
                 },
             )
@@ -734,7 +734,7 @@ class Parser:
                 LogType.ERROR,
                 "Function body not closed !",
                 {
-                    "location": name.location,
+                    "location": token.location,
                     "location_message": "close a function body with `end`",
                 },
             )
@@ -771,62 +771,38 @@ class Parser:
             token,
         )
 
-    def handle_if_else(self, token) -> Instruction:
+    def handle_if_else(self, token: Token) -> Instruction:
         if_body = []
         while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
             instruction = self.parse_instruction()
             if instruction is not None:
                 if_body.append(instruction)
 
-        else_ifs = []
-        else_body = None
-        while not self.eof() and self.peek().type == TokenType.ELSE:
-            self.advance()
-
-            if not self.eof() and self.peek().type == TokenType.IF:
-                self.advance()
-
-                else_if_condition = []
-                while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
-                    instruction = self.parse_instruction()
-                    if instruction is not None:
-                        else_if_condition.append(instruction)
-                    if self.peek().type == TokenType.IF:
-                        break
-
-                else_if_body = []
-                while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
-                    instruction = self.parse_instruction()
-                    if instruction is not None:
-                        else_if_body.append(instruction)
-
-                else_ifs.append({"condition": else_if_condition, "body": else_if_body})
-            else:
-                else_body = []
-                while not self.eof() and self.peek().type != TokenType.END:
-                    instruction = self.parse_instruction()
-                    if instruction is not None:
-                        else_body.append(instruction)
-                    break
+        else_body = []
+        else_token = self.expect(TokenType.ELSE)
+        if not self.eof() and else_token is not None:
+            while not self.eof() and self.peek().type != TokenType.END:
+                instruction = self.parse_instruction()
+                if instruction is not None:
+                    else_body.append(instruction)
 
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
-                "If statement not closed !",
+                "If else statement not closed !",
                 {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "close an if statement with `end`",
+                    "location": else_token.location if else_token is not None else token.location,
+                    "location_message": "close an if else statement with `end`",
                 },
             )
             if not REPL:
                 exit(1)
-            return None
+            return
 
         return Instruction(
             "If",
             {
                 "body": if_body,
-                "else_ifs": else_ifs,
                 "else": else_body,
             },
             token,
