@@ -116,7 +116,6 @@ class TokenType(Enum):
     CONST = "Const"
     STATIC = "Static"
     MUTABLE = "Mutable"
-    REQUIRE = "Require"
 
     IF = "If"
     ELSE = "Else"
@@ -142,8 +141,10 @@ class TokenType(Enum):
     ENUM = "Enum"
     UNION = "Union"
 
+    REQUIRE = "Require"
     DEFER = "Defer"
     DISCARD = "Discard"
+
     DROP = "Drop"
     DUP = "Dup"
     OVER = "Over"
@@ -514,6 +515,9 @@ class Parser:
             case TokenType.BOOLEAN:
                 return Instruction("Push", token.lexeme.lower() == "true", token)
 
+            case TokenType.IDENTIFIER:
+                return Instruction("Identifier", token.lexeme, token)
+
             case TokenType.PLUS:
                 return Instruction("Plus", token.lexeme, token)
             case TokenType.MINUS:
@@ -560,16 +564,95 @@ class Parser:
             case TokenType.SWAP:
                 return Instruction("Swap", token.lexeme, token)
 
-            case TokenType.IDENTIFIER:
-                return self.handle_identifiers()
-            case TokenType.FUNCTION:
-                return self.handle_functions()
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
             case TokenType.SET:
                 return self.handle_assignations()
+            case TokenType.FUNCTION:
+                return self.handle_functions()
 
         return None
+
+    def handle_variables(self, token: Token) -> Instruction:
+        var_type = self.expect(TokenType.TYPE)
+        if var_type is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid variable syntax !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "put a type after the modifier",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        value = None
+        if not self.eof() and self.peek().type != TokenType.END:
+            value = self.advance()
+
+        if self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Variable not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a variable with `end`",
+                },
+            )
+            Log.print(
+                LogType.INFO,
+                "If you want to give your variable a value, put it between the type and `end` !",
+                {},
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Variable",
+            {"type": var_type, "value": value},
+            token,
+        )
+
+    def handle_assignations(self) -> None:
+        name = self.expect(TokenType.IDENTIFIER)
+        if name is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid assignation !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "to set a variable you need to specify a name and a value",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        value = None
+        if not self.eof() and self.peek().type != TokenType.END:
+            value = self.advance()
+
+        if value is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid assignation !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "to set a variable you need to specify a value",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Assignation",
+            {"variable": name, "value": value},
+            name,
+        )
 
     def handle_functions(self) -> Instruction:
         name = self.expect(TokenType.IDENTIFIER)
@@ -705,104 +788,6 @@ class Parser:
         return Instruction(
             "Function",
             {"parameters": params, "body": body, "return_type": return_type},
-            name,
-        )
-
-    def handle_identifiers(self) -> Instruction:
-        pass
-
-    def handle_variables(self, token: Token) -> Instruction:
-        name = self.expect(TokenType.IDENTIFIER)
-        if name is None:
-            Log.print(
-                LogType.ERROR,
-                "Variable without name !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "give it a name after the modifier",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        stored_type = self.expect(TokenType.TYPE)
-        if stored_type is None:
-            Log.print(
-                LogType.ERROR,
-                "Variable without type !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "give it a type after the name",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        value = None
-        if not self.eof() and self.peek().type != TokenType.END:
-            value = self.advance()
-
-        if self.expect(TokenType.END) is None:
-            Log.print(
-                LogType.ERROR,
-                "Variable not closed !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "close a variable with `end`",
-                },
-            )
-            Log.print(
-                LogType.INFO,
-                "If you want to give your variable a value, put it between the type and `end` !",
-                {},
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        return Instruction(
-            "Variable",
-            {"modifier": token, "stored_type": stored_type, "value": value},
-            name,
-        )
-
-    def handle_assignations(self) -> None:
-        name = self.expect(TokenType.IDENTIFIER)
-        if name is None:
-            Log.print(
-                LogType.ERROR,
-                "Invalid assignation !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "to set a variable you need to specify a name and a value",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        value = None
-        if not self.eof() and self.peek().type != TokenType.END:
-            value = self.advance()
-
-        if value is None:
-            Log.print(
-                LogType.ERROR,
-                "Invalid assignation !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "to set a variable you need to specify a value",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        return Instruction(
-            "Assignation",
-            {"variable": name, "value": value},
             name,
         )
 

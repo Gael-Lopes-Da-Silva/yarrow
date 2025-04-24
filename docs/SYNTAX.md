@@ -85,30 +85,30 @@ c_longdouble
 Variable are declared like this:
 ```py
 # you can declare mutable variable like this
-mutable myMutableVariable i32 45 end
-set myMutableVariable 23 # change the value with set
+myMutableVariable mutable i32 45 end
+myMutableVariable set 23 end # change the value with set
 
 # you can define runtime constant like this
-const myConstant i32 32 end
+myConstant const i32 32 end
 
 # you can define compile time constant like this
-static myConstant i32 32 end # need to be a value known at compile time
+myConstant static i32 32 end # need to be a value known at compile time
 ```
 
 ## Functions
 Functions are declared like this:
 ```py
-function my_function do
+my_function function do
     # ...
 end # the function will return a type of void by default
 
 # to return a different type than void you need to do like this
-function my_function do
+my_function function do
     "a simple string" return # push a string into the stack and return it
 end with string # define return value of string
 
 # functions can take parameters
-function my_params
+my_params function
     i32 firstParam
     string secondParam
 do
@@ -116,12 +116,13 @@ do
 end
 
 # the main entrypoint of a program is main
-function main do
+main function do
     # ...
 end
 
 # To call a function use the call keyword
 my_function call
+43 "test" my_params call # will consume, on the stack, the exact number of declared parameters
 ```
 
 ## Control Flows
@@ -155,23 +156,64 @@ end
 ## Loops
 Loops in Yarrow only use the `while` keyword:
 ```py
-while 3 4 >
+3 4 > while
     # ...
     break # to break out of the loop
     continue # to continue to the next iteration without doing what's bellow
 end
 
 # you can also iterate throught a iterable data structure like arrays
-while i32 theVal in myArray
+i32 theVal in myArray while
     # will loop until theVal has read all value of myArray
 end
 
 # it is also possible to get the index while iterating throught data structures
-while i32 value i32 index in myArray
+i32 value i32 index in myArray while
     # ...
 end
 ```
 
 ## Data Structures
+Here are the data structures you can find in Yarrow:
 ```py
+# structs are declared like this
+MyStruct struct
+    i32 myVal
+    i32 myOtherVal
+end
+
+# functions declared in a struct are local and can be call like this
+instanceOfMyStruct.the_function call
+
+# enumerations are declared like this
+myEnum enum
+    FIRST # 0
+    SECOND # 1
+    LAST # 2
+end
+
+# unions are declared like this
+myUnions union
+    i32
+    string
+end
+```
+
+## Code Spliting
+Code spliting or modularization is done like this:
+```py
+# Folders are like namespaces and files are a collections of function, struct, etc.
+# Example: std is a folder with files like math.yar, file.yar, etc (yar being the file
+# extension of Yarrow). Those files contains functions, struct, etc. like sqrt() or Vector2
+
+"std.utils" require # import everything from utils into current scope
+"std.io" require io # import everything from io into the io namespace
+
+"path to the custom package" require
+
+"std.math.sqrt()" require # import only one function into current scope
+"std.math.Vector2" require # same but with struct
+
+"std.math{sqrt(),Vector2}" require # import multiple things into current scope
+"std.file{read_file(),Reader}" require # also work with custom namespace
 ```
