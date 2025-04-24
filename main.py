@@ -111,26 +111,33 @@ class TokenType(Enum):
 
     TYPE = "Type"
 
-    DO = "Do"
-    ELSE = "Else"
     END = "End"
+
+    CONST = "Const"
+    MUTABLE = "Mutable"
+    REQUIRE = "Require"
+
+    IF = "If"
+    ELSE = "Else"
+
+    TRY = "Try"
+    CATCH = "Catch"
+
+    MATCH = "Match"
+    CASE = "Case"
+
+    WHILE = "While"
     IN = "In"
     BREAK = "Break"
     CONTINUE = "Continue"
-    CASE = "Case"
-    CONST = "Const"
-    WHILE = "While"
-    WITH = "With"
+
     FUNCTION = "Function"
-    IF = "If"
-    MATCH = "Match"
-    MUTABLE = "Mutable"
-    ENUM = "Enum"
-    REQUIRE = "Require"
+    DO = "Do"
+    WITH = "With"
     RETURN = "Return"
+
     STRUCT = "Struct"
-    TRY = "Try"
-    CATCH = "Catch"
+    ENUM = "Enum"
     UNION = "Union"
 
     DEFER = "Defer"
@@ -479,9 +486,9 @@ class Parser:
         self.current = 0
 
     def parse(self, tokens: list) -> list:
-        self.instructions.clear()
-        self.tokens = tokens
         self.current = 0
+        self.tokens = tokens
+        self.instructions.clear()
 
         while not self.eof():
             instruction = self.parse_instruction()
@@ -495,13 +502,13 @@ class Parser:
 
         match token.type:
             case TokenType.INTEGER:
-                return Instruction("PushInt", int(token.lexeme), token)
+                return Instruction("Push", int(token.lexeme), token)
             case TokenType.FLOAT:
-                return Instruction("PushFloat", float(token.lexeme), token)
+                return Instruction("Push", float(token.lexeme), token)
             case TokenType.STRING:
-                return Instruction("PushString", token.lexeme[1:-1], token)
+                return Instruction("Push", token.lexeme[1:-1], token)
             case TokenType.BOOLEAN:
-                return Instruction("PushBoolean", token.lexeme.lower() == "true", token)
+                return Instruction("Push", token.lexeme.lower() == "true", token)
 
             case TokenType.PLUS:
                 return Instruction("Plus", token.lexeme, token)
@@ -793,7 +800,7 @@ class Interpreter:
 
         for instruction in self.instructions:
             match instruction.name:
-                case "PushInt" | "PushFloat" | "PushString" | "PushBoolean":
+                case "Push":
                     self.stack.append(instruction.value)
 
                 case "Plus":
