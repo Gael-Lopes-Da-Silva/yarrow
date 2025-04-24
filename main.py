@@ -96,6 +96,7 @@ class TokenType(Enum):
     BITWISE_AND = "Bitwise_and"
     BITWISE_OR = "Bitwise_or"
     BITWISE_XOR = "Bitwise_xor"
+    BITWISE_NOT = "Bitwise_not"
     L_SHIFT = "L_shift"
     R_SHIFT = "R_shift"
 
@@ -355,6 +356,8 @@ class Tokenizer:
                 self.add_token(TokenType.BITWISE_OR)
             case "^":
                 self.add_token(TokenType.BITWISE_XOR)
+            case "~":
+                self.add_token(TokenType.BITWISE_NOT)
 
             case "*":
                 self.add_token(
@@ -567,15 +570,17 @@ class Parser:
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
             case TokenType.SET:
-                return self.handle_assignations()
+                return self.handle_assignations(token)
             case TokenType.FUNCTION:
-                return self.handle_functions()
+                return self.handle_functions(token)
+            case TokenType.IF:
+                return self.handle_if_else(token)
 
         return None
 
     def handle_variables(self, token: Token) -> Instruction:
-        var_type = self.expect(TokenType.TYPE)
-        if var_type is None:
+        variable_type = self.expect(TokenType.TYPE)
+        if variable_type is None:
             Log.print(
                 LogType.ERROR,
                 "Invalid variable syntax !",
@@ -588,11 +593,13 @@ class Parser:
                 exit(1)
             return
 
-        value = None
-        if not self.eof() and self.peek().type != TokenType.END:
-            value = self.advance()
+        expression = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                expression.append(instruction)
 
-        if self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Variable not closed !",
@@ -601,47 +608,43 @@ class Parser:
                     "location_message": "close a variable with `end`",
                 },
             )
-            Log.print(
-                LogType.INFO,
-                "If you want to give your variable a value, put it between the type and `end` !",
-                {},
-            )
             if not REPL:
                 exit(1)
             return
 
         return Instruction(
             "Variable",
-            {"type": var_type, "value": value},
+            {"type": variable_type, "expression": expression},
             token,
         )
 
-    def handle_assignations(self) -> None:
-        name = self.expect(TokenType.IDENTIFIER)
-        if name is None:
+    def handle_assignations(self, token: Token) -> Instruction:
+        expression = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                expression.append(instruction)
+
+        if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Invalid assignation !",
                 {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "to set a variable you need to specify a name and a value",
+                    "location": token.location,
+                    "location_message": "close a variable assignation with `end`",
                 },
             )
             if not REPL:
                 exit(1)
             return
 
-        value = None
-        if not self.eof() and self.peek().type != TokenType.END:
-            value = self.advance()
-
-        if value is None:
+        if not expression:
             Log.print(
                 LogType.ERROR,
                 "Invalid assignation !",
                 {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "to set a variable you need to specify a value",
+                    "location": token.location,
+                    "location_message": "you need to provide a value or expression",
                 },
             )
             if not REPL:
@@ -650,30 +653,13 @@ class Parser:
 
         return Instruction(
             "Assignation",
-            {"variable": name, "value": value},
-            name,
+            {"expression": expression},
+            token,
         )
 
-    def handle_functions(self) -> Instruction:
-        name = self.expect(TokenType.IDENTIFIER)
-        if name is None:
-            Log.print(
-                LogType.ERROR,
-                "Function without name or body !",
-                {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "give it a name and open a body with `do ... end`",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
+    def handle_functions(self, token: Token) -> Instruction:
         params = []
-        while not self.eof() and not self.peek().type == TokenType.DO:
-            param_type = self.expect(TokenType.TYPE)
-            param_name = self.expect(TokenType.IDENTIFIER)
-
+        while not self.eof() and self.peek().type != TokenType.DO:
             if self.peek().type not in [
                 TokenType.TYPE,
                 TokenType.IDENTIFIER,
@@ -691,11 +677,13 @@ class Parser:
                     exit(1)
                 return
 
+            param_type = self.expect(TokenType.TYPE)
+            param_name = self.expect(TokenType.IDENTIFIER)
+
             if param_type is None and param_name is None:
                 self.advance()
                 continue
-
-            if param_type is None:
+            elif param_type is None:
                 Log.print(
                     LogType.ERROR,
                     "Parameter without type !",
@@ -722,7 +710,7 @@ class Parser:
 
             params.append({"type": param_type, "name": param_name})
 
-        if self.eof() or self.peek().type != TokenType.DO:
+        if self.eof() or self.expect(TokenType.DO) is None:
             Log.print(
                 LogType.ERROR,
                 "Function without body !",
@@ -735,21 +723,13 @@ class Parser:
                 exit(1)
             return
 
-        self.advance()
-
         body = []
-        closed = False
-        while not self.eof():
-            if self.peek().type == TokenType.END:
-                self.advance()
-                closed = True
-                break
-
+        while not self.eof() and self.peek().type != TokenType.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if not closed:
+        if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Function body not closed !",
@@ -788,8 +768,70 @@ class Parser:
         return Instruction(
             "Function",
             {"parameters": params, "body": body, "return_type": return_type},
-            name,
+            token,
         )
+
+    def handle_if_else(self, token) -> Instruction:
+        if_body = []
+        while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                if_body.append(instruction)
+
+        else_ifs = []
+        else_body = None
+        while not self.eof() and self.peek().type == TokenType.ELSE:
+            self.advance()
+
+            if not self.eof() and self.peek().type == TokenType.IF:
+                self.advance()
+
+                else_if_condition = []
+                while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
+                    instruction = self.parse_instruction()
+                    if instruction is not None:
+                        else_if_condition.append(instruction)
+                    if self.peek().type == TokenType.IF:
+                        break
+
+                else_if_body = []
+                while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
+                    instruction = self.parse_instruction()
+                    if instruction is not None:
+                        else_if_body.append(instruction)
+
+                else_ifs.append({"condition": else_if_condition, "body": else_if_body})
+            else:
+                else_body = []
+                while not self.eof() and self.peek().type != TokenType.END:
+                    instruction = self.parse_instruction()
+                    if instruction is not None:
+                        else_body.append(instruction)
+                    break
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "If statement not closed !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "close an if statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return None
+
+        return Instruction(
+            "If",
+            {
+                "body": if_body,
+                "else_ifs": else_ifs,
+                "else": else_body,
+            },
+            token,
+        )
+
 
     def peek(self) -> Token:
         return self.tokens[self.current]

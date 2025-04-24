@@ -36,6 +36,7 @@ true false !=
 4 5 ^
 5 6 <<
 6 7 >>
+1 ~
 ```
 
 For example, a basic math equation in Yarrow look like this:
