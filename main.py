@@ -574,7 +574,11 @@ class Parser:
             case TokenType.FUNCTION:
                 return self.handle_functions(token)
             case TokenType.IF:
-                return self.handle_if_else(token)
+                return self.handle_if_elses(token)
+            case TokenType.MATCH:
+                return self.handle_matchs(token)
+            case TokenType.WHILE:
+                return self.handle_whiles(token)
 
         return None
 
@@ -771,7 +775,7 @@ class Parser:
             token,
         )
 
-    def handle_if_else(self, token: Token) -> Instruction:
+    def handle_if_elses(self, token: Token) -> Instruction:
         if_body = []
         while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
             instruction = self.parse_instruction()
@@ -808,6 +812,136 @@ class Parser:
             token,
         )
 
+    def handle_matchs(self, token: Token) -> Instruction:
+        cases = []
+        else_body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+
+            if self.expect(TokenType.ELSE) is not None:
+                while not self.eof and self.peek().type != TokenType.END:
+                    instruction = self.parse_instruction()
+                    if instruction is not None:
+                        else_body.append(instruction)
+
+                if self.eof() or self.expect(TokenType.END) is None:
+                    Log.print(
+                        LogType.ERROR,
+                        "Match statement case not closed !",
+                        {
+                            "location": token.location,
+                            "location_message": "close all cases in a match statement with `end`",
+                        },
+                    )
+                    if not REPL:
+                        exit(1)
+                    return
+                break
+
+            case_condition = []
+            while not self.eof() and self.peek().type != TokenType.CASE:
+                instruction = self.parse_instruction()
+                if instruction is not None:
+                    case_condition.append(instruction)
+
+            case_token = self.expect(TokenType.CASE)
+            if case_condition and case_token is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Match statement invalid syntax !",
+                    {
+                        "location": case_condition[-1].token.location,
+                        "location_message": "add a `case ... end` after a condition in a match statement",
+                    },
+                )
+                if not REPL:
+                    exit(1)
+                return
+            elif not case_condition and case_token is not None:
+                Log.print(
+                    LogType.ERROR,
+                    "Match statement invalid syntax !",
+                    {
+                        "location": self.tokens[self.current - 1].location,
+                        "location_message": "add a condition to match before a `case`",
+                    },
+                )
+                if not REPL:
+                    exit(1)
+                return
+
+            if not case_condition and case_token is None:
+                break
+
+            case_body = []
+            while not self.eof and self.peek().type != TokenType.END:
+                instruction = self.parse_instruction()
+                if instruction is not None:
+                    case_body.append(instruction)
+
+            if self.eof() or self.expect(TokenType.END) is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Match statement case not closed !",
+                    {
+                        "location": case_token.location,
+                        "location_message": "close all cases in a match statement with `end`",
+                    },
+                )
+                if not REPL:
+                    exit(1)
+                return
+
+            cases.append({"condition": case_condition, "body": case_body})
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Match statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a match statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Match",
+            {
+                "cases": cases,
+                "else": else_body,
+            },
+            token,
+        )
+
+    def handle_whiles(self, token: Token) -> Instruction:
+        while_body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                while_body.append(instruction)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "While statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a while statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "While",
+            {
+                "body": while_body,
+            },
+            token,
+        )
 
     def peek(self) -> Token:
         return self.tokens[self.current]

@@ -1,6 +1,14 @@
-3 4 < if
+2 3 > if
+    "test" "oskour" == if
+    else
+    end
 else
-    9 10 <= if
+end
+
+match
+    3 4 < case
+    end
+
     else
     end
 end
