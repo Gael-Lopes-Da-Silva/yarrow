@@ -114,6 +114,7 @@ class TokenType(Enum):
     END = "End"
 
     CONST = "Const"
+    STATIC = "Static"
     MUTABLE = "Mutable"
     REQUIRE = "Require"
 
@@ -135,6 +136,7 @@ class TokenType(Enum):
     DO = "Do"
     WITH = "With"
     RETURN = "Return"
+    CALL = "Call"
 
     STRUCT = "Struct"
     ENUM = "Enum"
@@ -186,6 +188,7 @@ class Tokenizer:
             Keyword("or", TokenType.OR),
             Keyword("case", TokenType.CASE),
             Keyword("with", TokenType.WITH),
+            Keyword("call", TokenType.CALL),
             Keyword("catch", TokenType.TRY),
             Keyword("const", TokenType.CONST),
             Keyword("break", TokenType.BREAK),
@@ -202,6 +205,7 @@ class Tokenizer:
             Keyword("require", TokenType.REQUIRE),
             Keyword("return", TokenType.RETURN),
             Keyword("set", TokenType.SET),
+            Keyword("static", TokenType.STATIC),
             Keyword("struct", TokenType.STRUCT),
             Keyword("try", TokenType.TRY),
             Keyword("union", TokenType.UNION),
@@ -468,7 +472,7 @@ class Tokenizer:
         while not self.eof() and (self.peek().isalnum() or self.peek() == "_"):
             self.advance()
         text = SOURCE[self.start : self.current]
-        token_type = self.get_keyword(text) or TokenType.IDENTIFIER
+        token_type = self.get_keyword(text.lower()) or TokenType.IDENTIFIER
         self.add_token(token_type)
 
 
@@ -556,12 +560,18 @@ class Parser:
             case TokenType.SWAP:
                 return Instruction("Swap", token.lexeme, token)
 
+            case TokenType.IDENTIFIER:
+                return self.handle_identifiers()
             case TokenType.FUNCTION:
-                return self.handle_function()
+                return self.handle_functions()
+            case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
+                return self.handle_variables(token)
+            case TokenType.SET:
+                return self.handle_assignations()
 
         return None
 
-    def handle_function(self) -> Instruction:
+    def handle_functions(self) -> Instruction:
         name = self.expect(TokenType.IDENTIFIER)
         if name is None:
             Log.print(
@@ -574,8 +584,7 @@ class Parser:
             )
             if not REPL:
                 exit(1)
-            else:
-                return
+            return
 
         params = []
         while not self.eof() and not self.peek().type == TokenType.DO:
@@ -597,8 +606,7 @@ class Parser:
                 )
                 if not REPL:
                     exit(1)
-                else:
-                    return
+                return
 
             if param_type is None and param_name is None:
                 self.advance()
@@ -615,8 +623,7 @@ class Parser:
                 )
                 if not REPL:
                     exit(1)
-                else:
-                    return
+                return
             elif param_name is None:
                 Log.print(
                     LogType.ERROR,
@@ -628,8 +635,7 @@ class Parser:
                 )
                 if not REPL:
                     exit(1)
-                else:
-                    return
+                return
 
             params.append({"type": param_type, "name": param_name})
 
@@ -644,8 +650,7 @@ class Parser:
             )
             if not REPL:
                 exit(1)
-            else:
-                return
+            return
 
         self.advance()
 
@@ -672,8 +677,7 @@ class Parser:
             )
             if not REPL:
                 exit(1)
-            else:
-                return
+            return
 
         return_type = None
         if not self.eof() and self.peek().type == TokenType.WITH:
@@ -695,13 +699,110 @@ class Parser:
                 )
                 if not REPL:
                     exit(1)
-                else:
-                    return
+                return
             return_type = result
 
         return Instruction(
             "Function",
             {"parameters": params, "body": body, "return_type": return_type},
+            name,
+        )
+
+    def handle_identifiers(self) -> Instruction:
+        pass
+
+    def handle_variables(self, token: Token) -> Instruction:
+        name = self.expect(TokenType.IDENTIFIER)
+        if name is None:
+            Log.print(
+                LogType.ERROR,
+                "Variable without name !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "give it a name after the modifier",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        stored_type = self.expect(TokenType.TYPE)
+        if stored_type is None:
+            Log.print(
+                LogType.ERROR,
+                "Variable without type !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "give it a type after the name",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        value = None
+        if not self.eof() and self.peek().type != TokenType.END:
+            value = self.advance()
+
+        if self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Variable not closed !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "close a variable with `end`",
+                },
+            )
+            Log.print(
+                LogType.INFO,
+                "If you want to give your variable a value, put it between the type and `end` !",
+                {},
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Variable",
+            {"modifier": token, "stored_type": stored_type, "value": value},
+            name,
+        )
+
+    def handle_assignations(self) -> None:
+        name = self.expect(TokenType.IDENTIFIER)
+        if name is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid assignation !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "to set a variable you need to specify a name and a value",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        value = None
+        if not self.eof() and self.peek().type != TokenType.END:
+            value = self.advance()
+
+        if value is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid assignation !",
+                {
+                    "location": self.tokens[self.current - 1].location,
+                    "location_message": "to set a variable you need to specify a value",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Assignation",
+            {"variable": name, "value": value},
             name,
         )
 
@@ -778,6 +879,44 @@ class Interpreter:
             return
 
         self.stack.append(operator(a, b))
+
+    def unary_operator(
+        self,
+        instruction: Instruction,
+        operator: any,
+        expected_type: any,
+        type_name: str,
+    ) -> None:
+        if len(self.stack) < 1:
+            Log.print(
+                LogType.ERROR,
+                "Stack underflow !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": "there must be at least one element on the stack",
+                },
+            )
+            if not REPL:
+                exit(1)
+            else:
+                return
+
+        a = self.stack.pop()
+
+        if not isinstance(a, expected_type):
+            Log.print(
+                LogType.ERROR,
+                "Type mismatch !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": f"must be of type {type_name}",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        self.stack.append(operator(a))
 
     def stack_operator(self, size: int, instruction: Instruction) -> bool:
         if len(self.stack) < size:
@@ -868,52 +1007,18 @@ class Interpreter:
                     self.binary_operator(
                         instruction, (lambda a, b: a or b), bool, "boolean"
                     )
-
                 case "Not":
-                    if len(self.stack) < 1:
-                        Log.print(
-                            LogType.ERROR,
-                            "Stack underflow !",
-                            {
-                                "location": instruction.token.location,
-                                "location_message": "there must be at least one element on the stack",
-                            },
-                        )
-                        if not REPL:
-                            exit(1)
-                        else:
-                            return
-
-                    a = self.stack.pop()
-
-                    if not isinstance(a, bool):
-                        Log.print(
-                            LogType.ERROR,
-                            "Type mismatch !",
-                            {
-                                "location": instruction.token.location,
-                                "location_message": "must be of type boolean",
-                            },
-                        )
-                        if not REPL:
-                            exit(1)
-                        else:
-                            return
-
-                    self.stack.append(not a)
+                    self.unary_operator(instruction, (lambda a: not a), bool, "boolean")
 
                 case "Drop":
                     if self.stack_operator(1, instruction):
                         self.stack.pop()
-
                 case "Dup":
                     if self.stack_operator(1, instruction):
                         self.stack.append(self.stack[-1])
-
                 case "Over":
                     if self.stack_operator(2, instruction):
                         self.stack.append(self.stack[-2])
-
                 case "Rot":
                     if self.stack_operator(3, instruction):
                         self.stack[-3], self.stack[-2], self.stack[-1] = (
@@ -921,7 +1026,6 @@ class Interpreter:
                             self.stack[-1],
                             self.stack[-3],
                         )
-
                 case "Swap":
                     if self.stack_operator(2, instruction):
                         self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]

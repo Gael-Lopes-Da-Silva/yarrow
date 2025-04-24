@@ -84,15 +84,15 @@ c_longdouble
 ## Variables
 Variable are declared like this:
 ```py
-# by default variable are like runtime constant and cannot be changed after initialization
-myVariable i32 32 end # we need to give a value
-
 # you can declare mutable variable like this
 mutable myMutableVariable i32 45 end
 set myMutableVariable 23 # change the value with set
 
+# you can define runtime constant like this
+const myConstant i32 32 end
+
 # you can define compile time constant like this
-const myConstant i32 32 end # need to be a value known at compile time
+static myConstant i32 32 end # need to be a value known at compile time
 ```
 
 ## Functions
@@ -119,6 +119,9 @@ end
 function main do
     # ...
 end
+
+# To call a function use the call keyword
+my_function call
 ```
 
 ## Control Flows
