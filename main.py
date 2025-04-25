@@ -454,9 +454,6 @@ class Tokenizer:
 
     def handle_strings(self) -> None:
         while not self.eof() and self.peek() != '"':
-            # if self.peek() == "\\":
-            #     self.advance()
-
             if self.peek() == "\n":
                 Log.print(
                     LogType.ERROR,
@@ -468,7 +465,34 @@ class Tokenizer:
                 )
                 raise TokenizerError
 
-            self.advance()
+            if self.peek() == "\\":
+                self.advance()
+                if self.eof():
+                    Log.print(
+                        LogType.ERROR,
+                        "Incomplete escape sequence in string literal !",
+                        {
+                            "location": self.get_location(),
+                            "location_message": "expected character after backslash",
+                        },
+                    )
+                    raise TokenizerError
+
+                escape_char = self.peek()
+                if escape_char in {'n', 't', 'r', '\\', '"'}:
+                    self.advance()
+                else:
+                    Log.print(
+                        LogType.ERROR,
+                        f"Invalid escape sequence {Color.GREY}'{Color.PURPLE}\\{escape_char}{Color.GREY}'{Color.RESET} in string literal !",
+                        {
+                            "location": self.get_location(),
+                            "location_message": "unknown escape sequence",
+                        },
+                    )
+                    raise TokenizerError
+            else:
+                self.advance()
 
         if self.eof():
             Log.print(
