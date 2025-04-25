@@ -450,8 +450,7 @@ class Tokenizer:
                 )
                 if not REPL:
                     exit(1)
-                else:
-                    return
+                return
 
             self.advance()
 
@@ -466,8 +465,7 @@ class Tokenizer:
             )
             if not REPL:
                 exit(1)
-            else:
-                return
+            return
 
         self.advance()
         self.add_token(TokenType.STRING)
@@ -1154,8 +1152,7 @@ class Interpreter:
             )
             if not REPL:
                 exit(1)
-            else:
-                return
+            return
 
         a = self.stack.pop()
 
@@ -1186,8 +1183,7 @@ class Interpreter:
             )
             if not REPL:
                 exit(1)
-            else:
-                return False
+            return False
         return True
 
     def interpret(self, instructions: list) -> None:
