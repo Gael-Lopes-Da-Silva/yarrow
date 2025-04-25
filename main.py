@@ -4,7 +4,26 @@ from dataclasses import dataclass
 
 SOURCE: str = ""
 PATH: str = ""
-REPL: bool = False
+
+
+class GlobalError(Exception):
+    pass
+
+
+class TokenizerError(GlobalError):
+    pass
+
+
+class ParserError(GlobalError):
+    pass
+
+
+class InterpreterError(GlobalError):
+    pass
+
+
+class CompilerError(GlobalError):
+    pass
 
 
 @dataclass
@@ -36,7 +55,7 @@ class Log:
     COLORS = {
         LogType.ERROR: Color.RED,
         LogType.WARNING: Color.YELLOW,
-        LogType.INFO: Color.CYAN,
+        LogType.INFO: Color.BLUE,
         LogType.DEBUG: Color.GREY,
     }
 
@@ -448,9 +467,7 @@ class Tokenizer:
                         "location_message": "close the string with the corresponding quotes",
                     },
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise TokenizerError
 
             self.advance()
 
@@ -463,9 +480,7 @@ class Tokenizer:
                     "location_message": "close the string with the corresponding quotes",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise TokenizerError
 
         self.advance()
         self.add_token(TokenType.STRING)
@@ -565,6 +580,11 @@ class Parser:
             case TokenType.SWAP:
                 return Instruction("Swap", token.lexeme, token)
 
+            case TokenType.RETURN:
+                return Instruction("Return", token.lexeme, token)
+            case TokenType.CALL:
+                return Instruction("Call", token.lexeme, token)
+
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
             case TokenType.SET:
@@ -595,143 +615,11 @@ class Parser:
                 LogType.ERROR,
                 "Invalid variable syntax !",
                 {
-                    "location": self.tokens[self.current - 1].location,
-                    "location_message": "put a type after the modifier",
+                    "location": self.peek_previous().location,
+                    "location_message": "there should be a type after this",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
-
-        expression = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            instruction = self.parse_instruction()
-            if instruction is not None:
-                expression.append(instruction)
-
-        if self.eof() or self.expect(TokenType.END) is None:
-            Log.print(
-                LogType.ERROR,
-                "Variable not closed !",
-                {
-                    "location": token.location,
-                    "location_message": "close a variable with `end`",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        return Instruction(
-            "Variable",
-            {"type": variable_type, "expression": expression},
-            token,
-        )
-
-    def handle_assignations(self, token: Token) -> Instruction:
-        expression = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            instruction = self.parse_instruction()
-            if instruction is not None:
-                expression.append(instruction)
-
-        if self.eof() or self.expect(TokenType.END) is None:
-            Log.print(
-                LogType.ERROR,
-                "Invalid assignation !",
-                {
-                    "location": token.location,
-                    "location_message": "close a variable assignation with `end`",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        if not expression:
-            Log.print(
-                LogType.ERROR,
-                "Invalid assignation !",
-                {
-                    "location": token.location,
-                    "location_message": "you need to provide a value or expression",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        return Instruction(
-            "Assignation",
-            {"expression": expression},
-            token,
-        )
-
-    def handle_functions(self, token: Token) -> Instruction:
-        params = []
-        while not self.eof() and self.peek().type != TokenType.DO:
-            if self.peek().type not in [
-                TokenType.TYPE,
-                TokenType.IDENTIFIER,
-                TokenType.DO,
-            ]:
-                Log.print(
-                    LogType.ERROR,
-                    "Invalid parameter !",
-                    {
-                        "location": self.peek().location,
-                        "location_message": "a function parameter is composed of a type and a name",
-                    },
-                )
-                if not REPL:
-                    exit(1)
-                return
-
-            param_type = self.expect(TokenType.TYPE)
-            param_name = self.expect(TokenType.IDENTIFIER)
-
-            if param_type is None and param_name is None:
-                self.advance()
-                continue
-            elif param_type is None:
-                Log.print(
-                    LogType.ERROR,
-                    "Parameter without type !",
-                    {
-                        "location": param_name.location,
-                        "location_message": "give it one of the available types",
-                    },
-                )
-                if not REPL:
-                    exit(1)
-                return
-            elif param_name is None:
-                Log.print(
-                    LogType.ERROR,
-                    "Parameter without name !",
-                    {
-                        "location": param_type.location,
-                        "location_message": "give it a name",
-                    },
-                )
-                if not REPL:
-                    exit(1)
-                return
-
-            params.append({"type": param_type, "name": param_name})
-
-        if self.eof() or self.expect(TokenType.DO) is None:
-            Log.print(
-                LogType.ERROR,
-                "Function without body !",
-                {
-                    "location": token.location,
-                    "location_message": "open a function body with `do ... end`",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         body = []
         while not self.eof() and self.peek().type != TokenType.END:
@@ -742,27 +630,142 @@ class Parser:
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
-                "Function body not closed !",
+                "Variable not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a function body with `end`",
+                    "location_message": "you need to close a variable initialization with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
-        return_type = None
-        if not self.eof() and self.peek().type == TokenType.WITH:
-            self.advance()
-            result = self.expect(TokenType.TYPE)
-            if result is None:
+        return Instruction(
+            "Variable",
+            {"type": variable_type, "body": body},
+            token,
+        )
+
+    def handle_assignations(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
+
+        if not body:
+            Log.print(
+                LogType.ERROR,
+                "Invalid assignation syntax !",
+                {
+                    "location": token.location,
+                    "location_message": "there should be a value or an expression after this",
+                },
+            )
+            raise ParserError
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Assignation not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close a variable assignation with `end`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            "Assignation",
+            {"body": body},
+            token,
+        )
+
+    def handle_functions(self, token: Token) -> Instruction:
+        parameters = []
+        while not self.eof() and self.peek().type != TokenType.DO:
+            if self.peek().type not in [
+                TokenType.TYPE,
+                TokenType.IDENTIFIER,
+                TokenType.DO,
+            ]:
                 Log.print(
                     LogType.ERROR,
-                    "Invalid return type !",
+                    "Invalid function syntax !",
                     {
-                        "location": self.tokens[self.current - 1].location,
-                        "location_message": "should have a type after `with`",
+                        "location": self.peek().location,
+                        "location_message": "parameters are composed of a type followed by an identifier",
+                    },
+                )
+                raise ParserError
+
+            parameter_type = self.expect(TokenType.TYPE)
+            parameter_name = self.expect(TokenType.IDENTIFIER)
+
+            if parameter_type is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid parameter syntax !",
+                    {
+                        "location": parameter_name.location,
+                        "location_message": "there should be a type before this",
+                    },
+                )
+                raise ParserError
+            elif parameter_name is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid parameter syntax !",
+                    {
+                        "location": parameter_type.location,
+                        "location_message": "there should be an identifier after this",
+                    },
+                )
+                raise ParserError
+
+            parameters.append({"type": parameter_type, "name": parameter_name})
+
+        if self.eof() or self.expect(TokenType.DO) is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid function syntax !",
+                {
+                    "location": self.peek_previous().location,
+                    "location_message": "there should be a function body after this",
+                },
+            )
+            Log.print(
+                LogType.INFO,
+                "Open a function body with a `do` and close it with a `end` !",
+                {},
+            )
+            raise ParserError
+
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Function not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close a function with `end`",
+                },
+            )
+            raise ParserError
+
+        return_type = None
+        if not self.eof() and self.expect(TokenType.WITH) is not None:
+            return_type = self.expect(TokenType.TYPE)
+            if return_type is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid function syntax !",
+                    {
+                        "location": self.peek_previous().location,
+                        "location_message": "there should be a type after this",
                     },
                 )
                 Log.print(
@@ -770,14 +773,11 @@ class Parser:
                     "If you don't want to specify a return type, don't put a `with`. It will return `void` by default !",
                     {},
                 )
-                if not REPL:
-                    exit(1)
-                return
-            return_type = result
+                raise ParserError
 
         return Instruction(
             "Function",
-            {"parameters": params, "body": body, "return_type": return_type},
+            {"parameters": parameters, "body": body, "return_type": return_type},
             token,
         )
 
@@ -802,17 +802,15 @@ class Parser:
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
                 LogType.ERROR,
-                "If else statement not closed !",
+                "If statement not closed !",
                 {
                     "location": else_token.location
                     if else_token is not None
                     else token.location,
-                    "location_message": "close an if else statement with `end`",
+                    "location_message": "you need to close an if statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "If",
@@ -827,7 +825,8 @@ class Parser:
         cases = []
         else_body = []
         while not self.eof() and self.peek().type != TokenType.END:
-            if self.expect(TokenType.ELSE) is not None:
+            else_token = self.expect(TokenType.ELSE)
+            if else_token is not None:
                 while not self.eof and self.peek().type != TokenType.END:
                     instruction = self.parse_instruction()
                     if instruction is not None:
@@ -836,15 +835,13 @@ class Parser:
                 if self.eof() or self.expect(TokenType.END) is None:
                     Log.print(
                         LogType.ERROR,
-                        "Match statement case not closed !",
+                        "Case not closed !",
                         {
-                            "location": token.location,
-                            "location_message": "close all cases in a match statement with `end`",
+                            "location": else_token.location,
+                            "location_message": "you need to close a case with `end`",
                         },
                     )
-                    if not REPL:
-                        exit(1)
-                    return
+                    raise ParserError
                 break
 
             case_condition = []
@@ -857,27 +854,23 @@ class Parser:
             if case_condition and case_token is None:
                 Log.print(
                     LogType.ERROR,
-                    "Match statement invalid syntax !",
+                    "Invalid match syntax !",
                     {
                         "location": case_condition[-1].token.location,
-                        "location_message": "add a `case ... end` after a condition in a match statement",
+                        "location_message": "there should be a case body after this",
                     },
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise ParserError
             elif not case_condition and case_token is not None:
                 Log.print(
                     LogType.ERROR,
-                    "Match statement invalid syntax !",
+                    "Invalid match syntax !",
                     {
-                        "location": self.tokens[self.current - 1].location,
-                        "location_message": "add a condition to match before a `case`",
+                        "location": self.peek_previous().location,
+                        "location_message": "there should be a value or a condition before this",
                     },
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise ParserError
 
             if not case_condition and case_token is None:
                 break
@@ -891,15 +884,13 @@ class Parser:
             if self.eof() or self.expect(TokenType.END) is None:
                 Log.print(
                     LogType.ERROR,
-                    "Match statement case not closed !",
+                    "Case not closed !",
                     {
                         "location": case_token.location,
-                        "location_message": "close all cases in a match statement with `end`",
+                        "location_message": "you need to close a case with `end`",
                     },
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise ParserError
 
             cases.append({"condition": case_condition, "body": case_body})
 
@@ -909,12 +900,10 @@ class Parser:
                 "Match statement not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a match statement with `end`",
+                    "location_message": "you need to close a match statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "Match",
@@ -938,12 +927,10 @@ class Parser:
                 "While statement not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a while statement with `end`",
+                    "location_message": "you need to close a while statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "While",
@@ -965,18 +952,16 @@ class Parser:
                     LogType.ERROR,
                     "Invalid enum syntax !",
                     {
-                        "location": self.tokens[self.current].location,
-                        "location_message": "enum should be composed of identifiers",
+                        "location": self.peek().location,
+                        "location_message": "there should be an identifier here",
                     },
                 )
                 Log.print(
                     LogType.INFO,
-                    "After an identifier you can also give a number to start from",
+                    "After an identifier, you can give an integer or a float to start the enum from !",
                     {},
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise ParserError
 
             value = self.expect(TokenType.INTEGER) or self.expect(TokenType.FLOAT)
             body.append({"identifier": identifier, "value": value})
@@ -987,12 +972,10 @@ class Parser:
                 "Enum statement not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a enum statement with `end`",
+                    "location_message": "you need to close an enum statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "Enum",
@@ -1009,13 +992,11 @@ class Parser:
                     LogType.ERROR,
                     "Invalid union syntax !",
                     {
-                        "location": self.tokens[self.current].location,
-                        "location_message": "only types are allowed in unions",
+                        "location": self.peek().location,
+                        "location_message": "there should be a type here",
                     },
                 )
-                if not REPL:
-                    exit(1)
-                return
+                raise ParserError
 
             body.append(union_type)
 
@@ -1025,12 +1006,10 @@ class Parser:
                 "Union statement not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a union statement with `end`",
+                    "location_message": "you need to close an union statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "Union",
@@ -1039,7 +1018,32 @@ class Parser:
         )
 
     def handle_requires(self, token: Token) -> Instruction:
-        scope = self.expect(TokenType.IDENTIFIER)
+        identifiers = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            identifier = self.expect(TokenType.IDENTIFIER)
+            if identifier is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid require syntax !",
+                    {
+                        "location": self.peek().location,
+                        "location_message": "there should be an identifier here",
+                    },
+                )
+                raise ParserError
+
+            identifiers.append(identifier)
+
+        if identifiers and len(identifiers) > 1:
+            Log.print(
+                LogType.ERROR,
+                "Invalid require syntax !",
+                {
+                    "location": token.location,
+                    "location_message": "there can only be on identifier per `require`",
+                },
+            )
+            raise ParserError
 
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
@@ -1047,18 +1051,19 @@ class Parser:
                 "Require statement not closed !",
                 {
                     "location": token.location,
-                    "location_message": "close a require statement with `end`",
+                    "location_message": "you need to close a require statement with `end`",
                 },
             )
-            if not REPL:
-                exit(1)
-            return
+            raise ParserError
 
         return Instruction(
             "Require",
-            {"scope": scope},
+            {"scope": identifiers[0]},
             token,
         )
+
+    def peek_previous(self) -> Token:
+        return self.tokens[self.current - 1]
 
     def peek(self) -> Token:
         return self.tokens[self.current]
@@ -1081,110 +1086,6 @@ class Interpreter:
     def __init__(self):
         self.stack = []
         self.instructions = []
-
-    def binary_operator(
-        self,
-        instruction: Instruction,
-        operator: any,
-        expected_type: any,
-        type_name: str,
-        extra_check: any = None,
-    ) -> None:
-        if len(self.stack) < 2:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": "there must be at least two elements on the stack",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        b = self.stack.pop()
-        a = self.stack.pop()
-
-        if not isinstance(a, expected_type) or not isinstance(b, expected_type):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        if extra_check and (extra_check(a) or extra_check(b)):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        self.stack.append(operator(a, b))
-
-    def unary_operator(
-        self,
-        instruction: Instruction,
-        operator: any,
-        expected_type: any,
-        type_name: str,
-    ) -> None:
-        if len(self.stack) < 1:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": "there must be at least one element on the stack",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        a = self.stack.pop()
-
-        if not isinstance(a, expected_type):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return
-
-        self.stack.append(operator(a))
-
-    def stack_operator(self, size: int, instruction: Instruction) -> bool:
-        if len(self.stack) < size:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"there must be at least {'one' if size == 1 else ('two' if size == 2 else 'three')} element{'s' if size > 1 else ''} on the stack",
-                },
-            )
-            if not REPL:
-                exit(1)
-            return False
-        return True
 
     def interpret(self, instructions: list) -> None:
         self.instructions = instructions
@@ -1263,24 +1164,115 @@ class Interpreter:
                     self.unary_operator(instruction, (lambda a: not a), bool, "boolean")
 
                 case "Drop":
-                    if self.stack_operator(1, instruction):
-                        self.stack.pop()
+                    self.stack_operator(1, instruction)
+                    self.stack.pop()
                 case "Dup":
-                    if self.stack_operator(1, instruction):
-                        self.stack.append(self.stack[-1])
+                    self.stack_operator(1, instruction)
+                    self.stack.append(self.stack[-1])
                 case "Over":
-                    if self.stack_operator(2, instruction):
-                        self.stack.append(self.stack[-2])
+                    self.stack_operator(2, instruction)
+                    self.stack.append(self.stack[-2])
                 case "Rot":
-                    if self.stack_operator(3, instruction):
-                        self.stack[-3], self.stack[-2], self.stack[-1] = (
-                            self.stack[-2],
-                            self.stack[-1],
-                            self.stack[-3],
-                        )
+                    self.stack_operator(3, instruction)
+                    self.stack[-3], self.stack[-2], self.stack[-1] = (
+                        self.stack[-2],
+                        self.stack[-1],
+                        self.stack[-3],
+                    )
                 case "Swap":
-                    if self.stack_operator(2, instruction):
-                        self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+                    self.stack_operator(2, instruction)
+                    self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+
+    def binary_operator(
+        self,
+        instruction: Instruction,
+        operator: any,
+        expected_type: any,
+        type_name: str,
+        extra_check: any = None,
+    ) -> None:
+        if len(self.stack) < 2:
+            Log.print(
+                LogType.ERROR,
+                "Stack underflow !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": "there must be at least two elements on the stack",
+                },
+            )
+            raise InterpreterError
+
+        b = self.stack.pop()
+        a = self.stack.pop()
+
+        if not isinstance(a, expected_type) or not isinstance(b, expected_type):
+            Log.print(
+                LogType.ERROR,
+                "Type mismatch !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": f"must be of type {type_name}",
+                },
+            )
+            raise InterpreterError
+
+        if extra_check and (extra_check(a) or extra_check(b)):
+            Log.print(
+                LogType.ERROR,
+                "Type mismatch !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": f"must be of type {type_name}",
+                },
+            )
+            raise InterpreterError
+
+        self.stack.append(operator(a, b))
+
+    def unary_operator(
+        self,
+        instruction: Instruction,
+        operator: any,
+        expected_type: any,
+        type_name: str,
+    ) -> None:
+        if len(self.stack) < 1:
+            Log.print(
+                LogType.ERROR,
+                "Stack underflow !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": "there must be at least one element on the stack",
+                },
+            )
+            raise InterpreterError
+
+        a = self.stack.pop()
+
+        if not isinstance(a, expected_type):
+            Log.print(
+                LogType.ERROR,
+                "Type mismatch !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": f"must be of type {type_name}",
+                },
+            )
+            raise InterpreterError
+
+        self.stack.append(operator(a))
+
+    def stack_operator(self, size: int, instruction: Instruction) -> None:
+        if len(self.stack) < size:
+            Log.print(
+                LogType.ERROR,
+                "Stack underflow !",
+                {
+                    "location": instruction.token.location,
+                    "location_message": f"there must be at least {'one' if size == 1 else ('two' if size == 2 else 'three')} element{'s' if size > 1 else ''} on the stack",
+                },
+            )
+            raise InterpreterError
 
 
 class Compiler:
@@ -1295,7 +1287,6 @@ class Cli:
     def scan_file(self, path: str) -> None:
         global SOURCE
         global PATH
-        global REPL
 
         PATH = path
 
@@ -1311,17 +1302,18 @@ class Cli:
         interpreter = Interpreter()
 
         if SOURCE != "":
-            instructions = parser.parse(tokenizer.tokenize())
-            interpreter.interpret(instructions)
-            print(instructions)
-            print(interpreter.stack)
+            try:
+                instructions = parser.parse(tokenizer.tokenize())
+                interpreter.interpret(instructions)
+                print(instructions)
+                print(interpreter.stack)
+            except Exception as error:
+                if not isinstance(error, GlobalError):
+                    raise
 
     def scan_prompt(self) -> None:
         global SOURCE
         global PATH
-        global REPL
-
-        REPL = True
 
         tokenizer = Tokenizer()
         parser = Parser()
@@ -1338,10 +1330,14 @@ class Cli:
                 break
 
             if SOURCE != "":
-                instructions = parser.parse(tokenizer.tokenize())
-                interpreter.interpret(instructions)
-                print(instructions)
-                print(interpreter.stack)
+                try:
+                    instructions = parser.parse(tokenizer.tokenize())
+                    interpreter.interpret(instructions)
+                    print(instructions)
+                    print(interpreter.stack)
+                except Exception as error:
+                    if not isinstance(error, GlobalError):
+                        raise
 
 
 def main():
