@@ -157,6 +157,7 @@ class TokenType(Enum):
     CALL = "Call"
 
     STRUCT = "Struct"
+    IMPLEMENT = "Implement"
     ENUM = "Enum"
     UNION = "Union"
 
@@ -218,6 +219,7 @@ class Tokenizer:
             Keyword("end", TokenType.END),
             Keyword("function", TokenType.FUNCTION),
             Keyword("if", TokenType.IF),
+            Keyword("implement", TokenType.IMPLEMENT),
             Keyword("match", TokenType.MATCH),
             Keyword("mutable", TokenType.MUTABLE),
             Keyword("require", TokenType.REQUIRE),
@@ -252,6 +254,7 @@ class Tokenizer:
             Keyword("f128", TokenType.TYPE),
             Keyword("bool", TokenType.TYPE),
             Keyword("void", TokenType.TYPE),
+            Keyword("error", TokenType.TYPE),
             Keyword("string", TokenType.TYPE),
             Keyword("array", TokenType.TYPE),
             Keyword("vector", TokenType.TYPE),
@@ -601,6 +604,8 @@ class Parser:
                 return self.handle_whiles(token)
             case TokenType.STRUCT:
                 return self.handle_structs(token)
+            case TokenType.IMPLEMENT:
+                return self.handle_implementations(token)
             case TokenType.ENUM:
                 return self.handle_enums(token)
             case TokenType.UNION:
@@ -945,8 +950,47 @@ class Parser:
         )
 
     def handle_structs(self, token: Token) -> Instruction:
-        struct_variable_type = self.expect(TokenType.TYPE)
-        struct_variable_name = self.expect(TokenType.IDENTIFIER)
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            if self.peek().type not in [
+                TokenType.TYPE,
+                TokenType.IDENTIFIER,
+            ]:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid struct syntax !",
+                    {
+                        "location": self.peek().location,
+                        "location_message": "struct fields are composed of a type followed by an identifier",
+                    },
+                )
+                raise ParserError
+
+            struct_variable_type = self.expect(TokenType.TYPE)
+            struct_variable_name = self.expect(TokenType.IDENTIFIER)
+
+            if struct_variable_type is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid struct syntax !",
+                    {
+                        "location": struct_variable_name.location,
+                        "location_message": "there should be a type before this",
+                    },
+                )
+                raise ParserError
+            elif struct_variable_name is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid struct syntax !",
+                    {
+                        "location": struct_variable_type.location,
+                        "location_message": "there should be an identifier after this",
+                    },
+                )
+                raise ParserError
+
+            body.append({"type": struct_variable_type, "name": struct_variable_name})
 
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
@@ -961,6 +1005,56 @@ class Parser:
 
         return Instruction(
             "Struct",
+            {"body": body},
+            token,
+        )
+
+    def handle_implementations(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            if self.peek().type not in [
+                TokenType.FUNCTION,
+                TokenType.IDENTIFIER,
+            ]:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid implement syntax !",
+                    {
+                        "location": self.peek().location,
+                        "location_message": "implement are composed of functions only",
+                    },
+                )
+                raise ParserError
+
+            implement_identifier = self.expect(TokenType.IDENTIFIER)
+            if implement_identifier is not None and (self.eof() or self.peek().type != TokenType.FUNCTION):
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid implement syntax !",
+                    {
+                        "location": implement_identifier.location,
+                        "location_message": "there should be a function after this",
+                    },
+                )
+                raise ParserError
+
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Implement statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close an implement statement with `end`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            "Implement",
             {"body": body},
             token,
         )
@@ -1085,10 +1179,23 @@ class Parser:
         )
 
     def handle_dots(self, token: Token) -> Instruction:
-        pass
+        identifier = self.expect(TokenType.IDENTIFIER)
+        if identifier is None:
+            Log.print(
+                LogType.ERROR,
+                "Invalid dot syntax !",
+                {
+                    "location": token.location,
+                    "location_message": "there should be an identifier after this",
+                },
+            )
+            raise ParserError
 
-    def handle_ins(self, token: Token) -> Instruction:
-        pass
+        return Instruction(
+            "Dot",
+            {"identifier": identifier},
+            token,
+        )
 
     def peek_previous(self) -> Token:
         return self.tokens[self.current - 1]

@@ -185,6 +185,12 @@ MyStruct struct
     i32 myOtherVal
 end
 
+# this is how you can implement a function to a struct
+MyStruct implement
+    the_function function do
+    end
+end
+
 # functions declared in a struct are local and can be call like this
 instanceOfMyStruct.the_function call
 
