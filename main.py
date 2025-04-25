@@ -579,6 +579,14 @@ class Parser:
                 return self.handle_matchs(token)
             case TokenType.WHILE:
                 return self.handle_whiles(token)
+            case TokenType.STRUCT:
+                return self.handle_structs(token)
+            case TokenType.ENUM:
+                return self.handle_enums(token)
+            case TokenType.UNION:
+                return self.handle_unions(token)
+            case TokenType.REQUIRE:
+                return self.handle_requires(token)
 
         return None
 
@@ -777,7 +785,10 @@ class Parser:
 
     def handle_if_elses(self, token: Token) -> Instruction:
         if_body = []
-        while not self.eof() and self.peek().type not in [TokenType.ELSE, TokenType.END]:
+        while not self.eof() and self.peek().type not in [
+            TokenType.ELSE,
+            TokenType.END,
+        ]:
             instruction = self.parse_instruction()
             if instruction is not None:
                 if_body.append(instruction)
@@ -795,7 +806,9 @@ class Parser:
                 LogType.ERROR,
                 "If else statement not closed !",
                 {
-                    "location": else_token.location if else_token is not None else token.location,
+                    "location": else_token.location
+                    if else_token is not None
+                    else token.location,
                     "location_message": "close an if else statement with `end`",
                 },
             )
@@ -816,7 +829,6 @@ class Parser:
         cases = []
         else_body = []
         while not self.eof() and self.peek().type != TokenType.END:
-
             if self.expect(TokenType.ELSE) is not None:
                 while not self.eof and self.peek().type != TokenType.END:
                     instruction = self.parse_instruction()
@@ -940,6 +952,113 @@ class Parser:
             {
                 "body": while_body,
             },
+            token,
+        )
+
+    def handle_structs(self, token: Token) -> Instruction:
+        pass
+
+    def handle_enums(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            identifier = self.expect(TokenType.IDENTIFIER)
+            if identifier is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid enum syntax !",
+                    {
+                        "location": self.tokens[self.current].location,
+                        "location_message": "enum should be composed of identifiers",
+                    },
+                )
+                Log.print(
+                    LogType.INFO,
+                    "After an identifier you can also give a number to start from",
+                    {},
+                )
+                if not REPL:
+                    exit(1)
+                return
+
+            value = self.expect(TokenType.INTEGER) or self.expect(TokenType.FLOAT)
+            body.append({"identifier": identifier, "value": value})
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Enum statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a enum statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Enum",
+            {"body": body},
+            token,
+        )
+
+    def handle_unions(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().type != TokenType.END:
+            union_type = self.expect(TokenType.TYPE)
+            if union_type is None:
+                Log.print(
+                    LogType.ERROR,
+                    "Invalid union syntax !",
+                    {
+                        "location": self.tokens[self.current].location,
+                        "location_message": "only types are allowed in unions",
+                    },
+                )
+                if not REPL:
+                    exit(1)
+                return
+
+            body.append(union_type)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Union statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a union statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Union",
+            {"body": body},
+            token,
+        )
+
+    def handle_requires(self, token: Token) -> Instruction:
+        scope = self.expect(TokenType.IDENTIFIER)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Require statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "close a require statement with `end`",
+                },
+            )
+            if not REPL:
+                exit(1)
+            return
+
+        return Instruction(
+            "Require",
+            {"scope": scope},
             token,
         )
 

@@ -207,14 +207,14 @@ Code spliting or modularization is done like this:
 # Example: std is a folder with files like math.yar, file.yar, etc (yar being the file
 # extension of Yarrow). Those files contains functions, struct, etc. like sqrt() or Vector2
 
-"std.utils" require # import everything from utils into current scope
-"std.io" require io # import everything from io into the io namespace
+"std.utils" require end # import everything from utils into current scope
+"std.io" require io end # import everything from io into the io namespace
 
-"path to the custom package" require
+"path to the custom package" require end
 
-"std.math.sqrt()" require # import only one function into current scope
-"std.math.Vector2" require # same but with struct
+"std.math.sqrt()" require end # import only one function into current scope
+"std.math.Vector2" require end # same but with struct
 
-"std.math{sqrt(),Vector2}" require # import multiple things into current scope
-"std.file{read_file(),Reader}" require # also work with custom namespace
+"std.math{sqrt(),Vector2}" require end # import multiple things into current scope
+"std.file{read_file(),Reader}" require end # also work with custom namespace
 ```
