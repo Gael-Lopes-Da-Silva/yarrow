@@ -147,7 +147,6 @@ class TokenType(Enum):
     CASE = "Case"
 
     WHILE = "While"
-    IN = "In"
     BREAK = "Break"
     CONTINUE = "Continue"
 
@@ -163,7 +162,6 @@ class TokenType(Enum):
 
     REQUIRE = "Require"
     DEFER = "Defer"
-    DISCARD = "Discard"
 
     DROP = "Drop"
     DUP = "Dup"
@@ -220,7 +218,6 @@ class Tokenizer:
             Keyword("end", TokenType.END),
             Keyword("function", TokenType.FUNCTION),
             Keyword("if", TokenType.IF),
-            Keyword("in", TokenType.IN),
             Keyword("match", TokenType.MATCH),
             Keyword("mutable", TokenType.MUTABLE),
             Keyword("require", TokenType.REQUIRE),
@@ -232,7 +229,6 @@ class Tokenizer:
             Keyword("union", TokenType.UNION),
             Keyword("enum", TokenType.ENUM),
             Keyword("defer", TokenType.DEFER),
-            Keyword("discard", TokenType.DISCARD),
             Keyword("drop", TokenType.DROP),
             Keyword("dup", TokenType.DUP),
             Keyword("over", TokenType.OVER),
@@ -584,6 +580,12 @@ class Parser:
                 return Instruction("Return", token.lexeme, token)
             case TokenType.CALL:
                 return Instruction("Call", token.lexeme, token)
+            case TokenType.BREAK:
+                return Instruction("Break", token.lexeme, token)
+            case TokenType.CONTINUE:
+                return Instruction("Continue", token.lexeme, token)
+            case TokenType.DEFER:
+                return Instruction("Defer", token.lexeme, token)
 
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
@@ -605,6 +607,8 @@ class Parser:
                 return self.handle_unions(token)
             case TokenType.REQUIRE:
                 return self.handle_requires(token)
+            case TokenType.DOT:
+                return self.handle_dots(token)
 
         return None
 
@@ -941,7 +945,25 @@ class Parser:
         )
 
     def handle_structs(self, token: Token) -> Instruction:
-        pass
+        struct_variable_type = self.expect(TokenType.TYPE)
+        struct_variable_name = self.expect(TokenType.IDENTIFIER)
+
+        if self.eof() or self.expect(TokenType.END) is None:
+            Log.print(
+                LogType.ERROR,
+                "Struct statement not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close a struct statement with `end`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            "Struct",
+            {"body": body},
+            token,
+        )
 
     def handle_enums(self, token: Token) -> Instruction:
         body = []
@@ -1061,6 +1083,12 @@ class Parser:
             {"scope": identifiers[0]},
             token,
         )
+
+    def handle_dots(self, token: Token) -> Instruction:
+        pass
+
+    def handle_ins(self, token: Token) -> Instruction:
+        pass
 
     def peek_previous(self) -> Token:
         return self.tokens[self.current - 1]
