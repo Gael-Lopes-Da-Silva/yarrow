@@ -428,7 +428,7 @@ class Tokenizer:
             case _ if char.isdigit():
                 self.handle_numbers()
 
-            case _ if char.isalpha() or char == "_":
+            case _ if char.isalpha() or char in ["_", "@"]:
                 self.handle_identifiers()
 
             case _:
@@ -479,7 +479,7 @@ class Tokenizer:
                     raise TokenizerError
 
                 escape_char = self.peek()
-                if escape_char in {'n', 't', 'r', '\\', '"'}:
+                if escape_char in {"n", "t", "r", "\\", '"'}:
                     self.advance()
                 else:
                     Log.print(
@@ -516,9 +516,62 @@ class Tokenizer:
         self.add_token(token_type)
 
 
+class InstructionType(Enum):
+    PUSH = "Push"
+
+    PLUS = "Plus"
+    MINUS = "Minus"
+    MULTIPLICATION = "Multiplication"
+    DIVISION = "Division"
+    EUCLIDIAN = "Euclidian"
+    REMINDER = "Reminder"
+    POWER = "Power"
+
+    EQUAL_EQUAL = "Equal_equal"
+    NOT_EQUAL = "Not_equal"
+    GREATER = "Greater"
+    GREATER_EQUAL = "Greater_equal"
+    LESS = "Less"
+    LESS_EQUAL = "Less_equal"
+
+    BITWISE_AND = "Bitwise_and"
+    BITWISE_OR = "Bitwise_or"
+    BITWISE_XOR = "Bitwise_xor"
+    BITWISE_NOT = "Bitwise_not"
+    L_SHIFT = "L_shift"
+    R_SHIFT = "R_shift"
+
+    AND = "And"
+    NOT = "Not"
+    OR = "Or"
+
+    VARIABLE = "Variable"
+    IF = "If"
+    MATCH = "Match"
+    WHILE = "While"
+    BREAK = "Break"
+    CONTINUE = "Continue"
+    FUNCTION = "Function"
+    RETURN = "Return"
+    CALL = "Call"
+    STRUCT = "Struct"
+    IMPLEMENT = "Implement"
+    ENUM = "Enum"
+    UNION = "Union"
+    REQUIRE = "Require"
+    DEFER = "Defer"
+
+    DROP = "Drop"
+    DUP = "Dup"
+    OVER = "Over"
+    ROT = "Rot"
+    SET = "Set"
+    SWAP = "Swap"
+
+
 @dataclass
 class Instruction:
-    name: str
+    instruction_type: InstructionType
     value: any
     token: Token
 
@@ -546,19 +599,18 @@ class Parser:
 
         match token.type:
             case TokenType.INTEGER:
-                return Instruction("Push", int(token.lexeme), token)
+                return Instruction(InstructionType.PUSH, {"type": Types.I32, "value": int(token.lexeme)}, token)
             case TokenType.FLOAT:
-                return Instruction("Push", float(token.lexeme), token)
+                return Instruction(InstructionType.PUSH, {"type": Types.F64, "value": float(token.lexeme)}, token)
             case TokenType.STRING:
-                return Instruction("Push", token.lexeme[1:-1], token)
+                return Instruction(InstructionType.PUSH, {"type": Types.STRING, "value": str(token.lexeme[1:-1])}, token)
             case TokenType.BOOLEAN:
-                return Instruction("Push", token.lexeme.lower() == "true", token)
-
+                return Instruction(InstructionType.PUSH, {"type": Types.BOOL, "value": token.lexeme.lower() == "true"}, token)
             case TokenType.IDENTIFIER:
-                return Instruction("Identifier", token.lexeme, token)
+                return Instruction(InstructionType.PUSH, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.PLUS:
-                return Instruction("Plus", token.lexeme, token)
+                return Instruction(InstructionType.PLUS, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.MINUS:
                 return Instruction("Minus", token.lexeme, token)
             case TokenType.MULTIPLICATION:
@@ -1051,7 +1103,9 @@ class Parser:
                 raise ParserError
 
             implement_identifier = self.expect(TokenType.IDENTIFIER)
-            if implement_identifier is not None and (self.eof() or self.peek().type != TokenType.FUNCTION):
+            if implement_identifier is not None and (
+                self.eof() or self.peek().type != TokenType.FUNCTION
+            ):
                 Log.print(
                     LogType.ERROR,
                     "Invalid implement syntax !",
@@ -1241,197 +1295,73 @@ class Parser:
         return self.current >= len(self.tokens)
 
 
+class Types(Enum):
+    I8 = "I8"
+    I16 = "I17"
+    I32 = "I32"
+    I64 = "I64"
+    I128 = "I128"
+    U8 = "U8"
+    U16 = "U16"
+    U32 = "U32"
+    U64 = "U64"
+    U128 = "U128"
+    F16 = "F16"
+    F32 = "F32"
+    F64 = "F64"
+    F128 = "F128"
+    BOOL = "Bool"
+    VOID = "Void"
+    ERROR = "Error"
+    STRING = "String"
+    ARRAY = "Array"
+    VECTOR = "Vector"
+    HASHMAP = "Hashmap"
+    STACK = "Stack"
+    QUEUE = "Queue"
+    PTR = "Ptr"
+    USIZE = "Usize"
+    ISIZE = "Isize"
+    C_CHAR = "C_char"
+    C_SHORT = "C_short"
+    C_USHORT = "C_ushort"
+    C_INT = "C_int"
+    C_UINT = "C_uint"
+    C_LONG = "C_long"
+    C_ULONG = "C_ulong"
+    C_LONGLONG = "C_longlong"
+    C_ULONGLONG = "C_ulonglong"
+    C_DOUBLE = "C_double"
+    C_LONGDOUBLE = "C_longdouble"
+
+
 class Interpreter:
     def __init__(self):
         self.stack = []
         self.instructions = []
+        self.current = 0
 
     def interpret(self, instructions: list) -> None:
         self.instructions = instructions
+        self.current = 0
 
-        for instruction in self.instructions:
-            match instruction.name:
-                case "Push":
-                    self.stack.append(instruction.value)
+        while not self.eof():
+            instruction = self.advance()
+            self.interpret_instruction(instruction)
 
-                case "Plus":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a + b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Minus":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a - b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Multiplication":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a * b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Division":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a / b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Euclidian":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a // b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Reminder":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a % b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
-                case "Power":
-                    self.binary_operator(
-                        instruction,
-                        (lambda a, b: a**b),
-                        (int, float),
-                        "int or float",
-                        (lambda x: isinstance(x, bool)),
-                    )
+    def interpret_instruction(self, instruction: Instruction) -> None:
+        pass
 
-                case "And":
-                    self.binary_operator(
-                        instruction, (lambda a, b: a and b), bool, "boolean"
-                    )
-                case "Or":
-                    self.binary_operator(
-                        instruction, (lambda a, b: a or b), bool, "boolean"
-                    )
-                case "Not":
-                    self.unary_operator(instruction, (lambda a: not a), bool, "boolean")
+    def advance(self) -> Instruction:
+        instruction = self.peek()
+        self.current += 1
+        return instruction
 
-                case "Drop":
-                    self.stack_operator(1, instruction)
-                    self.stack.pop()
-                case "Dup":
-                    self.stack_operator(1, instruction)
-                    self.stack.append(self.stack[-1])
-                case "Over":
-                    self.stack_operator(2, instruction)
-                    self.stack.append(self.stack[-2])
-                case "Rot":
-                    self.stack_operator(3, instruction)
-                    self.stack[-3], self.stack[-2], self.stack[-1] = (
-                        self.stack[-2],
-                        self.stack[-1],
-                        self.stack[-3],
-                    )
-                case "Swap":
-                    self.stack_operator(2, instruction)
-                    self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+    def peek(self) -> Instruction:
+        return self.instructions[self.current]
 
-    def binary_operator(
-        self,
-        instruction: Instruction,
-        operator: any,
-        expected_type: any,
-        type_name: str,
-        extra_check: any = None,
-    ) -> None:
-        if len(self.stack) < 2:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": "there must be at least two elements on the stack",
-                },
-            )
-            raise InterpreterError
-
-        b = self.stack.pop()
-        a = self.stack.pop()
-
-        if not isinstance(a, expected_type) or not isinstance(b, expected_type):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            raise InterpreterError
-
-        if extra_check and (extra_check(a) or extra_check(b)):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            raise InterpreterError
-
-        self.stack.append(operator(a, b))
-
-    def unary_operator(
-        self,
-        instruction: Instruction,
-        operator: any,
-        expected_type: any,
-        type_name: str,
-    ) -> None:
-        if len(self.stack) < 1:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": "there must be at least one element on the stack",
-                },
-            )
-            raise InterpreterError
-
-        a = self.stack.pop()
-
-        if not isinstance(a, expected_type):
-            Log.print(
-                LogType.ERROR,
-                "Type mismatch !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"must be of type {type_name}",
-                },
-            )
-            raise InterpreterError
-
-        self.stack.append(operator(a))
-
-    def stack_operator(self, size: int, instruction: Instruction) -> None:
-        if len(self.stack) < size:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": instruction.token.location,
-                    "location_message": f"there must be at least {'one' if size == 1 else ('two' if size == 2 else 'three')} element{'s' if size > 1 else ''} on the stack",
-                },
-            )
-            raise InterpreterError
+    def eof(self) -> bool:
+        return self.current >= len(self.instructions)
 
 
 class Compiler:
