@@ -571,8 +571,8 @@ class InstructionType(Enum):
 
 @dataclass
 class Instruction:
-    instruction_type: InstructionType
-    value: any
+    type: InstructionType
+    content: any
     token: Token
 
 
@@ -612,59 +612,59 @@ class Parser:
             case TokenType.PLUS:
                 return Instruction(InstructionType.PLUS, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.MINUS:
-                return Instruction("Minus", token.lexeme, token)
+                return Instruction(InstructionType.MINUS, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.MULTIPLICATION:
-                return Instruction("Multiplication", token.lexeme, token)
+                return Instruction(InstructionType.MULTIPLICATION, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.DIVISION:
-                return Instruction("Division", token.lexeme, token)
+                return Instruction(InstructionType.DIVISION, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.EUCLIDIAN:
-                return Instruction("Euclidian", token.lexeme, token)
+                return Instruction(InstructionType.EUCLIDIAN, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.REMINDER:
-                return Instruction("Reminder", token.lexeme, token)
+                return Instruction(InstructionType.REMINDER, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.POWER:
-                return Instruction("Power", token.lexeme, token)
+                return Instruction(InstructionType.POWER, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.AND:
-                return Instruction("And", token.lexeme, token)
+                return Instruction(InstructionType.AND, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.OR:
-                return Instruction("Or", token.lexeme, token)
+                return Instruction(InstructionType.OR, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.NOT:
-                return Instruction("Not", token.lexeme, token)
+                return Instruction(InstructionType.NOT, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.EQUAL_EQUAL:
-                return Instruction("EqualEqual", token.lexeme, token)
+                return Instruction(InstructionType.EQUAL_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.NOT_EQUAL:
-                return Instruction("NotEqual", token.lexeme, token)
+                return Instruction(InstructionType.NOT_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.GREATER:
-                return Instruction("Greater", token.lexeme, token)
+                return Instruction(InstructionType.GREATER, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.GREATER_EQUAL:
-                return Instruction("GreaterEqual", token.lexeme, token)
+                return Instruction(InstructionType.GREATER_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.LESS:
-                return Instruction("Less", token.lexeme, token)
+                return Instruction(InstructionType.LESS, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.LESS_EQUAL:
-                return Instruction("LessEquale", token.lexeme, token)
+                return Instruction(InstructionType.LESS_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.DROP:
-                return Instruction("Drop", token.lexeme, token)
+                return Instruction(InstructionType.DROP, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.DUP:
-                return Instruction("Dup", token.lexeme, token)
+                return Instruction(InstructionType.DUP, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.OVER:
-                return Instruction("Over", token.lexeme, token)
+                return Instruction(InstructionType.OVER, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.ROT:
-                return Instruction("Rot", token.lexeme, token)
+                return Instruction(InstructionType.ROT, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.SWAP:
-                return Instruction("Swap", token.lexeme, token)
+                return Instruction(InstructionType.SWAP, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.RETURN:
-                return Instruction("Return", token.lexeme, token)
+                return Instruction(InstructionType.RETURN, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.CALL:
-                return Instruction("Call", token.lexeme, token)
+                return Instruction(InstructionType.CALL, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.BREAK:
-                return Instruction("Break", token.lexeme, token)
+                return Instruction(InstructionType.BREAK, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.CONTINUE:
-                return Instruction("Continue", token.lexeme, token)
+                return Instruction(InstructionType.CONTINUE, {"type": Types.VOID, "value": token.lexeme}, token)
             case TokenType.DEFER:
-                return Instruction("Defer", token.lexeme, token)
+                return Instruction(InstructionType.DEFER, {"type": Types.VOID, "value": token.lexeme}, token)
 
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
@@ -724,8 +724,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Variable",
-            {"type": variable_type, "body": body},
+            InstructionType.VARIABLE,
+            {
+                "type": Types.VOID,
+                "value": {"type": variable_type, "body": body}
+            },
             token,
         )
 
@@ -759,8 +762,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Assignation",
-            {"body": body},
+            InstructionType.SET,
+            {
+                "type": Types.VOID,
+                "value": {"body": body},
+            },
             token,
         )
 
@@ -861,8 +867,11 @@ class Parser:
                 raise ParserError
 
         return Instruction(
-            "Function",
-            {"parameters": parameters, "body": body, "return_type": return_type},
+            InstructionType.FUNCTION,
+            {
+                "type": Types.VOID,
+                "value": {"parameters": parameters, "body": body, "return_type": return_type},
+            },
             token,
         )
 
@@ -898,10 +907,10 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "If",
+            InstructionType.IF,
             {
-                "body": if_body,
-                "else": else_body,
+                "type": Types.VOID,
+                "value": {"if": if_body, "else": else_body},
             },
             token,
         )
@@ -991,20 +1000,20 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Match",
+            InstructionType.MATCH,
             {
-                "cases": cases,
-                "else": else_body,
+                "type": Types.VOID,
+                "value": {"cases": cases, "else": else_body},
             },
             token,
         )
 
     def handle_whiles(self, token: Token) -> Instruction:
-        while_body = []
+        body = []
         while not self.eof() and self.peek().type != TokenType.END:
             instruction = self.parse_instruction()
             if instruction is not None:
-                while_body.append(instruction)
+                body.append(instruction)
 
         if self.eof() or self.expect(TokenType.END) is None:
             Log.print(
@@ -1018,9 +1027,10 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "While",
+            InstructionType.WHILE,
             {
-                "body": while_body,
+                "type": Types.VOID,
+                "value": {"body": body},
             },
             token,
         )
@@ -1080,8 +1090,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Struct",
-            {"body": body},
+            InstructionType.STRUCT,
+            {
+                "type": Types.VOID,
+                "value": {"body": body},
+            },
             token,
         )
 
@@ -1132,8 +1145,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Implement",
-            {"body": body},
+            InstructionType.IMPLEMENT,
+            {
+                "type": Types.VOID,
+                "value": {"body": body},
+            },
             token,
         )
 
@@ -1172,8 +1188,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Enum",
-            {"body": body},
+            InstructionType.ENUM,
+            {
+                "type": Types.VOID,
+                "value": {"body": body},
+            },
             token,
         )
 
@@ -1206,8 +1225,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Union",
-            {"body": body},
+            InstructionType.UNION,
+            {
+                "type": Types.VOID,
+                "value": {"body": body},
+            },
             token,
         )
 
@@ -1251,8 +1273,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Require",
-            {"scope": identifiers[0]},
+            InstructionType.REQUIRE,
+            {
+                "type": Types.VOID,
+                "value": {"scope": identifiers[0]},
+            },
             token,
         )
 
@@ -1270,8 +1295,11 @@ class Parser:
             raise ParserError
 
         return Instruction(
-            "Dot",
-            {"identifier": identifier},
+            InstructionType.DOT,
+            {
+                "type": Types.VOID,
+                "value": {"identifier": identifier},
+            },
             token,
         )
 
