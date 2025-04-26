@@ -94,6 +94,10 @@ class Log:
 class TokenType(Enum):
     L_PAREN = "L_paren"
     R_PAREN = "R_paren"
+    L_CURLY = "L_curly"
+    R_CURLY = "R_curly"
+    L_SQUARE = "L_square"
+    R_SQUARE = "R_square"
     COMMA = "Comma"
     DOT = "Dot"
 
@@ -136,6 +140,7 @@ class TokenType(Enum):
     CONST = "Const"
     STATIC = "Static"
     MUTABLE = "Mutable"
+    SET = "Set"
 
     IF = "If"
     ELSE = "Else"
@@ -164,11 +169,11 @@ class TokenType(Enum):
     REQUIRE = "Require"
     DEFER = "Defer"
 
+    POP = "Pop"
     DROP = "Drop"
     DUP = "Dup"
     OVER = "Over"
     ROT = "Rot"
-    SET = "Set"
     SWAP = "Swap"
 
 
@@ -231,6 +236,7 @@ class Tokenizer:
             Keyword("union", TokenType.UNION),
             Keyword("enum", TokenType.ENUM),
             Keyword("defer", TokenType.DEFER),
+            Keyword("pop", TokenType.POP),
             Keyword("drop", TokenType.DROP),
             Keyword("dup", TokenType.DUP),
             Keyword("over", TokenType.OVER),
@@ -288,65 +294,16 @@ class Tokenizer:
         while not self.eof():
             self.start = self.current
             self.start_offset = self.current_offset
-            self.scan_token()
+            self.tokenize_lexeme()
 
         return self.tokens
 
-    def eof(self) -> bool:
-        return self.current >= len(SOURCE)
-
-    def peek(self) -> str:
-        return SOURCE[self.current]
-
-    def peek_next(self) -> str:
-        return SOURCE[self.current + 1]
-
-    def advance(self) -> str:
-        char = self.peek()
-        self.current += 1
-        self.current_offset += 1
-        return char
-
-    def match(self, expected: str) -> bool:
-        if self.eof() or self.peek() != expected:
-            return False
-        self.current += 1
-        self.current_offset += 1
-        return True
-
-    def get_keyword(self, key: str) -> TokenType | None:
-        for keyword in self.keywords:
-            if keyword.name == key:
-                return keyword.token
-        return None
-
-    def add_token(self, type: TokenType) -> None:
-        self.tokens.append(
-            Token(
-                type=type,
-                lexeme=SOURCE[self.start : self.current],
-                location=Location(
-                    line=self.line,
-                    start=self.start,
-                    start_offset=self.start_offset,
-                    current=self.current,
-                    current_offset=self.current_offset,
-                ),
-            )
-        )
-
-    def get_location(self) -> Location:
-        return Location(
-            line=self.line,
-            start=self.start,
-            start_offset=self.start_offset,
-            current=self.current,
-            current_offset=self.current_offset,
-        )
-
-    def scan_token(self) -> None:
+    def tokenize_lexeme(self) -> None:
         char = self.advance()
         match char:
+            case " " | "\t":
+                pass
+
             case "#":
                 while not self.eof() and self.peek() != "\n":
                     self.advance()
@@ -355,13 +312,18 @@ class Tokenizer:
                 self.line += 1
                 self.current_offset = 0
 
-            case " " | "\t":
-                pass
-
             case "(":
                 self.add_token(TokenType.L_PAREN)
             case ")":
                 self.add_token(TokenType.R_PAREN)
+            case "{":
+                self.add_token(TokenType.L_CURLY)
+            case "}":
+                self.add_token(TokenType.R_CURLY)
+            case "[":
+                self.add_token(TokenType.L_SQUARE)
+            case "]":
+                self.add_token(TokenType.R_SQUARE)
             case ",":
                 self.add_token(TokenType.COMMA)
             case ".":
@@ -515,6 +477,58 @@ class Tokenizer:
         token_type = self.get_keyword(text.lower()) or TokenType.IDENTIFIER
         self.add_token(token_type)
 
+    def get_keyword(self, key: str) -> TokenType | None:
+        for keyword in self.keywords:
+            if keyword.name == key:
+                return keyword.token
+        return None
+
+    def add_token(self, type: TokenType) -> None:
+        self.tokens.append(
+            Token(
+                type=type,
+                lexeme=SOURCE[self.start : self.current],
+                location=Location(
+                    line=self.line,
+                    start=self.start,
+                    start_offset=self.start_offset,
+                    current=self.current,
+                    current_offset=self.current_offset,
+                ),
+            )
+        )
+
+    def get_location(self) -> Location:
+        return Location(
+            line=self.line,
+            start=self.start,
+            start_offset=self.start_offset,
+            current=self.current,
+            current_offset=self.current_offset,
+        )
+
+    def eof(self) -> bool:
+        return self.current >= len(SOURCE)
+
+    def peek(self) -> str:
+        return SOURCE[self.current]
+
+    def peek_next(self) -> str:
+        return SOURCE[self.current + 1]
+
+    def advance(self) -> str:
+        char = self.peek()
+        self.current += 1
+        self.current_offset += 1
+        return char
+
+    def match(self, expected: str) -> bool:
+        if self.eof() or self.peek() != expected:
+            return False
+        self.current += 1
+        self.current_offset += 1
+        return True
+
 
 class InstructionType(Enum):
     PUSH = "Push"
@@ -546,6 +560,7 @@ class InstructionType(Enum):
     OR = "Or"
 
     VARIABLE = "Variable"
+    SET = "Set"
     IF = "If"
     MATCH = "Match"
     WHILE = "While"
@@ -561,11 +576,11 @@ class InstructionType(Enum):
     REQUIRE = "Require"
     DEFER = "Defer"
 
+    POP = "Pop"
     DROP = "Drop"
     DUP = "Dup"
     OVER = "Over"
     ROT = "Rot"
-    SET = "Set"
     SWAP = "Swap"
 
 
@@ -599,72 +614,202 @@ class Parser:
 
         match token.type:
             case TokenType.INTEGER:
-                return Instruction(InstructionType.PUSH, {"type": Types.I32, "value": int(token.lexeme)}, token)
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.I64, "value": int(token.lexeme)},
+                    token,
+                )
             case TokenType.FLOAT:
-                return Instruction(InstructionType.PUSH, {"type": Types.F64, "value": float(token.lexeme)}, token)
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.F64, "value": float(token.lexeme)},
+                    token,
+                )
             case TokenType.STRING:
-                return Instruction(InstructionType.PUSH, {"type": Types.STRING, "value": str(token.lexeme[1:-1])}, token)
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.STRING, "value": str(token.lexeme[1:-1])},
+                    token,
+                )
             case TokenType.BOOLEAN:
-                return Instruction(InstructionType.PUSH, {"type": Types.BOOL, "value": token.lexeme.lower() == "true"}, token)
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.BOOL, "value": token.lexeme.lower() == "true"},
+                    token,
+                )
             case TokenType.IDENTIFIER:
-                return Instruction(InstructionType.PUSH, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
             case TokenType.PLUS:
-                return Instruction(InstructionType.PLUS, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.PLUS,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.MINUS:
-                return Instruction(InstructionType.MINUS, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.MINUS,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.MULTIPLICATION:
-                return Instruction(InstructionType.MULTIPLICATION, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.MULTIPLICATION,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.DIVISION:
-                return Instruction(InstructionType.DIVISION, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.DIVISION,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.EUCLIDIAN:
-                return Instruction(InstructionType.EUCLIDIAN, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.EUCLIDIAN,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.REMINDER:
-                return Instruction(InstructionType.REMINDER, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.REMINDER,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.POWER:
-                return Instruction(InstructionType.POWER, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.POWER,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
             case TokenType.AND:
-                return Instruction(InstructionType.AND, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.AND,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.OR:
-                return Instruction(InstructionType.OR, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.OR,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.NOT:
-                return Instruction(InstructionType.NOT, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.NOT,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
             case TokenType.EQUAL_EQUAL:
-                return Instruction(InstructionType.EQUAL_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.EQUAL_EQUAL,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.NOT_EQUAL:
-                return Instruction(InstructionType.NOT_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.NOT_EQUAL,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.GREATER:
-                return Instruction(InstructionType.GREATER, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.GREATER,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.GREATER_EQUAL:
-                return Instruction(InstructionType.GREATER_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.GREATER_EQUAL,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.LESS:
-                return Instruction(InstructionType.LESS, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.LESS,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.LESS_EQUAL:
-                return Instruction(InstructionType.LESS_EQUAL, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.LESS_EQUAL,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
+            case TokenType.POP:
+                return Instruction(
+                    InstructionType.POP,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.DROP:
-                return Instruction(InstructionType.DROP, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.DROP,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.DUP:
-                return Instruction(InstructionType.DUP, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.DUP,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.OVER:
-                return Instruction(InstructionType.OVER, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.OVER,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.ROT:
-                return Instruction(InstructionType.ROT, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.ROT,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.SWAP:
-                return Instruction(InstructionType.SWAP, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.SWAP,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
             case TokenType.RETURN:
-                return Instruction(InstructionType.RETURN, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.RETURN,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.CALL:
-                return Instruction(InstructionType.CALL, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.CALL,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.BREAK:
-                return Instruction(InstructionType.BREAK, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.BREAK,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.CONTINUE:
-                return Instruction(InstructionType.CONTINUE, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.CONTINUE,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
             case TokenType.DEFER:
-                return Instruction(InstructionType.DEFER, {"type": Types.VOID, "value": token.lexeme}, token)
+                return Instruction(
+                    InstructionType.DEFER,
+                    {"type": Type.VOID, "value": token.lexeme},
+                    token,
+                )
 
             case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
                 return self.handle_variables(token)
@@ -725,10 +870,7 @@ class Parser:
 
         return Instruction(
             InstructionType.VARIABLE,
-            {
-                "type": Types.VOID,
-                "value": {"type": variable_type, "body": body}
-            },
+            {"type": Type.VOID, "value": {"type": variable_type, "body": body}},
             token,
         )
 
@@ -764,7 +906,7 @@ class Parser:
         return Instruction(
             InstructionType.SET,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -869,8 +1011,12 @@ class Parser:
         return Instruction(
             InstructionType.FUNCTION,
             {
-                "type": Types.VOID,
-                "value": {"parameters": parameters, "body": body, "return_type": return_type},
+                "type": Type.VOID,
+                "value": {
+                    "parameters": parameters,
+                    "body": body,
+                    "return_type": return_type,
+                },
             },
             token,
         )
@@ -909,7 +1055,7 @@ class Parser:
         return Instruction(
             InstructionType.IF,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"if": if_body, "else": else_body},
             },
             token,
@@ -1002,7 +1148,7 @@ class Parser:
         return Instruction(
             InstructionType.MATCH,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"cases": cases, "else": else_body},
             },
             token,
@@ -1029,7 +1175,7 @@ class Parser:
         return Instruction(
             InstructionType.WHILE,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -1092,7 +1238,7 @@ class Parser:
         return Instruction(
             InstructionType.STRUCT,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -1147,7 +1293,7 @@ class Parser:
         return Instruction(
             InstructionType.IMPLEMENT,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -1190,7 +1336,7 @@ class Parser:
         return Instruction(
             InstructionType.ENUM,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -1227,7 +1373,7 @@ class Parser:
         return Instruction(
             InstructionType.UNION,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"body": body},
             },
             token,
@@ -1275,7 +1421,7 @@ class Parser:
         return Instruction(
             InstructionType.REQUIRE,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"scope": identifiers[0]},
             },
             token,
@@ -1297,7 +1443,7 @@ class Parser:
         return Instruction(
             InstructionType.DOT,
             {
-                "type": Types.VOID,
+                "type": Type.VOID,
                 "value": {"identifier": identifier},
             },
             token,
@@ -1323,44 +1469,48 @@ class Parser:
         return self.current >= len(self.tokens)
 
 
-class Types(Enum):
-    I8 = "I8"
-    I16 = "I17"
-    I32 = "I32"
-    I64 = "I64"
-    I128 = "I128"
-    U8 = "U8"
-    U16 = "U16"
-    U32 = "U32"
-    U64 = "U64"
-    U128 = "U128"
-    F16 = "F16"
-    F32 = "F32"
-    F64 = "F64"
-    F128 = "F128"
-    BOOL = "Bool"
-    VOID = "Void"
-    ERROR = "Error"
-    STRING = "String"
-    ARRAY = "Array"
-    VECTOR = "Vector"
-    HASHMAP = "Hashmap"
-    STACK = "Stack"
-    QUEUE = "Queue"
-    PTR = "Ptr"
-    USIZE = "Usize"
-    ISIZE = "Isize"
-    C_CHAR = "C_char"
-    C_SHORT = "C_short"
-    C_USHORT = "C_ushort"
-    C_INT = "C_int"
-    C_UINT = "C_uint"
-    C_LONG = "C_long"
-    C_ULONG = "C_ulong"
-    C_LONGLONG = "C_longlong"
-    C_ULONGLONG = "C_ulonglong"
-    C_DOUBLE = "C_double"
-    C_LONGDOUBLE = "C_longdouble"
+class Type(Enum):
+    I8 = {"precedence": 1, "bounds": (-(2**7), 2**7 - 1)}
+    I16 = {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)}
+    I32 = {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)}
+    I64 = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
+    I128 = {"precedence": 5, "bounds": (-(2**127), 2**127 - 1)}
+    U8 = {"precedence": 1, "bounds": (0, 2**8 - 1)}
+    U16 = {"precedence": 2, "bounds": (0, 2**16 - 1)}
+    U32 = {"precedence": 3, "bounds": (0, 2**32 - 1)}
+    U64 = {"precedence": 4, "bounds": (0, 2**64 - 1)}
+    U128 = {"precedence": 5, "bounds": (0, 2**128 - 1)}
+
+    F16 = {"precedence": 6, "bounds": None}
+    F32 = {"precedence": 7, "bounds": None}
+    F64 = {"precedence": 8, "bounds": None}
+    F128 = {"precedence": 9, "bounds": None}
+
+    BOOL = {"precedence": 0, "bounds": None}
+    VOID = {"precedence": 0, "bounds": None}
+
+    STRING = {"precedence": 0, "bounds": None}
+    ARRAY = {"precedence": 0, "bounds": None}
+    VECTOR = {"precedence": 0, "bounds": None}
+    HASHMAP = {"precedence": 0, "bounds": None}
+    STACK = {"precedence": 0, "bounds": None}
+    QUEUE = {"precedence": 0, "bounds": None}
+    PTR = {"precedence": 0, "bounds": None}
+    ERROR = {"precedence": 0, "bounds": None}
+
+    USIZE = {"precedence": 5, "bounds": (0, 2**64 - 1)}
+    ISIZE = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
+    C_CHAR = {"precedence": 1, "bounds": (-128, 127)}
+    C_SHORT = {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)}
+    C_USHORT = {"precedence": 2, "bounds": (0, 2**16 - 1)}
+    C_INT = {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)}
+    C_UINT = {"precedence": 3, "bounds": (0, 2**32 - 1)}
+    C_LONG = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
+    C_ULONG = {"precedence": 4, "bounds": (0, 2**64 - 1)}
+    C_LONGLONG = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
+    C_ULONGLONG = {"precedence": 4, "bounds": (0, 2**64 - 1)}
+    C_DOUBLE = {"precedence": 8, "bounds": None}
+    C_LONGDOUBLE = {"precedence": 9, "bounds": None}
 
 
 class Interpreter:
@@ -1378,12 +1528,139 @@ class Interpreter:
             self.interpret_instruction(instruction)
 
     def interpret_instruction(self, instruction: Instruction) -> None:
-        pass
+        match instruction.type:
+            case InstructionType.PUSH:
+                self.stack.append(instruction.content)
+
+            case InstructionType.POP:
+                self.check_underflow(1)
+                self.stack.pop()
+
+            case InstructionType.DROP:
+                self.check_underflow(1)
+                self.stack.clear()
+
+            case InstructionType.DUP:
+                self.check_underflow(1)
+                self.stack.append(self.stack[-1])
+
+            case InstructionType.OVER:
+                self.check_underflow(2)
+                self.stack.append(self.stack[-2])
+
+            case InstructionType.SWAP:
+                self.check_underflow(2)
+                self.stack[-2], self.stack[-1] = self.stack[-1], self.stack[-2]
+
+            case InstructionType.ROT:
+                self.check_underflow(3)
+                self.stack[-2], self.stack[-3], self.stack[-1] = (
+                    self.stack[-1],
+                    self.stack[-2],
+                    self.stack[-3],
+                )
+
+            case InstructionType.PLUS:
+                self.check_underflow(2)
+                b = self.stack.pop()
+                a = self.stack.pop()
+                self.binary_operator(
+                    a, b, (lambda x, y: x + y), self.get_numeric_types()
+                )
+
+    def binary_operator(
+        self, a: dict, b: dict, operator: any, allowed_types: list
+    ) -> None:
+        self.check_type(a, allowed_types)
+        self.check_type(b, allowed_types)
+
+        result_type = self.get_higher_type(a["type"], b["type"])
+        result_value = operator(a["value"], b["value"])
+
+        if result_type.value["bounds"] is not None:
+            if (
+                result_value < result_type.value["bounds"][0]
+                or result_value > result_type.value["bounds"][1]
+            ):
+                Log.print(
+                    LogType.ERROR,
+                    "Value out of type bounds !",
+                    {
+                        "location": self.peek_previous().token.location,
+                        "location_message": f"expected a value in range: {result_type.value['bounds']}",
+                    },
+                )
+                raise InterpreterError
+
+        self.stack.append({"type": result_type, "value": result_value})
+
+    def check_type(self, a: dict, expected_types: list) -> None:
+        if a["type"] not in expected_types:
+            Log.print(
+                LogType.ERROR,
+                "Invalid type operation !",
+                {
+                    "location": self.peek_previous().token.location,
+                    "location_message": f"should be one of those: {' '.join(arg.value.lower() for arg in expected_types)}",
+                },
+            )
+            raise InterpreterError
+
+    def check_underflow(self, size: int) -> None:
+        if len(self.stack) < size:
+            Log.print(
+                LogType.ERROR,
+                "Stack underflow !",
+                {
+                    "location": self.peek_previous().token.location,
+                    "location_message": "not enouth arguments on the stack",
+                },
+            )
+            raise InterpreterError
+
+    def get_higher_type(self, a: Type, b: Type) -> Type:
+        a_precedence = a.value["precedence"]
+        b_precedence = b.value["precedence"]
+        return a if a_precedence >= b_precedence else b
+
+    def get_numeric_types(self) -> list:
+        return [
+            Type.I8,
+            Type.I16,
+            Type.I32,
+            Type.I64,
+            Type.I128,
+            Type.U8,
+            Type.U16,
+            Type.U32,
+            Type.U64,
+            Type.U128,
+            Type.F16,
+            Type.F32,
+            Type.F64,
+            Type.F128,
+            Type.USIZE,
+            Type.ISIZE,
+            Type.C_CHAR,
+            Type.C_SHORT,
+            Type.C_USHORT,
+            Type.C_INT,
+            Type.C_UINT,
+            Type.C_LONG,
+            Type.C_ULONG,
+            Type.C_LONGLONG,
+            Type.C_ULONGLONG,
+            Type.C_DOUBLE,
+            Type.C_LONGDOUBLE,
+        ]
 
     def advance(self) -> Instruction:
         instruction = self.peek()
         self.current += 1
         return instruction
+
+    def peek_previous(self) -> Instruction:
+        return self.instructions[self.current - 1]
 
     def peek(self) -> Instruction:
         return self.instructions[self.current]
