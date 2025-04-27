@@ -261,6 +261,7 @@ class Tokenizer:
             Keyword("bool", TokenType.TYPE),
             Keyword("void", TokenType.TYPE),
             Keyword("error", TokenType.TYPE),
+            Keyword("type", TokenType.TYPE),
             Keyword("string", TokenType.TYPE),
             Keyword("array", TokenType.TYPE),
             Keyword("vector", TokenType.TYPE),
@@ -299,8 +300,8 @@ class Tokenizer:
         return self.tokens
 
     def tokenize_lexeme(self) -> None:
-        char = self.advance()
-        match char:
+        lexeme = self.advance()
+        match lexeme:
             case " " | "\t":
                 pass
 
@@ -308,7 +309,7 @@ class Tokenizer:
                 while not self.eof() and self.peek() != "\n":
                     self.advance()
 
-            case "\n" | "\r":
+            case "\n":
                 self.line += 1
                 self.current_offset = 0
 
@@ -387,16 +388,16 @@ class Tokenizer:
                 else:
                     self.add_token(TokenType.PLUS)
 
-            case _ if char.isdigit():
+            case _ if lexeme.isdigit():
                 self.handle_numbers()
 
-            case _ if char.isalpha() or char in ["_", "@"]:
+            case _ if lexeme.isalpha() or lexeme in ["_", "@"]:
                 self.handle_identifiers()
 
             case _:
                 Log.print(
                     LogType.WARNING,
-                    f"Invalid symbol {Color.GREY}'{Color.PURPLE}{char}{Color.GREY}'{Color.RESET} !",
+                    f"Invalid symbol {Color.GREY}'{Color.PURPLE}{lexeme}{Color.GREY}'{Color.RESET} !",
                     {
                         "location": self.get_location(),
                     },
@@ -616,7 +617,7 @@ class Parser:
             case TokenType.INTEGER:
                 return Instruction(
                     InstructionType.PUSH,
-                    {"type": Type.I64, "value": int(token.lexeme)},
+                    {"type": None, "value": int(token.lexeme)},
                     token,
                 )
             case TokenType.FLOAT:
@@ -635,6 +636,12 @@ class Parser:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.BOOL, "value": token.lexeme.lower() == "true"},
+                    token,
+                )
+            case TokenType.TYPE:
+                return Instruction(
+                    InstructionType.PUSH,
+                    {"type": Type.TYPE, "value": Type[token.lexeme.upper()]},
                     token,
                 )
             case TokenType.IDENTIFIER:
@@ -1470,47 +1477,44 @@ class Parser:
 
 
 class Type(Enum):
-    I8 = {"precedence": 1, "bounds": (-(2**7), 2**7 - 1)}
-    I16 = {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)}
-    I32 = {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)}
-    I64 = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
-    I128 = {"precedence": 5, "bounds": (-(2**127), 2**127 - 1)}
-    U8 = {"precedence": 1, "bounds": (0, 2**8 - 1)}
-    U16 = {"precedence": 2, "bounds": (0, 2**16 - 1)}
-    U32 = {"precedence": 3, "bounds": (0, 2**32 - 1)}
-    U64 = {"precedence": 4, "bounds": (0, 2**64 - 1)}
-    U128 = {"precedence": 5, "bounds": (0, 2**128 - 1)}
-
-    F16 = {"precedence": 6, "bounds": None}
-    F32 = {"precedence": 7, "bounds": None}
-    F64 = {"precedence": 8, "bounds": None}
-    F128 = {"precedence": 9, "bounds": None}
-
-    BOOL = {"precedence": 0, "bounds": None}
-    VOID = {"precedence": 0, "bounds": None}
-
-    STRING = {"precedence": 0, "bounds": None}
-    ARRAY = {"precedence": 0, "bounds": None}
-    VECTOR = {"precedence": 0, "bounds": None}
-    HASHMAP = {"precedence": 0, "bounds": None}
-    STACK = {"precedence": 0, "bounds": None}
-    QUEUE = {"precedence": 0, "bounds": None}
-    PTR = {"precedence": 0, "bounds": None}
-    ERROR = {"precedence": 0, "bounds": None}
-
-    USIZE = {"precedence": 5, "bounds": (0, 2**64 - 1)}
-    ISIZE = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
-    C_CHAR = {"precedence": 1, "bounds": (-128, 127)}
-    C_SHORT = {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)}
-    C_USHORT = {"precedence": 2, "bounds": (0, 2**16 - 1)}
-    C_INT = {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)}
-    C_UINT = {"precedence": 3, "bounds": (0, 2**32 - 1)}
-    C_LONG = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
-    C_ULONG = {"precedence": 4, "bounds": (0, 2**64 - 1)}
-    C_LONGLONG = {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)}
-    C_ULONGLONG = {"precedence": 4, "bounds": (0, 2**64 - 1)}
-    C_DOUBLE = {"precedence": 8, "bounds": None}
-    C_LONGDOUBLE = {"precedence": 9, "bounds": None}
+    I8 = "I8"
+    I16 = "I16"
+    I32 = "I32"
+    I64 = "I64"
+    I128 = "I128"
+    U8 = "U8"
+    U16 = "U16"
+    U32 = "U32"
+    U64 = "U64"
+    U128 = "U128"
+    F16 = "F16"
+    F32 = "F32"
+    F64 = "F64"
+    F128 = "F128"
+    BOOL = "Bool"
+    VOID = "Void"
+    STRING = "String"
+    ARRAY = "Array"
+    VECTOR = "Vector"
+    HASHMAP = "Hashmap"
+    STACK = "Stack"
+    QUEUE = "Queue"
+    ERROR = "Error"
+    TYPE = "Type"
+    PTR = "Ptr"
+    USIZE = "Usize"
+    ISIZE = "Isize"
+    C_CHAR = "C_char"
+    C_SHORT = "C_short"
+    C_USHORT = "C_ushort"
+    C_INT = "C_int"
+    C_UINT = "C_uint"
+    C_LONG = "C_long"
+    C_ULONG = "C_ulong"
+    C_LONGLONG = "C_longlong"
+    C_ULONGLONG = "C_ulonglong"
+    C_DOUBLE = "C_double"
+    C_LONGDOUBLE = "C_longdouble"
 
 
 class Interpreter:
@@ -1518,6 +1522,46 @@ class Interpreter:
         self.stack = []
         self.instructions = []
         self.current = 0
+        self.type_infos = {
+            Type.I8: {"precedence": 1, "bounds": (-(2**7), 2**7 - 1)},
+            Type.I16: {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)},
+            Type.I32: {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)},
+            Type.I64: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
+            Type.I128: {"precedence": 5, "bounds": (-(2**127), 2**127 - 1)},
+            Type.U8: {"precedence": 1, "bounds": (0, 2**8 - 1)},
+            Type.U16: {"precedence": 2, "bounds": (0, 2**16 - 1)},
+            Type.U32: {"precedence": 3, "bounds": (0, 2**32 - 1)},
+            Type.U64: {"precedence": 4, "bounds": (0, 2**64 - 1)},
+            Type.U128: {"precedence": 5, "bounds": (0, 2**128 - 1)},
+            Type.F16: {"precedence": 6, "bounds": None},
+            Type.F32: {"precedence": 7, "bounds": None},
+            Type.F64: {"precedence": 8, "bounds": None},
+            Type.F128: {"precedence": 9, "bounds": None},
+            Type.BOOL: {"precedence": 0, "bounds": None},
+            Type.VOID: {"precedence": 0, "bounds": None},
+            Type.STRING: {"precedence": 0, "bounds": None},
+            Type.ARRAY: {"precedence": 0, "bounds": None},
+            Type.VECTOR: {"precedence": 0, "bounds": None},
+            Type.HASHMAP: {"precedence": 0, "bounds": None},
+            Type.STACK: {"precedence": 0, "bounds": None},
+            Type.QUEUE: {"precedence": 0, "bounds": None},
+            Type.ERROR: {"precedence": 0, "bounds": None},
+            Type.TYPE: {"precedence": 0, "bounds": None},
+            Type.PTR: {"precedence": 0, "bounds": None},
+            Type.USIZE: {"precedence": 5, "bounds": (0, 2**64 - 1)},
+            Type.ISIZE: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
+            Type.C_CHAR: {"precedence": 1, "bounds": (-128, 127)},
+            Type.C_SHORT: {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)},
+            Type.C_USHORT: {"precedence": 2, "bounds": (0, 2**16 - 1)},
+            Type.C_INT: {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)},
+            Type.C_UINT: {"precedence": 3, "bounds": (0, 2**32 - 1)},
+            Type.C_LONG: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
+            Type.C_ULONG: {"precedence": 4, "bounds": (0, 2**64 - 1)},
+            Type.C_LONGLONG: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
+            Type.C_ULONGLONG: {"precedence": 4, "bounds": (0, 2**64 - 1)},
+            Type.C_DOUBLE: {"precedence": 8, "bounds": None},
+            Type.C_LONGDOUBLE: {"precedence": 9, "bounds": None},
+        }
 
     def interpret(self, instructions: list) -> None:
         self.instructions = instructions
@@ -1530,6 +1574,10 @@ class Interpreter:
     def interpret_instruction(self, instruction: Instruction) -> None:
         match instruction.type:
             case InstructionType.PUSH:
+                if instruction.content["type"] is None:
+                    value = instruction.content["value"]
+                    instruction.content["type"] = self.get_smallest_fit(value)
+
                 self.stack.append(instruction.content)
 
             case InstructionType.POP:
@@ -1577,17 +1625,14 @@ class Interpreter:
         result_type = self.get_higher_type(a["type"], b["type"])
         result_value = operator(a["value"], b["value"])
 
-        if result_type.value["bounds"] is not None:
-            if (
-                result_value < result_type.value["bounds"][0]
-                or result_value > result_type.value["bounds"][1]
-            ):
+        if self.type_infos[result_type]["bounds"] is not None:
+            type_info = self.type_infos[result_type]
+            if not type_info["bounds"][0] <= result_value <= type_info["bounds"][1]:
                 Log.print(
                     LogType.ERROR,
-                    "Value out of type bounds !",
+                    "Result out of type bounds !",
                     {
                         "location": self.peek_previous().token.location,
-                        "location_message": f"expected a value in range: {result_type.value['bounds']}",
                     },
                 )
                 raise InterpreterError
@@ -1619,9 +1664,82 @@ class Interpreter:
             raise InterpreterError
 
     def get_higher_type(self, a: Type, b: Type) -> Type:
-        a_precedence = a.value["precedence"]
-        b_precedence = b.value["precedence"]
-        return a if a_precedence >= b_precedence else b
+        precedence_a = self.type_infos[a]["precedence"]
+        precedence_b = self.type_infos[b]["precedence"]
+        return a if precedence_a >= precedence_b else b
+
+    def get_smallest_fit(self, value: int) -> Type:
+        if value < 0:
+            if (
+                self.type_infos[Type.I8]["bounds"][0]
+                <= value
+                <= self.type_infos[Type.I8]["bounds"][1]
+            ):
+                return Type.I8
+            elif (
+                self.type_infos[Type.I16]["bounds"][0]
+                <= value
+                <= self.type_infos[Type.I16]["bounds"][1]
+            ):
+                return Type.I16
+            elif (
+                self.type_infos[Type.I32]["bounds"][0]
+                <= value
+                <= self.type_infos[Type.I32]["bounds"][1]
+            ):
+                return Type.I32
+            elif (
+                self.type_infos[Type.I64]["bounds"][0]
+                <= value
+                <= self.type_infos[Type.I64]["bounds"][1]
+            ):
+                return Type.I64
+            elif (
+                self.type_infos[Type.I128]["bounds"][0]
+                <= value
+                <= self.type_infos[Type.I128]["bounds"][1]
+            ):
+                return Type.I128
+
+        if (
+            self.type_infos[Type.U8]["bounds"][0]
+            <= value
+            <= self.type_infos[Type.U8]["bounds"][1]
+        ):
+            return Type.U8
+        elif (
+            self.type_infos[Type.U16]["bounds"][0]
+            <= value
+            <= self.type_infos[Type.U16]["bounds"][1]
+        ):
+            return Type.U16
+        elif (
+            self.type_infos[Type.U32]["bounds"][0]
+            <= value
+            <= self.type_infos[Type.U32]["bounds"][1]
+        ):
+            return Type.U32
+        elif (
+            self.type_infos[Type.U64]["bounds"][0]
+            <= value
+            <= self.type_infos[Type.U64]["bounds"][1]
+        ):
+            return Type.U64
+        elif (
+            self.type_infos[Type.U128]["bounds"][0]
+            <= value
+            <= self.type_infos[Type.U128]["bounds"][1]
+        ):
+            return Type.U128
+
+        Log.print(
+            LogType.ERROR,
+            "Integer literal exceeds maximum type bounds !",
+            {
+                "location": self.peek_previous().token.location,
+            },
+        )
+        raise InterpreterError
 
     def get_numeric_types(self) -> list:
         return [
@@ -1686,9 +1804,14 @@ class Cli:
 
         try:
             with open(PATH, "r", encoding="utf-8") as file:
-                SOURCE = file.read().strip()
+                SOURCE = self.sanitize_source(file.read().strip())
         except Exception:
-            Log.print(LogType.ERROR, "No such file or directory !", f"path: {PATH}")
+            Log.print(
+                LogType.ERROR,
+                "No such file or directory !",
+                {},
+                f"path: {PATH}",
+            )
             exit(1)
 
         tokenizer = Tokenizer()
@@ -1697,9 +1820,8 @@ class Cli:
 
         if SOURCE != "":
             try:
-                instructions = parser.parse(tokenizer.tokenize())
-                interpreter.interpret(instructions)
-                print(instructions)
+                interpreter.interpret(parser.parse(tokenizer.tokenize()))
+                print(parser.instructions)
                 print(interpreter.stack)
             except Exception as error:
                 if not isinstance(error, GlobalError):
@@ -1715,9 +1837,13 @@ class Cli:
 
         while True:
             try:
-                SOURCE = input("> ").strip()
+                SOURCE = self.sanitize_source(input("> ").strip())
             except Exception:
-                Log.print(LogType.ERROR, "Failed to read user input !")
+                Log.print(
+                    LogType.ERROR,
+                    "Failed to read user input !",
+                    {},
+                )
                 exit(1)
 
             if SOURCE.lower() in ("quit", "exit"):
@@ -1725,13 +1851,15 @@ class Cli:
 
             if SOURCE != "":
                 try:
-                    instructions = parser.parse(tokenizer.tokenize())
-                    interpreter.interpret(instructions)
-                    print(instructions)
+                    interpreter.interpret(parser.parse(tokenizer.tokenize()))
+                    print(parser.instructions)
                     print(interpreter.stack)
                 except Exception as error:
                     if not isinstance(error, GlobalError):
                         raise
+
+    def sanitize_source(self, source: str) -> str:
+        return source.replace("\t", "").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def main():
