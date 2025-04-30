@@ -1,31 +1,103 @@
-from sys import argv, exit
+import sys
+
 from enum import Enum
 from dataclasses import dataclass
 
+# GLOBALS
 SOURCE: str = ""
 PATH: str = ""
 
 
-class GlobalError(Exception):
+# ERRORS
+class GlobalException(Exception):
     pass
 
 
-class TokenizerError(GlobalError):
-    pass
+# ENUMS
+class TokenKind(Enum):
+    L_PAREN = "left_parenthesis"
+    R_PAREN = "right_parenthesis"
+    L_CURLY = "left_curly_brace"
+    R_CURLY = "right_curly_brace"
+    L_SQUARE = "left_square_bracket"
+    R_SQUARE = "right_square_bracket"
+    COMMA = "comma"
+    DOT = "dot"
+
+    PLUS = "plus"
+    MINUS = "minus"
+    MULTIPLICATION = "multiplication"
+    DIVISION = "division"
+    EUCLIDIAN = "euclidian_division"
+    REMAINDER = "remainder"
+    POWER = "power"
+
+    EQUAL_EQUAL = "equal"
+    NOT_EQUAL = "not_equal"
+    GREATER = "greater"
+    GREATER_EQUAL = "greater_equal"
+    LESS = "less"
+    LESS_EQUAL = "less_equal"
+
+    BITWISE_AND = "bitwise_and"
+    BITWISE_OR = "bitwise_or"
+    BITWISE_XOR = "bitwise_xor"
+    BITWISE_NOT = "bitwise_not"
+    LEFT_SHIFT = "left_shift"
+    RIGHT_SHIFT = "right_shift"
+
+    IDENTIFIER = "identifier"
+    STRING = "string"
+    INTEGER = "integer"
+    FLOAT = "float"
+    BOOLEAN = "boolean"
+
+    AND = "logical_and"
+    OR = "logical_or"
+    NOT = "logical_not"
+
+    TYPE = "type"
+
+    IF = "if"
+    ELSE = "else"
+    WHILE = "while"
+    BREAK = "break"
+    CONTINUE = "continue"
+    MATCH = "match"
+    CASE = "case"
+
+    TRY = "try"
+    CATCH = "catch"
+
+    FUNCTION = "function"
+    RETURN = "return"
+    CALL = "call"
+    DO = "do"
+    WITH = "with"
+
+    CONST = "const"
+    STATIC = "static"
+    MUTABLE = "mutable"
+    SET = "set"
+
+    STRUCT = "struct"
+    IMPLEMENT = "implement"
+    ENUM = "enum"
+    UNION = "union"
+
+    POP = "pop"
+    DROP = "drop"
+    DUP = "duplicate"
+    OVER = "over"
+    ROT = "rotate"
+    SWAP = "swap"
+
+    REQUIRE = "require"
+    DEFER = "defer"
+    END = "end"
 
 
-class ParserError(GlobalError):
-    pass
-
-
-class InterpreterError(GlobalError):
-    pass
-
-
-class CompilerError(GlobalError):
-    pass
-
-
+# DATACLASSES
 @dataclass
 class Color:
     RESET = "\033[0m"
@@ -44,151 +116,16 @@ class Color:
     BLINK = "\033[5m"
 
 
-class LogType(Enum):
-    ERROR = "ERROR"
-    WARNING = "WARNING"
-    INFO = "INFO"
-    DEBUG = "DEBUG"
-
-
-class Log:
-    COLORS = {
-        LogType.ERROR: Color.RED,
-        LogType.WARNING: Color.YELLOW,
-        LogType.INFO: Color.BLUE,
-        LogType.DEBUG: Color.GREY,
-    }
-
-    def print(log_type: LogType, message: str, options: dict, *arguments: any) -> None:
-        color = Log.COLORS.get(log_type)
-        informations = ""
-
-        if "location" in options:
-            location = options.get("location")
-            line_content = f"{location.line}| {SOURCE.splitlines()[location.line - 1]}"
-            pointer_line = (
-                " " * (2 + len(str(location.line)))
-                + " " * location.start_offset
-                + "─" * max(1, location.current_offset - location.start_offset)
-            )
-            informations += "\n| ".join(
-                str(arg)
-                for arg in [
-                    f"location: {PATH}:{location.line}:{location.start_offset}"
-                    if PATH != ""
-                    else "location:",
-                    f"{line_content}",
-                    f"{color}{pointer_line}{f' {options.get("location_message")}' if 'location_message' in options else ''}{Color.GREY}",
-                ]
-            )
-            if len(arguments) > 0:
-                informations += "\n| "
-
-        informations += "\n| ".join(str(argument) for argument in arguments)
-
-        print(
-            f"[{Color.BOLD}{color}{log_type.value}{Color.RESET}] {message}{Color.GREY}{'\n| ' if informations != '' else ''}{informations}{Color.RESET}"
-        )
-
-
-class TokenType(Enum):
-    L_PAREN = "L_paren"
-    R_PAREN = "R_paren"
-    L_CURLY = "L_curly"
-    R_CURLY = "R_curly"
-    L_SQUARE = "L_square"
-    R_SQUARE = "R_square"
-    COMMA = "Comma"
-    DOT = "Dot"
-
-    PLUS = "Plus"
-    MINUS = "Minus"
-    MULTIPLICATION = "Multiplication"
-    DIVISION = "Division"
-    EUCLIDIAN = "Euclidian"
-    REMINDER = "Reminder"
-    POWER = "Power"
-
-    EQUAL_EQUAL = "Equal_equal"
-    NOT_EQUAL = "Not_equal"
-    GREATER = "Greater"
-    GREATER_EQUAL = "Greater_equal"
-    LESS = "Less"
-    LESS_EQUAL = "Less_equal"
-
-    BITWISE_AND = "Bitwise_and"
-    BITWISE_OR = "Bitwise_or"
-    BITWISE_XOR = "Bitwise_xor"
-    BITWISE_NOT = "Bitwise_not"
-    L_SHIFT = "L_shift"
-    R_SHIFT = "R_shift"
-
-    IDENTIFIER = "Identifier"
-    STRING = "String"
-    INTEGER = "Integer"
-    FLOAT = "Float"
-    BOOLEAN = "Boolean"
-
-    AND = "And"
-    NOT = "Not"
-    OR = "Or"
-
-    TYPE = "Type"
-
-    END = "End"
-
-    CONST = "Const"
-    STATIC = "Static"
-    MUTABLE = "Mutable"
-    SET = "Set"
-
-    IF = "If"
-    ELSE = "Else"
-
-    TRY = "Try"
-    CATCH = "Catch"
-
-    MATCH = "Match"
-    CASE = "Case"
-
-    WHILE = "While"
-    BREAK = "Break"
-    CONTINUE = "Continue"
-
-    FUNCTION = "Function"
-    DO = "Do"
-    WITH = "With"
-    RETURN = "Return"
-    CALL = "Call"
-
-    STRUCT = "Struct"
-    IMPLEMENT = "Implement"
-    ENUM = "Enum"
-    UNION = "Union"
-
-    REQUIRE = "Require"
-    DEFER = "Defer"
-
-    POP = "Pop"
-    DROP = "Drop"
-    DUP = "Dup"
-    OVER = "Over"
-    ROT = "Rot"
-    SWAP = "Swap"
-
-
 @dataclass
 class Location:
     line: int
     start: int
-    start_offset: int
-    current: int
-    current_offset: int
+    end: int
 
 
 @dataclass
 class Token:
-    type: TokenType
+    kind: TokenKind
     lexeme: str
     location: Location
 
@@ -196,8 +133,37 @@ class Token:
 @dataclass
 class Keyword:
     name: str
-    token: TokenType
+    token: TokenKind
 
+
+@dataclass
+class Instruction:
+    kind: str
+    content: any
+    token: Token
+
+
+# CLASSES
+class Logger:
+    TYPES = {
+        "ERROR": Color.RED,
+        "INFO": Color.BLUE,
+        "DEBUG": Color.GREY,
+    }
+
+    def log(log_type: str, message: str, *args: any, location: Location = None) -> None:
+        color = Logger.TYPES[log_type]
+        output = f"[{Color.BOLD}{color}{log_type}{Color.RESET}] {message}"
+
+        if location:
+            line = f"{location.line}: {location.source.splitlines()[location.line - 1]}"
+            pointer = " " * (len(str(location.line)) + 2 + location.start) + "^"
+            output += f"{Color.GREY}\n| {line}\n| {pointer}"
+
+        for arg in args:
+            output += f"\n| {arg}"
+
+        print(f"{output}{Color.RESET}")
 
 class Tokenizer:
     def __init__(self) -> None:
@@ -208,80 +174,80 @@ class Tokenizer:
         self.line = 1
         self.tokens = []
         self.keywords = [
-            Keyword("and", TokenType.AND),
-            Keyword("not", TokenType.NOT),
-            Keyword("or", TokenType.OR),
-            Keyword("case", TokenType.CASE),
-            Keyword("with", TokenType.WITH),
-            Keyword("call", TokenType.CALL),
-            Keyword("catch", TokenType.TRY),
-            Keyword("const", TokenType.CONST),
-            Keyword("break", TokenType.BREAK),
-            Keyword("continue", TokenType.CONTINUE),
-            Keyword("while", TokenType.WHILE),
-            Keyword("do", TokenType.DO),
-            Keyword("else", TokenType.ELSE),
-            Keyword("end", TokenType.END),
-            Keyword("function", TokenType.FUNCTION),
-            Keyword("if", TokenType.IF),
-            Keyword("implement", TokenType.IMPLEMENT),
-            Keyword("match", TokenType.MATCH),
-            Keyword("mutable", TokenType.MUTABLE),
-            Keyword("require", TokenType.REQUIRE),
-            Keyword("return", TokenType.RETURN),
-            Keyword("set", TokenType.SET),
-            Keyword("static", TokenType.STATIC),
-            Keyword("struct", TokenType.STRUCT),
-            Keyword("try", TokenType.TRY),
-            Keyword("union", TokenType.UNION),
-            Keyword("enum", TokenType.ENUM),
-            Keyword("defer", TokenType.DEFER),
-            Keyword("pop", TokenType.POP),
-            Keyword("drop", TokenType.DROP),
-            Keyword("dup", TokenType.DUP),
-            Keyword("over", TokenType.OVER),
-            Keyword("rot", TokenType.ROT),
-            Keyword("swap", TokenType.SWAP),
-            Keyword("true", TokenType.BOOLEAN),
-            Keyword("false", TokenType.BOOLEAN),
-            Keyword("i8", TokenType.TYPE),
-            Keyword("i16", TokenType.TYPE),
-            Keyword("i32", TokenType.TYPE),
-            Keyword("i64", TokenType.TYPE),
-            Keyword("i128", TokenType.TYPE),
-            Keyword("u8", TokenType.TYPE),
-            Keyword("u16", TokenType.TYPE),
-            Keyword("u32", TokenType.TYPE),
-            Keyword("u64", TokenType.TYPE),
-            Keyword("u128", TokenType.TYPE),
-            Keyword("f16", TokenType.TYPE),
-            Keyword("f32", TokenType.TYPE),
-            Keyword("f64", TokenType.TYPE),
-            Keyword("f128", TokenType.TYPE),
-            Keyword("bool", TokenType.TYPE),
-            Keyword("void", TokenType.TYPE),
-            Keyword("error", TokenType.TYPE),
-            Keyword("type", TokenType.TYPE),
-            Keyword("string", TokenType.TYPE),
-            Keyword("array", TokenType.TYPE),
-            Keyword("vector", TokenType.TYPE),
-            Keyword("hashmap", TokenType.TYPE),
-            Keyword("stack", TokenType.TYPE),
-            Keyword("queue", TokenType.TYPE),
-            Keyword("ptr", TokenType.TYPE),
-            Keyword("usize", TokenType.TYPE),
-            Keyword("isize", TokenType.TYPE),
-            Keyword("c_char", TokenType.TYPE),
-            Keyword("c_short", TokenType.TYPE),
-            Keyword("c_ushort", TokenType.TYPE),
-            Keyword("c_int", TokenType.TYPE),
-            Keyword("c_uint", TokenType.TYPE),
-            Keyword("c_long", TokenType.TYPE),
-            Keyword("c_ulong", TokenType.TYPE),
-            Keyword("c_longlong", TokenType.TYPE),
-            Keyword("c_ulonglong", TokenType.TYPE),
-            Keyword("c_double", TokenType.TYPE),
-            Keyword("c_longdouble", TokenType.TYPE),
+            Keyword("and", TokenKind.AND),
+            Keyword("not", TokenKind.NOT),
+            Keyword("or", TokenKind.OR),
+            Keyword("case", TokenKind.CASE),
+            Keyword("with", TokenKind.WITH),
+            Keyword("call", TokenKind.CALL),
+            Keyword("catch", TokenKind.TRY),
+            Keyword("const", TokenKind.CONST),
+            Keyword("break", TokenKind.BREAK),
+            Keyword("continue", TokenKind.CONTINUE),
+            Keyword("while", TokenKind.WHILE),
+            Keyword("do", TokenKind.DO),
+            Keyword("else", TokenKind.ELSE),
+            Keyword("end", TokenKind.END),
+            Keyword("function", TokenKind.FUNCTION),
+            Keyword("if", TokenKind.IF),
+            Keyword("implement", TokenKind.IMPLEMENT),
+            Keyword("match", TokenKind.MATCH),
+            Keyword("mutable", TokenKind.MUTABLE),
+            Keyword("require", TokenKind.REQUIRE),
+            Keyword("return", TokenKind.RETURN),
+            Keyword("set", TokenKind.SET),
+            Keyword("static", TokenKind.STATIC),
+            Keyword("struct", TokenKind.STRUCT),
+            Keyword("try", TokenKind.TRY),
+            Keyword("union", TokenKind.UNION),
+            Keyword("enum", TokenKind.ENUM),
+            Keyword("defer", TokenKind.DEFER),
+            Keyword("pop", TokenKind.POP),
+            Keyword("drop", TokenKind.DROP),
+            Keyword("dup", TokenKind.DUP),
+            Keyword("over", TokenKind.OVER),
+            Keyword("rot", TokenKind.ROT),
+            Keyword("swap", TokenKind.SWAP),
+            Keyword("true", TokenKind.BOOLEAN),
+            Keyword("false", TokenKind.BOOLEAN),
+            Keyword("i8", TokenKind.TYPE),
+            Keyword("i16", TokenKind.TYPE),
+            Keyword("i32", TokenKind.TYPE),
+            Keyword("i64", TokenKind.TYPE),
+            Keyword("i128", TokenKind.TYPE),
+            Keyword("u8", TokenKind.TYPE),
+            Keyword("u16", TokenKind.TYPE),
+            Keyword("u32", TokenKind.TYPE),
+            Keyword("u64", TokenKind.TYPE),
+            Keyword("u128", TokenKind.TYPE),
+            Keyword("f16", TokenKind.TYPE),
+            Keyword("f32", TokenKind.TYPE),
+            Keyword("f64", TokenKind.TYPE),
+            Keyword("f128", TokenKind.TYPE),
+            Keyword("bool", TokenKind.TYPE),
+            Keyword("void", TokenKind.TYPE),
+            Keyword("error", TokenKind.TYPE),
+            Keyword("type", TokenKind.TYPE),
+            Keyword("string", TokenKind.TYPE),
+            Keyword("array", TokenKind.TYPE),
+            Keyword("list", TokenKind.TYPE),
+            Keyword("hashmap", TokenKind.TYPE),
+            Keyword("stack", TokenKind.TYPE),
+            Keyword("queue", TokenKind.TYPE),
+            Keyword("pointer", TokenKind.TYPE),
+            Keyword("usize", TokenKind.TYPE),
+            Keyword("isize", TokenKind.TYPE),
+            Keyword("c_char", TokenKind.TYPE),
+            Keyword("c_short", TokenKind.TYPE),
+            Keyword("c_ushort", TokenKind.TYPE),
+            Keyword("c_int", TokenKind.TYPE),
+            Keyword("c_uint", TokenKind.TYPE),
+            Keyword("c_long", TokenKind.TYPE),
+            Keyword("c_ulong", TokenKind.TYPE),
+            Keyword("c_longlong", TokenKind.TYPE),
+            Keyword("c_ulonglong", TokenKind.TYPE),
+            Keyword("c_double", TokenKind.TYPE),
+            Keyword("c_longdouble", TokenKind.TYPE),
         ]
 
     def tokenize(self) -> list:
@@ -314,64 +280,64 @@ class Tokenizer:
                 self.current_offset = 0
 
             case "(":
-                self.add_token(TokenType.L_PAREN)
+                self.add_token(TokenKind.L_PAREN)
             case ")":
-                self.add_token(TokenType.R_PAREN)
+                self.add_token(TokenKind.R_PAREN)
             case "{":
-                self.add_token(TokenType.L_CURLY)
+                self.add_token(TokenKind.L_CURLY)
             case "}":
-                self.add_token(TokenType.R_CURLY)
+                self.add_token(TokenKind.R_CURLY)
             case "[":
-                self.add_token(TokenType.L_SQUARE)
+                self.add_token(TokenKind.L_SQUARE)
             case "]":
-                self.add_token(TokenType.R_SQUARE)
+                self.add_token(TokenKind.R_SQUARE)
             case ",":
-                self.add_token(TokenType.COMMA)
+                self.add_token(TokenKind.COMMA)
             case ".":
-                self.add_token(TokenType.DOT)
+                self.add_token(TokenKind.DOT)
             case "%":
-                self.add_token(TokenType.REMINDER)
+                self.add_token(TokenKind.REMINDER)
             case "&":
-                self.add_token(TokenType.BITWISE_AND)
+                self.add_token(TokenKind.BITWISE_AND)
             case "|":
-                self.add_token(TokenType.BITWISE_OR)
+                self.add_token(TokenKind.BITWISE_OR)
             case "^":
-                self.add_token(TokenType.BITWISE_XOR)
+                self.add_token(TokenKind.BITWISE_XOR)
             case "~":
-                self.add_token(TokenType.BITWISE_NOT)
+                self.add_token(TokenKind.BITWISE_NOT)
 
             case "*":
                 self.add_token(
-                    TokenType.POWER if self.match("*") else TokenType.MULTIPLICATION
+                    TokenKind.POWER if self.match("*") else TokenKind.MULTIPLICATION
                 )
             case "/":
                 self.add_token(
-                    TokenType.EUCLIDIAN if self.match("/") else TokenType.DIVISION
+                    TokenKind.EUCLIDIAN if self.match("/") else TokenKind.DIVISION
                 )
 
             case "<":
                 if self.match("="):
-                    self.add_token(TokenType.LESS_EQUAL)
+                    self.add_token(TokenKind.LESS_EQUAL)
                 elif self.match("<"):
-                    self.add_token(TokenType.L_SHIFT)
+                    self.add_token(TokenKind.L_SHIFT)
                 else:
-                    self.add_token(TokenType.LESS)
+                    self.add_token(TokenKind.LESS)
 
             case ">":
                 if self.match("="):
-                    self.add_token(TokenType.GREATER_EQUAL)
+                    self.add_token(TokenKind.GREATER_EQUAL)
                 elif self.match(">"):
-                    self.add_token(TokenType.R_SHIFT)
+                    self.add_token(TokenKind.R_SHIFT)
                 else:
-                    self.add_token(TokenType.GREATER)
+                    self.add_token(TokenKind.GREATER)
 
             case "=":
                 if self.match("="):
-                    self.add_token(TokenType.EQUAL_EQUAL)
+                    self.add_token(TokenKind.EQUAL_EQUAL)
 
             case "!":
                 if self.match("="):
-                    self.add_token(TokenType.NOT_EQUAL)
+                    self.add_token(TokenKind.NOT_EQUAL)
 
             case '"':
                 self.handle_strings()
@@ -380,13 +346,13 @@ class Tokenizer:
                 if not self.eof() and self.peek().isdigit():
                     self.handle_numbers()
                 else:
-                    self.add_token(TokenType.MINUS)
+                    self.add_token(TokenKind.MINUS)
 
             case "+":
                 if not self.eof() and self.peek().isdigit():
                     self.handle_numbers()
                 else:
-                    self.add_token(TokenType.PLUS)
+                    self.add_token(TokenKind.PLUS)
 
             case _ if lexeme.isdigit():
                 self.handle_numbers()
@@ -411,9 +377,9 @@ class Tokenizer:
             self.advance()
             while not self.eof() and self.peek().isdigit():
                 self.advance()
-            self.add_token(TokenType.FLOAT)
+            self.add_token(TokenKind.FLOAT)
         else:
-            self.add_token(TokenType.INTEGER)
+            self.add_token(TokenKind.INTEGER)
 
     def handle_strings(self) -> None:
         while not self.eof() and self.peek() != '"':
@@ -469,32 +435,30 @@ class Tokenizer:
             raise TokenizerError
 
         self.advance()
-        self.add_token(TokenType.STRING)
+        self.add_token(TokenKind.STRING)
 
     def handle_identifiers(self) -> None:
         while not self.eof() and (self.peek().isalnum() or self.peek() == "_"):
             self.advance()
         text = SOURCE[self.start : self.current]
-        token_type = self.get_keyword(text.lower()) or TokenType.IDENTIFIER
+        token_type = self.get_keyword(text.lower()) or TokenKind.IDENTIFIER
         self.add_token(token_type)
 
-    def get_keyword(self, key: str) -> TokenType | None:
+    def get_keyword(self, key: str) -> TokenKind | None:
         for keyword in self.keywords:
             if keyword.name == key:
                 return keyword.token
         return None
 
-    def add_token(self, type: TokenType) -> None:
+    def add_token(self, type: TokenKind) -> None:
         self.tokens.append(
             Token(
-                type=type,
+                kind=type,
                 lexeme=SOURCE[self.start : self.current],
                 location=Location(
                     line=self.line,
-                    start=self.start,
-                    start_offset=self.start_offset,
-                    current=self.current,
-                    current_offset=self.current_offset,
+                    start=self.start_offset,
+                    end=self.current_offset,
                 ),
             )
         )
@@ -502,10 +466,8 @@ class Tokenizer:
     def get_location(self) -> Location:
         return Location(
             line=self.line,
-            start=self.start,
-            start_offset=self.start_offset,
-            current=self.current,
-            current_offset=self.current_offset,
+            start=self.start_offset,
+            end=self.current_offset,
         )
 
     def eof(self) -> bool:
@@ -531,67 +493,6 @@ class Tokenizer:
         return True
 
 
-class InstructionType(Enum):
-    PUSH = "Push"
-
-    PLUS = "Plus"
-    MINUS = "Minus"
-    MULTIPLICATION = "Multiplication"
-    DIVISION = "Division"
-    EUCLIDIAN = "Euclidian"
-    REMINDER = "Reminder"
-    POWER = "Power"
-
-    EQUAL_EQUAL = "Equal_equal"
-    NOT_EQUAL = "Not_equal"
-    GREATER = "Greater"
-    GREATER_EQUAL = "Greater_equal"
-    LESS = "Less"
-    LESS_EQUAL = "Less_equal"
-
-    BITWISE_AND = "Bitwise_and"
-    BITWISE_OR = "Bitwise_or"
-    BITWISE_XOR = "Bitwise_xor"
-    BITWISE_NOT = "Bitwise_not"
-    L_SHIFT = "L_shift"
-    R_SHIFT = "R_shift"
-
-    AND = "And"
-    NOT = "Not"
-    OR = "Or"
-
-    VARIABLE = "Variable"
-    SET = "Set"
-    IF = "If"
-    MATCH = "Match"
-    WHILE = "While"
-    BREAK = "Break"
-    CONTINUE = "Continue"
-    FUNCTION = "Function"
-    RETURN = "Return"
-    CALL = "Call"
-    STRUCT = "Struct"
-    IMPLEMENT = "Implement"
-    ENUM = "Enum"
-    UNION = "Union"
-    REQUIRE = "Require"
-    DEFER = "Defer"
-
-    POP = "Pop"
-    DROP = "Drop"
-    DUP = "Dup"
-    OVER = "Over"
-    ROT = "Rot"
-    SWAP = "Swap"
-
-
-@dataclass
-class Instruction:
-    type: InstructionType
-    content: any
-    token: Token
-
-
 class Parser:
     def __init__(self) -> None:
         self.instructions = []
@@ -613,240 +514,316 @@ class Parser:
     def parse_instruction(self) -> Instruction | None:
         token = self.advance()
 
-        match token.type:
-            case TokenType.INTEGER:
+        match token.kind:
+            case TokenKind.INTEGER:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": None, "value": int(token.lexeme)},
                     token,
                 )
-            case TokenType.FLOAT:
+            case TokenKind.FLOAT:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.F64, "value": float(token.lexeme)},
                     token,
                 )
-            case TokenType.STRING:
+            case TokenKind.STRING:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.STRING, "value": str(token.lexeme[1:-1])},
                     token,
                 )
-            case TokenType.BOOLEAN:
+            case TokenKind.BOOLEAN:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.BOOL, "value": token.lexeme.lower() == "true"},
                     token,
                 )
-            case TokenType.TYPE:
+            case TokenKind.TYPE:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.TYPE, "value": Type[token.lexeme.upper()]},
                     token,
                 )
-            case TokenType.IDENTIFIER:
+            case TokenKind.IDENTIFIER:
                 return Instruction(
                     InstructionType.PUSH,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.PLUS:
+            case TokenKind.PLUS:
                 return Instruction(
                     InstructionType.PLUS,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.MINUS:
+            case TokenKind.MINUS:
                 return Instruction(
                     InstructionType.MINUS,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.MULTIPLICATION:
+            case TokenKind.MULTIPLICATION:
                 return Instruction(
                     InstructionType.MULTIPLICATION,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.DIVISION:
+            case TokenKind.DIVISION:
                 return Instruction(
                     InstructionType.DIVISION,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.EUCLIDIAN:
+            case TokenKind.EUCLIDIAN:
                 return Instruction(
                     InstructionType.EUCLIDIAN,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.REMINDER:
+            case TokenKind.REMINDER:
                 return Instruction(
                     InstructionType.REMINDER,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.POWER:
+            case TokenKind.POWER:
                 return Instruction(
                     InstructionType.POWER,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.AND:
+            case TokenKind.AND:
                 return Instruction(
                     InstructionType.AND,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.OR:
+            case TokenKind.OR:
                 return Instruction(
                     InstructionType.OR,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.NOT:
+            case TokenKind.NOT:
                 return Instruction(
                     InstructionType.NOT,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.EQUAL_EQUAL:
+            case TokenKind.EQUAL_EQUAL:
                 return Instruction(
                     InstructionType.EQUAL_EQUAL,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.NOT_EQUAL:
+            case TokenKind.NOT_EQUAL:
                 return Instruction(
                     InstructionType.NOT_EQUAL,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.GREATER:
+            case TokenKind.GREATER:
                 return Instruction(
                     InstructionType.GREATER,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.GREATER_EQUAL:
+            case TokenKind.GREATER_EQUAL:
                 return Instruction(
                     InstructionType.GREATER_EQUAL,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.LESS:
+            case TokenKind.LESS:
                 return Instruction(
                     InstructionType.LESS,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.LESS_EQUAL:
+            case TokenKind.LESS_EQUAL:
                 return Instruction(
                     InstructionType.LESS_EQUAL,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.POP:
+            case TokenKind.POP:
                 return Instruction(
                     InstructionType.POP,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.DROP:
+            case TokenKind.DROP:
                 return Instruction(
                     InstructionType.DROP,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.DUP:
+            case TokenKind.DUP:
                 return Instruction(
                     InstructionType.DUP,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.OVER:
+            case TokenKind.OVER:
                 return Instruction(
                     InstructionType.OVER,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.ROT:
+            case TokenKind.ROT:
                 return Instruction(
                     InstructionType.ROT,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.SWAP:
+            case TokenKind.SWAP:
                 return Instruction(
                     InstructionType.SWAP,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.RETURN:
+            case TokenKind.RETURN:
                 return Instruction(
                     InstructionType.RETURN,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.CALL:
+            case TokenKind.CALL:
                 return Instruction(
                     InstructionType.CALL,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.BREAK:
+            case TokenKind.BREAK:
                 return Instruction(
                     InstructionType.BREAK,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.CONTINUE:
+            case TokenKind.CONTINUE:
                 return Instruction(
                     InstructionType.CONTINUE,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenType.DEFER:
+            case TokenKind.DEFER:
                 return Instruction(
                     InstructionType.DEFER,
                     {"type": Type.VOID, "value": token.lexeme},
                     token,
                 )
 
-            case TokenType.MUTABLE | TokenType.CONST | TokenType.STATIC:
+            case TokenKind.MUTABLE | TokenKind.CONST | TokenKind.STATIC:
                 return self.handle_variables(token)
-            case TokenType.SET:
-                return self.handle_assignations(token)
-            case TokenType.FUNCTION:
+            case TokenKind.SET:
+                return self.handle_sets(token)
+            case TokenKind.FUNCTION:
                 return self.handle_functions(token)
-            case TokenType.IF:
+            case TokenKind.IF:
                 return self.handle_if_elses(token)
-            case TokenType.MATCH:
+            case TokenKind.MATCH:
                 return self.handle_matchs(token)
-            case TokenType.WHILE:
+            case TokenKind.WHILE:
                 return self.handle_whiles(token)
-            case TokenType.STRUCT:
+            case TokenKind.STRUCT:
                 return self.handle_structs(token)
-            case TokenType.IMPLEMENT:
+            case TokenKind.IMPLEMENT:
                 return self.handle_implementations(token)
-            case TokenType.ENUM:
+            case TokenKind.ENUM:
                 return self.handle_enums(token)
-            case TokenType.UNION:
+            case TokenKind.UNION:
                 return self.handle_unions(token)
-            case TokenType.REQUIRE:
+            case TokenKind.REQUIRE:
                 return self.handle_requires(token)
-            case TokenType.DOT:
+            case TokenKind.DOT:
                 return self.handle_dots(token)
+
+            case TokenKind.L_SQUARE:
+                return self.handle_arrays(token)
+            case TokenKind.L_CURLY:
+                return self.handle_hashmaps(token)
+            case TokenKind.L_PAREN:
+                return self.handle_lists(token)
 
         return None
 
+    def handle_lists(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().kind != TokenKind.R_PAREN:
+            body.append(self.advance())
+
+        if self.eof() or self.expect(TokenKind.R_PAREN) is None:
+            Log.print(
+                LogType.ERROR,
+                "List not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close a list with `)`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            InstructionType.LIST_DEF,
+            {"body": body},
+            token,
+        )
+
+    def handle_arrays(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().kind != TokenKind.R_SQUARE:
+            body.append(self.advance())
+
+        if self.eof() or self.expect(TokenKind.R_SQUARE) is None:
+            Log.print(
+                LogType.ERROR,
+                "Array not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close an array with `]`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            InstructionType.ARRAY_DEF,
+            {"body": body},
+            token,
+        )
+
+    def handle_hashmaps(self, token: Token) -> Instruction:
+        body = []
+        while not self.eof() and self.peek().kind != TokenKind.R_CURLY:
+            hashmap_value = self.advance()
+            hashmap_key = self.advance()
+
+            body.append()
+
+        if self.eof() or self.expect(TokenKind.R_CURLY) is None:
+            Log.print(
+                LogType.ERROR,
+                "Hashmap not closed !",
+                {
+                    "location": token.location,
+                    "location_message": "you need to close an hashmap with `}`",
+                },
+            )
+            raise ParserError
+
+        return Instruction(
+            InstructionType.ARRAY_DEF,
+            {"body": body},
+            token,
+        )
+
     def handle_variables(self, token: Token) -> Instruction:
-        variable_type = self.expect(TokenType.TYPE)
+        variable_type = self.expect(TokenKind.TYPE)
         if variable_type is None:
             Log.print(
                 LogType.ERROR,
@@ -859,12 +836,12 @@ class Parser:
             raise ParserError
 
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().kind != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Variable not closed !",
@@ -881,9 +858,9 @@ class Parser:
             token,
         )
 
-    def handle_assignations(self, token: Token) -> Instruction:
+    def handle_sets(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().kind != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
@@ -899,7 +876,7 @@ class Parser:
             )
             raise ParserError
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Assignation not closed !",
@@ -921,11 +898,11 @@ class Parser:
 
     def handle_functions(self, token: Token) -> Instruction:
         parameters = []
-        while not self.eof() and self.peek().type != TokenType.DO:
+        while not self.eof() and self.peek().kind != TokenKind.DO:
             if self.peek().type not in [
-                TokenType.TYPE,
-                TokenType.IDENTIFIER,
-                TokenType.DO,
+                TokenKind.TYPE,
+                TokenKind.IDENTIFIER,
+                TokenKind.DO,
             ]:
                 Log.print(
                     LogType.ERROR,
@@ -937,8 +914,8 @@ class Parser:
                 )
                 raise ParserError
 
-            parameter_type = self.expect(TokenType.TYPE)
-            parameter_name = self.expect(TokenType.IDENTIFIER)
+            parameter_type = self.expect(TokenKind.TYPE)
+            parameter_name = self.expect(TokenKind.IDENTIFIER)
 
             if parameter_type is None:
                 Log.print(
@@ -963,7 +940,7 @@ class Parser:
 
             parameters.append({"type": parameter_type, "name": parameter_name})
 
-        if self.eof() or self.expect(TokenType.DO) is None:
+        if self.eof() or self.expect(TokenKind.DO) is None:
             Log.print(
                 LogType.ERROR,
                 "Invalid function syntax !",
@@ -980,12 +957,12 @@ class Parser:
             raise ParserError
 
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().type != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Function not closed !",
@@ -997,8 +974,8 @@ class Parser:
             raise ParserError
 
         return_type = None
-        if not self.eof() and self.expect(TokenType.WITH) is not None:
-            return_type = self.expect(TokenType.TYPE)
+        if not self.eof() and self.expect(TokenKind.WITH) is not None:
+            return_type = self.expect(TokenKind.TYPE)
             if return_type is None:
                 Log.print(
                     LogType.ERROR,
@@ -1031,22 +1008,22 @@ class Parser:
     def handle_if_elses(self, token: Token) -> Instruction:
         if_body = []
         while not self.eof() and self.peek().type not in [
-            TokenType.ELSE,
-            TokenType.END,
+            TokenKind.ELSE,
+            TokenKind.END,
         ]:
             instruction = self.parse_instruction()
             if instruction is not None:
                 if_body.append(instruction)
 
         else_body = []
-        else_token = self.expect(TokenType.ELSE)
+        else_token = self.expect(TokenKind.ELSE)
         if not self.eof() and else_token is not None:
-            while not self.eof() and self.peek().type != TokenType.END:
+            while not self.eof() and self.peek().type != TokenKind.END:
                 instruction = self.parse_instruction()
                 if instruction is not None:
                     else_body.append(instruction)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "If statement not closed !",
@@ -1071,15 +1048,15 @@ class Parser:
     def handle_matchs(self, token: Token) -> Instruction:
         cases = []
         else_body = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            else_token = self.expect(TokenType.ELSE)
+        while not self.eof() and self.peek().type != TokenKind.END:
+            else_token = self.expect(TokenKind.ELSE)
             if else_token is not None:
-                while not self.eof and self.peek().type != TokenType.END:
+                while not self.eof and self.peek().type != TokenKind.END:
                     instruction = self.parse_instruction()
                     if instruction is not None:
                         else_body.append(instruction)
 
-                if self.eof() or self.expect(TokenType.END) is None:
+                if self.eof() or self.expect(TokenKind.END) is None:
                     Log.print(
                         LogType.ERROR,
                         "Case not closed !",
@@ -1092,12 +1069,12 @@ class Parser:
                 break
 
             case_condition = []
-            while not self.eof() and self.peek().type != TokenType.CASE:
+            while not self.eof() and self.peek().type != TokenKind.CASE:
                 instruction = self.parse_instruction()
                 if instruction is not None:
                     case_condition.append(instruction)
 
-            case_token = self.expect(TokenType.CASE)
+            case_token = self.expect(TokenKind.CASE)
             if case_condition and case_token is None:
                 Log.print(
                     LogType.ERROR,
@@ -1123,12 +1100,12 @@ class Parser:
                 break
 
             case_body = []
-            while not self.eof and self.peek().type != TokenType.END:
+            while not self.eof and self.peek().type != TokenKind.END:
                 instruction = self.parse_instruction()
                 if instruction is not None:
                     case_body.append(instruction)
 
-            if self.eof() or self.expect(TokenType.END) is None:
+            if self.eof() or self.expect(TokenKind.END) is None:
                 Log.print(
                     LogType.ERROR,
                     "Case not closed !",
@@ -1141,7 +1118,7 @@ class Parser:
 
             cases.append({"condition": case_condition, "body": case_body})
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Match statement not closed !",
@@ -1163,12 +1140,12 @@ class Parser:
 
     def handle_whiles(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().type != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "While statement not closed !",
@@ -1190,10 +1167,10 @@ class Parser:
 
     def handle_structs(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().type != TokenKind.END:
             if self.peek().type not in [
-                TokenType.TYPE,
-                TokenType.IDENTIFIER,
+                TokenKind.TYPE,
+                TokenKind.IDENTIFIER,
             ]:
                 Log.print(
                     LogType.ERROR,
@@ -1205,8 +1182,8 @@ class Parser:
                 )
                 raise ParserError
 
-            struct_variable_type = self.expect(TokenType.TYPE)
-            struct_variable_name = self.expect(TokenType.IDENTIFIER)
+            struct_variable_type = self.expect(TokenKind.TYPE)
+            struct_variable_name = self.expect(TokenKind.IDENTIFIER)
 
             if struct_variable_type is None:
                 Log.print(
@@ -1231,7 +1208,7 @@ class Parser:
 
             body.append({"type": struct_variable_type, "name": struct_variable_name})
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Struct statement not closed !",
@@ -1253,10 +1230,10 @@ class Parser:
 
     def handle_implementations(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
+        while not self.eof() and self.peek().type != TokenKind.END:
             if self.peek().type not in [
-                TokenType.FUNCTION,
-                TokenType.IDENTIFIER,
+                TokenKind.FUNCTION,
+                TokenKind.IDENTIFIER,
             ]:
                 Log.print(
                     LogType.ERROR,
@@ -1268,9 +1245,9 @@ class Parser:
                 )
                 raise ParserError
 
-            implement_identifier = self.expect(TokenType.IDENTIFIER)
+            implement_identifier = self.expect(TokenKind.IDENTIFIER)
             if implement_identifier is not None and (
-                self.eof() or self.peek().type != TokenType.FUNCTION
+                self.eof() or self.peek().type != TokenKind.FUNCTION
             ):
                 Log.print(
                     LogType.ERROR,
@@ -1286,7 +1263,7 @@ class Parser:
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Implement statement not closed !",
@@ -1308,8 +1285,8 @@ class Parser:
 
     def handle_enums(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            identifier = self.expect(TokenType.IDENTIFIER)
+        while not self.eof() and self.peek().type != TokenKind.END:
+            identifier = self.expect(TokenKind.IDENTIFIER)
             if identifier is None:
                 Log.print(
                     LogType.ERROR,
@@ -1326,10 +1303,10 @@ class Parser:
                 )
                 raise ParserError
 
-            value = self.expect(TokenType.INTEGER) or self.expect(TokenType.FLOAT)
+            value = self.expect(TokenKind.INTEGER) or self.expect(TokenKind.FLOAT)
             body.append({"identifier": identifier, "value": value})
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Enum statement not closed !",
@@ -1351,8 +1328,8 @@ class Parser:
 
     def handle_unions(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            union_type = self.expect(TokenType.TYPE)
+        while not self.eof() and self.peek().type != TokenKind.END:
+            union_type = self.expect(TokenKind.TYPE)
             if union_type is None:
                 Log.print(
                     LogType.ERROR,
@@ -1366,7 +1343,7 @@ class Parser:
 
             body.append(union_type)
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Union statement not closed !",
@@ -1388,8 +1365,8 @@ class Parser:
 
     def handle_requires(self, token: Token) -> Instruction:
         identifiers = []
-        while not self.eof() and self.peek().type != TokenType.END:
-            identifier = self.expect(TokenType.IDENTIFIER)
+        while not self.eof() and self.peek().type != TokenKind.END:
+            identifier = self.expect(TokenKind.IDENTIFIER)
             if identifier is None:
                 Log.print(
                     LogType.ERROR,
@@ -1414,7 +1391,7 @@ class Parser:
             )
             raise ParserError
 
-        if self.eof() or self.expect(TokenType.END) is None:
+        if self.eof() or self.expect(TokenKind.END) is None:
             Log.print(
                 LogType.ERROR,
                 "Require statement not closed !",
@@ -1435,7 +1412,7 @@ class Parser:
         )
 
     def handle_dots(self, token: Token) -> Instruction:
-        identifier = self.expect(TokenType.IDENTIFIER)
+        identifier = self.expect(TokenKind.IDENTIFIER)
         if identifier is None:
             Log.print(
                 LogType.ERROR,
@@ -1467,324 +1444,13 @@ class Parser:
         self.current += 1
         return token
 
-    def expect(self, expected_type: TokenType) -> Token | None:
+    def expect(self, expected_type: TokenKind) -> Token | None:
         if not self.eof() and self.peek().type == expected_type:
             return self.advance()
         return None
 
     def eof(self) -> bool:
         return self.current >= len(self.tokens)
-
-
-class Type(Enum):
-    I8 = "I8"
-    I16 = "I16"
-    I32 = "I32"
-    I64 = "I64"
-    I128 = "I128"
-    U8 = "U8"
-    U16 = "U16"
-    U32 = "U32"
-    U64 = "U64"
-    U128 = "U128"
-    F16 = "F16"
-    F32 = "F32"
-    F64 = "F64"
-    F128 = "F128"
-    BOOL = "Bool"
-    VOID = "Void"
-    STRING = "String"
-    ARRAY = "Array"
-    VECTOR = "Vector"
-    HASHMAP = "Hashmap"
-    STACK = "Stack"
-    QUEUE = "Queue"
-    ERROR = "Error"
-    TYPE = "Type"
-    PTR = "Ptr"
-    USIZE = "Usize"
-    ISIZE = "Isize"
-    C_CHAR = "C_char"
-    C_SHORT = "C_short"
-    C_USHORT = "C_ushort"
-    C_INT = "C_int"
-    C_UINT = "C_uint"
-    C_LONG = "C_long"
-    C_ULONG = "C_ulong"
-    C_LONGLONG = "C_longlong"
-    C_ULONGLONG = "C_ulonglong"
-    C_DOUBLE = "C_double"
-    C_LONGDOUBLE = "C_longdouble"
-
-
-class Interpreter:
-    def __init__(self):
-        self.stack = []
-        self.instructions = []
-        self.current = 0
-        self.type_infos = {
-            Type.I8: {"precedence": 1, "bounds": (-(2**7), 2**7 - 1)},
-            Type.I16: {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)},
-            Type.I32: {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)},
-            Type.I64: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
-            Type.I128: {"precedence": 5, "bounds": (-(2**127), 2**127 - 1)},
-            Type.U8: {"precedence": 1, "bounds": (0, 2**8 - 1)},
-            Type.U16: {"precedence": 2, "bounds": (0, 2**16 - 1)},
-            Type.U32: {"precedence": 3, "bounds": (0, 2**32 - 1)},
-            Type.U64: {"precedence": 4, "bounds": (0, 2**64 - 1)},
-            Type.U128: {"precedence": 5, "bounds": (0, 2**128 - 1)},
-            Type.F16: {"precedence": 6, "bounds": None},
-            Type.F32: {"precedence": 7, "bounds": None},
-            Type.F64: {"precedence": 8, "bounds": None},
-            Type.F128: {"precedence": 9, "bounds": None},
-            Type.BOOL: {"precedence": 0, "bounds": None},
-            Type.VOID: {"precedence": 0, "bounds": None},
-            Type.STRING: {"precedence": 0, "bounds": None},
-            Type.ARRAY: {"precedence": 0, "bounds": None},
-            Type.VECTOR: {"precedence": 0, "bounds": None},
-            Type.HASHMAP: {"precedence": 0, "bounds": None},
-            Type.STACK: {"precedence": 0, "bounds": None},
-            Type.QUEUE: {"precedence": 0, "bounds": None},
-            Type.ERROR: {"precedence": 0, "bounds": None},
-            Type.TYPE: {"precedence": 0, "bounds": None},
-            Type.PTR: {"precedence": 0, "bounds": None},
-            Type.USIZE: {"precedence": 5, "bounds": (0, 2**64 - 1)},
-            Type.ISIZE: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
-            Type.C_CHAR: {"precedence": 1, "bounds": (-128, 127)},
-            Type.C_SHORT: {"precedence": 2, "bounds": (-(2**15), 2**15 - 1)},
-            Type.C_USHORT: {"precedence": 2, "bounds": (0, 2**16 - 1)},
-            Type.C_INT: {"precedence": 3, "bounds": (-(2**31), 2**31 - 1)},
-            Type.C_UINT: {"precedence": 3, "bounds": (0, 2**32 - 1)},
-            Type.C_LONG: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
-            Type.C_ULONG: {"precedence": 4, "bounds": (0, 2**64 - 1)},
-            Type.C_LONGLONG: {"precedence": 4, "bounds": (-(2**63), 2**63 - 1)},
-            Type.C_ULONGLONG: {"precedence": 4, "bounds": (0, 2**64 - 1)},
-            Type.C_DOUBLE: {"precedence": 8, "bounds": None},
-            Type.C_LONGDOUBLE: {"precedence": 9, "bounds": None},
-        }
-
-    def interpret(self, instructions: list) -> None:
-        self.instructions = instructions
-        self.current = 0
-
-        while not self.eof():
-            instruction = self.advance()
-            self.interpret_instruction(instruction)
-
-    def interpret_instruction(self, instruction: Instruction) -> None:
-        match instruction.type:
-            case InstructionType.PUSH:
-                if instruction.content["type"] is None:
-                    value = instruction.content["value"]
-                    instruction.content["type"] = self.get_smallest_fit(value)
-
-                self.stack.append(instruction.content)
-
-            case InstructionType.POP:
-                self.check_underflow(1)
-                self.stack.pop()
-
-            case InstructionType.DROP:
-                self.check_underflow(1)
-                self.stack.clear()
-
-            case InstructionType.DUP:
-                self.check_underflow(1)
-                self.stack.append(self.stack[-1])
-
-            case InstructionType.OVER:
-                self.check_underflow(2)
-                self.stack.append(self.stack[-2])
-
-            case InstructionType.SWAP:
-                self.check_underflow(2)
-                self.stack[-2], self.stack[-1] = self.stack[-1], self.stack[-2]
-
-            case InstructionType.ROT:
-                self.check_underflow(3)
-                self.stack[-2], self.stack[-3], self.stack[-1] = (
-                    self.stack[-1],
-                    self.stack[-2],
-                    self.stack[-3],
-                )
-
-            case InstructionType.PLUS:
-                self.check_underflow(2)
-                b = self.stack.pop()
-                a = self.stack.pop()
-                self.binary_operator(
-                    a, b, (lambda x, y: x + y), self.get_numeric_types()
-                )
-
-    def binary_operator(
-        self, a: dict, b: dict, operator: any, allowed_types: list
-    ) -> None:
-        self.check_type(a, allowed_types)
-        self.check_type(b, allowed_types)
-
-        result_type = self.get_higher_type(a["type"], b["type"])
-        result_value = operator(a["value"], b["value"])
-
-        if self.type_infos[result_type]["bounds"] is not None:
-            type_info = self.type_infos[result_type]
-            if not type_info["bounds"][0] <= result_value <= type_info["bounds"][1]:
-                Log.print(
-                    LogType.ERROR,
-                    "Result out of type bounds !",
-                    {
-                        "location": self.peek_previous().token.location,
-                    },
-                )
-                raise InterpreterError
-
-        self.stack.append({"type": result_type, "value": result_value})
-
-    def check_type(self, a: dict, expected_types: list) -> None:
-        if a["type"] not in expected_types:
-            Log.print(
-                LogType.ERROR,
-                "Invalid type operation !",
-                {
-                    "location": self.peek_previous().token.location,
-                    "location_message": f"should be one of those: {' '.join(arg.value.lower() for arg in expected_types)}",
-                },
-            )
-            raise InterpreterError
-
-    def check_underflow(self, size: int) -> None:
-        if len(self.stack) < size:
-            Log.print(
-                LogType.ERROR,
-                "Stack underflow !",
-                {
-                    "location": self.peek_previous().token.location,
-                    "location_message": "not enouth arguments on the stack",
-                },
-            )
-            raise InterpreterError
-
-    def get_higher_type(self, a: Type, b: Type) -> Type:
-        precedence_a = self.type_infos[a]["precedence"]
-        precedence_b = self.type_infos[b]["precedence"]
-        return a if precedence_a >= precedence_b else b
-
-    def get_smallest_fit(self, value: int) -> Type:
-        if value < 0:
-            if (
-                self.type_infos[Type.I8]["bounds"][0]
-                <= value
-                <= self.type_infos[Type.I8]["bounds"][1]
-            ):
-                return Type.I8
-            elif (
-                self.type_infos[Type.I16]["bounds"][0]
-                <= value
-                <= self.type_infos[Type.I16]["bounds"][1]
-            ):
-                return Type.I16
-            elif (
-                self.type_infos[Type.I32]["bounds"][0]
-                <= value
-                <= self.type_infos[Type.I32]["bounds"][1]
-            ):
-                return Type.I32
-            elif (
-                self.type_infos[Type.I64]["bounds"][0]
-                <= value
-                <= self.type_infos[Type.I64]["bounds"][1]
-            ):
-                return Type.I64
-            elif (
-                self.type_infos[Type.I128]["bounds"][0]
-                <= value
-                <= self.type_infos[Type.I128]["bounds"][1]
-            ):
-                return Type.I128
-
-        if (
-            self.type_infos[Type.U8]["bounds"][0]
-            <= value
-            <= self.type_infos[Type.U8]["bounds"][1]
-        ):
-            return Type.U8
-        elif (
-            self.type_infos[Type.U16]["bounds"][0]
-            <= value
-            <= self.type_infos[Type.U16]["bounds"][1]
-        ):
-            return Type.U16
-        elif (
-            self.type_infos[Type.U32]["bounds"][0]
-            <= value
-            <= self.type_infos[Type.U32]["bounds"][1]
-        ):
-            return Type.U32
-        elif (
-            self.type_infos[Type.U64]["bounds"][0]
-            <= value
-            <= self.type_infos[Type.U64]["bounds"][1]
-        ):
-            return Type.U64
-        elif (
-            self.type_infos[Type.U128]["bounds"][0]
-            <= value
-            <= self.type_infos[Type.U128]["bounds"][1]
-        ):
-            return Type.U128
-
-        Log.print(
-            LogType.ERROR,
-            "Integer literal exceeds maximum type bounds !",
-            {
-                "location": self.peek_previous().token.location,
-            },
-        )
-        raise InterpreterError
-
-    def get_numeric_types(self) -> list:
-        return [
-            Type.I8,
-            Type.I16,
-            Type.I32,
-            Type.I64,
-            Type.I128,
-            Type.U8,
-            Type.U16,
-            Type.U32,
-            Type.U64,
-            Type.U128,
-            Type.F16,
-            Type.F32,
-            Type.F64,
-            Type.F128,
-            Type.USIZE,
-            Type.ISIZE,
-            Type.C_CHAR,
-            Type.C_SHORT,
-            Type.C_USHORT,
-            Type.C_INT,
-            Type.C_UINT,
-            Type.C_LONG,
-            Type.C_ULONG,
-            Type.C_LONGLONG,
-            Type.C_ULONGLONG,
-            Type.C_DOUBLE,
-            Type.C_LONGDOUBLE,
-        ]
-
-    def advance(self) -> Instruction:
-        instruction = self.peek()
-        self.current += 1
-        return instruction
-
-    def peek_previous(self) -> Instruction:
-        return self.instructions[self.current - 1]
-
-    def peek(self) -> Instruction:
-        return self.instructions[self.current]
-
-    def eof(self) -> bool:
-        return self.current >= len(self.instructions)
 
 
 class Compiler:
@@ -1827,37 +1493,6 @@ class Cli:
                 if not isinstance(error, GlobalError):
                     raise
 
-    def scan_prompt(self) -> None:
-        global SOURCE
-        global PATH
-
-        tokenizer = Tokenizer()
-        parser = Parser()
-        interpreter = Interpreter()
-
-        while True:
-            try:
-                SOURCE = self.sanitize_source(input("> ").strip())
-            except Exception:
-                Log.print(
-                    LogType.ERROR,
-                    "Failed to read user input !",
-                    {},
-                )
-                exit(1)
-
-            if SOURCE.lower() in ("quit", "exit"):
-                break
-
-            if SOURCE != "":
-                try:
-                    interpreter.interpret(parser.parse(tokenizer.tokenize()))
-                    print(parser.instructions)
-                    print(interpreter.stack)
-                except Exception as error:
-                    if not isinstance(error, GlobalError):
-                        raise
-
     def sanitize_source(self, source: str) -> str:
         return source.replace("\t", "").replace("\r\n", "\n").replace("\r", "\n")
 
@@ -1865,10 +1500,8 @@ class Cli:
 def main():
     cli = Cli()
 
-    if len(argv) == 1:
-        cli.scan_prompt()
-    elif len(argv) == 2:
-        cli.scan_file(argv[1])
+    if len(sys.argv) == 2:
+        cli.scan_file(sys.argv[1])
     else:
         # TODO: print help or something
         exit(1)
