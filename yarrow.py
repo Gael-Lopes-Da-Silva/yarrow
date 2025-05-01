@@ -15,12 +15,12 @@ class GlobalException(Exception):
 
 # ENUMS
 class TokenKind(Enum):
-    L_PAREN = "left_parenthesis"
-    R_PAREN = "right_parenthesis"
-    L_CURLY = "left_curly_brace"
-    R_CURLY = "right_curly_brace"
-    L_SQUARE = "left_square_bracket"
-    R_SQUARE = "right_square_bracket"
+    LEFT_PAREN = "left_parenthesis"
+    RIGHT_PAREN = "right_parenthesis"
+    LEFT_CURLY = "left_curly_brace"
+    RIGHT_CURLY = "right_curly_brace"
+    LEFT_SQUARE = "left_square_bracket"
+    RIGHT_SQUARE = "right_square_bracket"
     COMMA = "comma"
     DOT = "dot"
 
@@ -52,11 +52,11 @@ class TokenKind(Enum):
     FLOAT = "float"
     BOOLEAN = "boolean"
 
+    TYPE = "type"
+
     AND = "logical_and"
     OR = "logical_or"
     NOT = "logical_not"
-
-    TYPE = "type"
 
     IF = "if"
     ELSE = "else"
@@ -95,6 +95,47 @@ class TokenKind(Enum):
     REQUIRE = "require"
     DEFER = "defer"
     END = "end"
+
+
+class TypeKind(Enum):
+    I8 = "i8"
+    I16 = "i16"
+    I32 = "i32"
+    I64 = "i64"
+    I128 = "i128"
+    U8 = "u8"
+    U16 = "u16"
+    U32 = "u32"
+    U64 = "u64"
+    U128 = "u128"
+    F16 = "f16"
+    F32 = "f32"
+    F64 = "f64"
+    F128 = "f128"
+    BOOL = "bool"
+    VOID = "void"
+    ERROR = "error"
+    TYPE = "type"
+    STRING = "string"
+    ARRAY = "array"
+    LIST = "list"
+    HASHMAP = "hashmap"
+    STACK = "stack"
+    QUEUE = "queue"
+    POINTER = "pointer"
+    USIZE = "usize"
+    ISIZE = "isize"
+    C_CHAR = "c_char"
+    C_SHORT = "c_short"
+    C_USHORT = "c_ushort"
+    C_INT = "c_int"
+    C_UINT = "c_uint"
+    C_LONG = "c_long"
+    C_ULONG = "c_ulong"
+    C_LONGLONG = "c_longlong"
+    C_ULONGLONG = "c_ulonglong"
+    C_DOUBLE = "c_double"
+    C_LONGDOUBLE = "c_longdouble"
 
 
 # DATACLASSES
@@ -145,25 +186,52 @@ class Instruction:
 
 # CLASSES
 class Logger:
-    TYPES = {
-        "ERROR": Color.RED,
-        "INFO": Color.BLUE,
-        "DEBUG": Color.GREY,
-    }
+    pointer: str = "─"
 
-    def log(log_type: str, message: str, *args: any, location: Location = None) -> None:
-        color = Logger.TYPES[log_type]
-        output = f"[{Color.BOLD}{color}{log_type}{Color.RESET}] {message}"
+    def error(message: str, *args: any, location: Location = None, location_message: str = None) -> None:
+        output = f"[{Color.BOLD}{Color.RED}ERROR{Color.RESET}] {message}"
 
         if location:
-            line = f"{location.line}: {location.source.splitlines()[location.line - 1]}"
-            pointer = " " * (len(str(location.line)) + 2 + location.start) + "^"
-            output += f"{Color.GREY}\n| {line}\n| {pointer}"
+            line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
+            pointer = " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            output += f"{Color.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Color.RED}{pointer * max(1, location.end - location.start)}"
+            output += f" {location_message}{Color.RESET}" if location_message is not None else f"{Color.RESET}"
 
         for arg in args:
-            output += f"\n| {arg}"
+            output += f"{Color.GREY}\n| {arg}{Color.RESET}"
 
-        print(f"{output}{Color.RESET}")
+        print(f"{output}")
+
+    def warning(message: str, *args: any, location: Location = None, location_message: str = None) -> None:
+        output = f"[{Color.BOLD}{Color.YELLOW}WARNING{Color.RESET}] {message}"
+
+        if location:
+            line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
+            pointer = " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            output += f"{Color.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Color.YELLOW}{pointer * max(1, location.end - location.start)}"
+            output += f" {location_message}{Color.RESET}" if location_message is not None else f"{Color.RESET}"
+
+        for arg in args:
+            output += f"{Color.GREY}\n| {arg}{Color.RESET}"
+
+        print(f"{output}")
+
+    def debug(message: str, *args: any) -> None:
+        output = f"[{Color.BOLD}{Color.GREY}DEBUG{Color.RESET}] {message}"
+
+        for arg in args:
+            output += f"{Color.GREY}\n| {arg}{Color.RESET}"
+
+        print(f"{output}")
+
+    def info(message: str, *args: any) -> None:
+        output = f"[{Color.BOLD}{Color.BLUE}INFO{Color.RESET}] {message}"
+
+        for arg in args:
+            output += f"{Color.GREY}\n| {arg}{Color.RESET}"
+
+        print(f"{output}")
+
 
 class Tokenizer:
     def __init__(self) -> None:
@@ -175,88 +243,49 @@ class Tokenizer:
         self.tokens = []
         self.keywords = [
             Keyword("and", TokenKind.AND),
-            Keyword("not", TokenKind.NOT),
-            Keyword("or", TokenKind.OR),
-            Keyword("case", TokenKind.CASE),
-            Keyword("with", TokenKind.WITH),
+            Keyword("break", TokenKind.BREAK),
             Keyword("call", TokenKind.CALL),
+            Keyword("case", TokenKind.CASE),
             Keyword("catch", TokenKind.TRY),
             Keyword("const", TokenKind.CONST),
-            Keyword("break", TokenKind.BREAK),
             Keyword("continue", TokenKind.CONTINUE),
-            Keyword("while", TokenKind.WHILE),
+            Keyword("defer", TokenKind.DEFER),
             Keyword("do", TokenKind.DO),
+            Keyword("drop", TokenKind.DROP),
+            Keyword("dup", TokenKind.DUP),
             Keyword("else", TokenKind.ELSE),
             Keyword("end", TokenKind.END),
+            Keyword("enum", TokenKind.ENUM),
+            Keyword("false", TokenKind.BOOLEAN),
             Keyword("function", TokenKind.FUNCTION),
             Keyword("if", TokenKind.IF),
             Keyword("implement", TokenKind.IMPLEMENT),
             Keyword("match", TokenKind.MATCH),
             Keyword("mutable", TokenKind.MUTABLE),
+            Keyword("not", TokenKind.NOT),
+            Keyword("or", TokenKind.OR),
+            Keyword("over", TokenKind.OVER),
+            Keyword("pop", TokenKind.POP),
             Keyword("require", TokenKind.REQUIRE),
             Keyword("return", TokenKind.RETURN),
+            Keyword("rot", TokenKind.ROT),
             Keyword("set", TokenKind.SET),
             Keyword("static", TokenKind.STATIC),
             Keyword("struct", TokenKind.STRUCT),
-            Keyword("try", TokenKind.TRY),
-            Keyword("union", TokenKind.UNION),
-            Keyword("enum", TokenKind.ENUM),
-            Keyword("defer", TokenKind.DEFER),
-            Keyword("pop", TokenKind.POP),
-            Keyword("drop", TokenKind.DROP),
-            Keyword("dup", TokenKind.DUP),
-            Keyword("over", TokenKind.OVER),
-            Keyword("rot", TokenKind.ROT),
             Keyword("swap", TokenKind.SWAP),
             Keyword("true", TokenKind.BOOLEAN),
-            Keyword("false", TokenKind.BOOLEAN),
-            Keyword("i8", TokenKind.TYPE),
-            Keyword("i16", TokenKind.TYPE),
-            Keyword("i32", TokenKind.TYPE),
-            Keyword("i64", TokenKind.TYPE),
-            Keyword("i128", TokenKind.TYPE),
-            Keyword("u8", TokenKind.TYPE),
-            Keyword("u16", TokenKind.TYPE),
-            Keyword("u32", TokenKind.TYPE),
-            Keyword("u64", TokenKind.TYPE),
-            Keyword("u128", TokenKind.TYPE),
-            Keyword("f16", TokenKind.TYPE),
-            Keyword("f32", TokenKind.TYPE),
-            Keyword("f64", TokenKind.TYPE),
-            Keyword("f128", TokenKind.TYPE),
-            Keyword("bool", TokenKind.TYPE),
-            Keyword("void", TokenKind.TYPE),
-            Keyword("error", TokenKind.TYPE),
-            Keyword("type", TokenKind.TYPE),
-            Keyword("string", TokenKind.TYPE),
-            Keyword("array", TokenKind.TYPE),
-            Keyword("list", TokenKind.TYPE),
-            Keyword("hashmap", TokenKind.TYPE),
-            Keyword("stack", TokenKind.TYPE),
-            Keyword("queue", TokenKind.TYPE),
-            Keyword("pointer", TokenKind.TYPE),
-            Keyword("usize", TokenKind.TYPE),
-            Keyword("isize", TokenKind.TYPE),
-            Keyword("c_char", TokenKind.TYPE),
-            Keyword("c_short", TokenKind.TYPE),
-            Keyword("c_ushort", TokenKind.TYPE),
-            Keyword("c_int", TokenKind.TYPE),
-            Keyword("c_uint", TokenKind.TYPE),
-            Keyword("c_long", TokenKind.TYPE),
-            Keyword("c_ulong", TokenKind.TYPE),
-            Keyword("c_longlong", TokenKind.TYPE),
-            Keyword("c_ulonglong", TokenKind.TYPE),
-            Keyword("c_double", TokenKind.TYPE),
-            Keyword("c_longdouble", TokenKind.TYPE),
+            Keyword("try", TokenKind.TRY),
+            Keyword("union", TokenKind.UNION),
+            Keyword("while", TokenKind.WHILE),
+            Keyword("with", TokenKind.WITH),
         ]
 
+        self.keywords.extend(
+            Keyword(type_kind.value, TokenKind.TYPE) for type_kind in TypeKind
+        )
+
     def tokenize(self) -> list:
-        self.start = 0
-        self.start_offset = 0
-        self.current = 0
-        self.current_offset = 0
-        self.line = 1
-        self.tokens.clear()
+        self.reset()
 
         while not self.eof():
             self.start = self.current
@@ -267,6 +296,7 @@ class Tokenizer:
 
     def tokenize_lexeme(self) -> None:
         lexeme = self.advance()
+
         match lexeme:
             case " " | "\t":
                 pass
@@ -280,23 +310,23 @@ class Tokenizer:
                 self.current_offset = 0
 
             case "(":
-                self.add_token(TokenKind.L_PAREN)
+                self.add_token(TokenKind.LEFT_PAREN)
             case ")":
-                self.add_token(TokenKind.R_PAREN)
+                self.add_token(TokenKind.RIGHT_PAREN)
             case "{":
-                self.add_token(TokenKind.L_CURLY)
+                self.add_token(TokenKind.LEFT_CURLY)
             case "}":
-                self.add_token(TokenKind.R_CURLY)
+                self.add_token(TokenKind.RIGHT_CURLY)
             case "[":
-                self.add_token(TokenKind.L_SQUARE)
+                self.add_token(TokenKind.LEFT_SQUARE)
             case "]":
-                self.add_token(TokenKind.R_SQUARE)
+                self.add_token(TokenKind.RIGHT_SQUARE)
             case ",":
                 self.add_token(TokenKind.COMMA)
             case ".":
                 self.add_token(TokenKind.DOT)
             case "%":
-                self.add_token(TokenKind.REMINDER)
+                self.add_token(TokenKind.REMAINDER)
             case "&":
                 self.add_token(TokenKind.BITWISE_AND)
             case "|":
@@ -319,7 +349,7 @@ class Tokenizer:
                 if self.match("="):
                     self.add_token(TokenKind.LESS_EQUAL)
                 elif self.match("<"):
-                    self.add_token(TokenKind.L_SHIFT)
+                    self.add_token(TokenKind.LEFT_SHIFT)
                 else:
                     self.add_token(TokenKind.LESS)
 
@@ -327,7 +357,7 @@ class Tokenizer:
                 if self.match("="):
                     self.add_token(TokenKind.GREATER_EQUAL)
                 elif self.match(">"):
-                    self.add_token(TokenKind.R_SHIFT)
+                    self.add_token(TokenKind.RIGHT_SHIFT)
                 else:
                     self.add_token(TokenKind.GREATER)
 
@@ -361,12 +391,9 @@ class Tokenizer:
                 self.handle_identifiers()
 
             case _:
-                Log.print(
-                    LogType.WARNING,
-                    f"Invalid symbol {Color.GREY}'{Color.PURPLE}{lexeme}{Color.GREY}'{Color.RESET} !",
-                    {
-                        "location": self.get_location(),
-                    },
+                Logger.warning(
+                    f"Invalid symbol '{lexeme}'",
+                    location=self.get_location(),
                 )
 
     def handle_numbers(self) -> None:
@@ -375,8 +402,10 @@ class Tokenizer:
 
         if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
             self.advance()
+
             while not self.eof() and self.peek().isdigit():
                 self.advance()
+
             self.add_token(TokenKind.FLOAT)
         else:
             self.add_token(TokenKind.INTEGER)
@@ -384,55 +413,43 @@ class Tokenizer:
     def handle_strings(self) -> None:
         while not self.eof() and self.peek() != '"':
             if self.peek() == "\n":
-                Log.print(
-                    LogType.ERROR,
+                Logger.error(
                     "Unterminated string literal !",
-                    {
-                        "location": self.get_location(),
-                        "location_message": "close the string with the corresponding quotes",
-                    },
+                    location=self.get_location(),
+                    location_message="close the string with the corresponding quotes",
                 )
-                raise TokenizerError
+                raise GlobalException
 
             if self.peek() == "\\":
                 self.advance()
                 if self.eof():
-                    Log.print(
-                        LogType.ERROR,
+                    Logger.error(
                         "Incomplete escape sequence in string literal !",
-                        {
-                            "location": self.get_location(),
-                            "location_message": "expected character after backslash",
-                        },
+                        location=self.get_location(),
+                        location_message="expected character after backslash",
                     )
-                    raise TokenizerError
+                    raise GlobalException
 
                 escape_char = self.peek()
                 if escape_char in {"n", "t", "r", "\\", '"'}:
                     self.advance()
                 else:
-                    Log.print(
-                        LogType.ERROR,
-                        f"Invalid escape sequence {Color.GREY}'{Color.PURPLE}\\{escape_char}{Color.GREY}'{Color.RESET} in string literal !",
-                        {
-                            "location": self.get_location(),
-                            "location_message": "unknown escape sequence",
-                        },
+                    Logger.error(
+                        f"Invalid escape sequence '\\{escape_char}' in string literal !",
+                        location=self.get_location(),
+                        location_message="unknown escape sequence",
                     )
-                    raise TokenizerError
+                    raise GlobalException
             else:
                 self.advance()
 
         if self.eof():
-            Log.print(
-                LogType.ERROR,
+            Logger.error(
                 "Unterminated string literal !",
-                {
-                    "location": self.get_location(),
-                    "location_message": "close the string with the corresponding quotes",
-                },
+                location=self.get_location(),
+                location_message="close the string with the corresponding quotes",
             )
-            raise TokenizerError
+            raise GlobalException
 
         self.advance()
         self.add_token(TokenKind.STRING)
@@ -455,11 +472,7 @@ class Tokenizer:
             Token(
                 kind=type,
                 lexeme=SOURCE[self.start : self.current],
-                location=Location(
-                    line=self.line,
-                    start=self.start_offset,
-                    end=self.current_offset,
-                ),
+                location=self.get_location(),
             )
         )
 
@@ -492,6 +505,14 @@ class Tokenizer:
         self.current_offset += 1
         return True
 
+    def reset(self) -> None:
+        self.start = 0
+        self.start_offset = 0
+        self.current = 0
+        self.current_offset = 0
+        self.line = 1
+        self.tokens = []
+
 
 class Parser:
     def __init__(self) -> None:
@@ -500,9 +521,8 @@ class Parser:
         self.current = 0
 
     def parse(self, tokens: list) -> list:
-        self.current = 0
+        self.reset()
         self.tokens = tokens
-        self.instructions.clear()
 
         while not self.eof():
             instruction = self.parse_instruction()
@@ -1452,6 +1472,11 @@ class Parser:
     def eof(self) -> bool:
         return self.current >= len(self.tokens)
 
+    def reset(self) -> None:
+        self.instructions = []
+        self.tokens = []
+        self.current = 0
+
 
 class Compiler:
     def __init__(self):
@@ -1472,25 +1497,21 @@ class Cli:
             with open(PATH, "r", encoding="utf-8") as file:
                 SOURCE = self.sanitize_source(file.read().strip())
         except Exception:
-            Log.print(
-                LogType.ERROR,
-                "No such file or directory !",
-                {},
+            Logger.error(
+                "No sush file or directory !",
                 f"path: {PATH}",
             )
             exit(1)
 
         tokenizer = Tokenizer()
         parser = Parser()
-        interpreter = Interpreter()
 
         if SOURCE != "":
             try:
-                interpreter.interpret(parser.parse(tokenizer.tokenize()))
+                parser.parse(tokenizer.tokenize())
                 print(parser.instructions)
-                print(interpreter.stack)
             except Exception as error:
-                if not isinstance(error, GlobalError):
+                if not isinstance(error, GlobalException):
                     raise
 
     def sanitize_source(self, source: str) -> str:

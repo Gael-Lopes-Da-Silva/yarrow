@@ -30,28 +30,34 @@ true not        # false
 1 2 &     # 0 (1 & 2)
 1 5 |     # 5 (1 | 5)
 5 2 <<    # 20 (5 << 2)
+5 2 >>    # 1 (5 >> 2)
+5 ~       # -6 (~5)
 
 # Types: Numeric, bool, string, and more
 42        # u8 (smallest fitting integer)
 -900      # i16
-3.14      # f64 (default float)
+3.14      # f16
 "hello"   # string
 true      # bool
 
 # Variables: Mutable, const, or static
-myVar mutable i32 42 end       # Mutable
-myVar set 23 end               # Update to 23
-myConst const i32 100 end      # Runtime constant
-myStatic static i32 50 end     # Compile-time constant
+myVar 42 mutable i32       # Mutable
+myVar 23 set               # Update to 23
+myConst 100 const i32      # Runtime constant
+myStatic 50 static i32     # Compile-time constant
 
 # Functions: Defined with parameters and return types
-add function i32 a i32 b do
-    a b + return
+add function
+    i32 a
+    i32 b
+do
+    a b +
+    return # Put into the main stack what's in the local function stack
 end with i32
 
 main function do
     10 20 add call  # Calls add(10, 20) -> 30
-end
+end # Return void if not specified
 
 # Control Flow: If/else and match
 5 10 < if
@@ -60,10 +66,16 @@ else
     "not less"
 end
 
-score mutable i32 85 end
+score 85 mutable i32
 score match
     dup 100 <= case
         "A"
+    end
+    dup 85 == case
+        "exact match"
+    end
+    dup 30 > dup 90 < and case
+        "range match"
     end
     else
         "B or below"
@@ -71,17 +83,17 @@ score match
 end
 
 # Loops: Conditional or iterable
-counter mutable i32 0 end
+counter 0 mutable i32
 counter 5 < while
-    counter set counter 1 + end
-    break  # Exit early
+    counter dup 1 + set
+    break # Exit early
 end
 
-numbers array.i32 [10 20 30] end
-sum mutable i32 0 end
-i32 value in numbers while
-    sum set sum value + end
-end  # sum = 60
+numbers [10 20 30] static array[i32]
+sum 0 mutable i32
+value in numbers while
+    sum dup value + set end
+end # sum = 60
 
 # Structs: Composite types with methods
 Point struct
@@ -91,12 +103,15 @@ end
 
 Point implement
     distance function do
-        x x * y y * + return
+        this.x this.x *
+        this.y this.y * +
+        return
     end
 end
 
-point Point mutable x: 10 y: 20 end
-point.distance call  # 500 (10^2 + 20^2)
+point Point{x: 5 y: 20} mutable Point
+point.x 10 set
+point.distance call # 500 (10^2 + 20^2)
 
 # Enums: Named values
 Color enum
@@ -109,35 +124,53 @@ Value union
     i32
     string
 end
-val Value mutable i32 42 end
-val set string "hello" end
+
+val 42 mutable Value
+val "hello" set
+
+# List: dynamique arrays
+myList (43 54 65) static list[i32]
+
+# Hashmap: list with choosen keys
+myHashmap {"first" 4 "second" 5} static hashmap[string i32]
 
 # Modules: Import with require
-"std.math.sqrt" require end
-16 sqrt call  # 4.0
+"std.math.sqrt" require
+16 sqrt call # 4.0
 
-"std.io" require io end
-io.println "Hello, Yarrow!" call
+"std.io" require io
+"Hello, Yarrow!" io.write_line call
 
 # Stack Manipulation: Control the stack
 42 dup    # [42, 42]
 1 2 swap  # [2, 1]
 1 2 3 rot # [2, 3, 1]
-42 drop   # Remove 42
+42 pop    # Remove 42
+drop      # Remove all the value on the stack
 
 # Defer: Run at scope exit
-file mutable ptr 0 end
-file set open_file call end
-defer file close_file call end
+file 0 mutable pointer[i32]
+file open_file call set
+
+defer
+    file close_file call
+end
 
 # Error Handling: Basic try/catch
-try
-    risky_operation call
-catch
-    "Error occurred"
+error_function function do
+    error.CustomError
+    return
+end with i32 or error # return a value of i32 or an error
+
+risky_operation call try # if error returned, return the error itself until program stop
+
+risky_operation call catch # can also catch when error is returned
+    # error handling goes here
 end
 
 # Example Program: Putting it together
+"std.io" require io
+
 Person struct
     string name
     i32 age
@@ -145,16 +178,17 @@ end
 
 Person implement
     greet function do
-        name " says hello!" + return
+        name " says hello!" +
+        return
     end
 end
 
 main function do
-    person Person mutable name: "Alice" age: 30 end
-    person.greet call  # "Alice says hello!"
-    i32 i in array i32 [1 2 3] end while
+    person !{name "Alice" age 30} mutable Person
+    person.greet call # "Alice says hello!"
+    i32 i in [1 2 3] while
         i person.age < if
-            "Younger"
+            "Younger" io.write_line call
         end
     end
 end
