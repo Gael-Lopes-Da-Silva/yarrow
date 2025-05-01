@@ -188,28 +188,50 @@ class Instruction:
 class Logger:
     pointer: str = "─"
 
-    def error(message: str, *args: any, location: Location = None, location_message: str = None) -> None:
+    def error(
+        message: str,
+        *args: any,
+        location: Location = None,
+        location_message: str = None,
+    ) -> None:
         output = f"[{Color.BOLD}{Color.RED}ERROR{Color.RESET}] {message}"
 
         if location:
             line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
-            pointer = " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            pointer = (
+                " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            )
             output += f"{Color.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Color.RED}{pointer * max(1, location.end - location.start)}"
-            output += f" {location_message}{Color.RESET}" if location_message is not None else f"{Color.RESET}"
+            output += (
+                f" {location_message}{Color.RESET}"
+                if location_message is not None
+                else f"{Color.RESET}"
+            )
 
         for arg in args:
             output += f"{Color.GREY}\n| {arg}{Color.RESET}"
 
         print(f"{output}")
 
-    def warning(message: str, *args: any, location: Location = None, location_message: str = None) -> None:
+    def warning(
+        message: str,
+        *args: any,
+        location: Location = None,
+        location_message: str = None,
+    ) -> None:
         output = f"[{Color.BOLD}{Color.YELLOW}WARNING{Color.RESET}] {message}"
 
         if location:
             line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
-            pointer = " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            pointer = (
+                " " * (len(str(location.line)) + 2 + location.start) + Logger.pointer
+            )
             output += f"{Color.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Color.YELLOW}{pointer * max(1, location.end - location.start)}"
-            output += f" {location_message}{Color.RESET}" if location_message is not None else f"{Color.RESET}"
+            output += (
+                f" {location_message}{Color.RESET}"
+                if location_message is not None
+                else f"{Color.RESET}"
+            )
 
         for arg in args:
             output += f"{Color.GREY}\n| {arg}{Color.RESET}"

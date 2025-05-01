@@ -109,7 +109,7 @@ Point implement
     end
 end
 
-point Point{x: 5 y: 20} mutable Point
+point !{x 5 y 20} mutable Point
 point.x 10 set
 point.distance call # 500 (10^2 + 20^2)
 
