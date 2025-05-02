@@ -23,6 +23,7 @@ class TokenKind(Enum):
     RIGHT_SQUARE = "right_square_bracket"
     COMMA = "comma"
     DOT = "dot"
+    QUESTION = "question"
 
     PLUS = "plus"
     MINUS = "minus"
@@ -32,7 +33,8 @@ class TokenKind(Enum):
     REMAINDER = "remainder"
     POWER = "power"
 
-    EQUAL_EQUAL = "equal"
+    EQUAL = "equal"
+    EQUAL_EQUAL = "equal_equal"
     NOT_EQUAL = "not_equal"
     GREATER = "greater"
     GREATER_EQUAL = "greater_equal"
@@ -347,6 +349,8 @@ class Tokenizer:
                 self.add_token(TokenKind.COMMA)
             case ".":
                 self.add_token(TokenKind.DOT)
+            case "?":
+                self.add_token(TokenKind.QUESTION)
             case "%":
                 self.add_token(TokenKind.REMAINDER)
             case "&":
@@ -366,6 +370,10 @@ class Tokenizer:
                 self.add_token(
                     TokenKind.EUCLIDIAN if self.match("/") else TokenKind.DIVISION
                 )
+            case "=":
+                self.add_token(
+                    TokenKind.EQUAL_EQUAL if self.match("=") else TokenKind.EQUAL
+                )
 
             case "<":
                 if self.match("="):
@@ -382,10 +390,6 @@ class Tokenizer:
                     self.add_token(TokenKind.RIGHT_SHIFT)
                 else:
                     self.add_token(TokenKind.GREATER)
-
-            case "=":
-                if self.match("="):
-                    self.add_token(TokenKind.EQUAL_EQUAL)
 
             case "!":
                 if self.match("="):
@@ -419,10 +423,10 @@ class Tokenizer:
                 )
 
     def handle_numbers(self) -> None:
-        while not self.eof() and self.peek().isdigit():
+        while not self.eof() and (self.peek().isdigit() or self.peek() == "_"):
             self.advance()
 
-        if not self.eof() and self.peek() == "." and self.peek_next().isdigit():
+        if not self.eof() and self.peek() == "." and (self.peek_next().isdigit() or self.peek_next() == "_"):
             self.advance()
 
             while not self.eof() and self.peek().isdigit():
@@ -479,6 +483,7 @@ class Tokenizer:
     def handle_identifiers(self) -> None:
         while not self.eof() and (self.peek().isalnum() or self.peek() == "_"):
             self.advance()
+
         text = SOURCE[self.start : self.current]
         token_type = self.get_keyword(text.lower()) or TokenKind.IDENTIFIER
         self.add_token(token_type)
