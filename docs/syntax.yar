@@ -51,12 +51,15 @@ add function
     i32 a
     i32 b
 do
+    a ?65 # If a is not provided, push 65
+
     a b +
     return # Put into the main stack what's in the local function stack
 end with i32
 
 main function do
     10 20 add call  # Calls add(10, 20) -> 30
+    {b=20} add call # Calls add(b: 20) where `a` default to 65 -> 85
 end # Return void if not specified
 
 # Control Flow: If/else and match
@@ -109,7 +112,7 @@ Point implement
     end
 end
 
-point !{x 5 y 20} mutable Point
+point {x=5 y=20} mutable Point
 point.x 10 set
 point.distance call # 500 (10^2 + 20^2)
 
@@ -132,14 +135,15 @@ val "hello" set
 myList (43 54 65) static list[i32]
 
 # Hashmap: list with choosen keys
-myHashmap {"first" 4 "second" 5} static hashmap[string i32]
+myHashmap {"first"=4 "second"=5} static hashmap[string i32]
 
 # Modules: Import with require
 "std.math.sqrt" require
 16 sqrt call # 4.0
 
 "std.io" require io
-"Hello, Yarrow!" io.write_line call
+yarrow "Yarrow!" static string
+"Hello, ${yarrow}" io.write_line call # there is string interpolation
 
 # Stack Manipulation: Control the stack
 42 dup    # [42, 42]
@@ -157,15 +161,30 @@ defer
 end
 
 # Error Handling: Basic try/catch
-error_function function do
-    error.CustomError
-    return
+risky_operation function do
+    error.CustomError return
 end with i32 or error # return a value of i32 or an error
 
-risky_operation call try # if error returned, return the error itself until program stop
+main function do
+    risky_operation call unwrap # Pushes i32 or propagates Error
 
-risky_operation call catch # can also catch when error is returned
-    # error handling goes here
+    # If no error, i32 is on the stack
+    io.write_line call
+end
+
+main function do
+    # If you want to handle the error locally
+    risky_operation call catch # Error is on the stack
+        dup error.CustomError == if
+            "Caught CustomError" io.write_line call
+            0 # Push fallback value
+        else
+            error.OutOfMemory return # Propagate a different error
+        end
+    end
+
+    # If no error, i32 is on the stack; if error handled, fallback value (0) is on stack
+    io.write_line call
 end
 
 # Example Program: Putting it together
@@ -184,7 +203,7 @@ Person implement
 end
 
 main function do
-    person !{name "Alice" age 30} mutable Person
+    person {name="Alice" age=30} mutable Person
     person.greet call # "Alice says hello!"
     i32 i in [1 2 3] while
         i person.age < if
