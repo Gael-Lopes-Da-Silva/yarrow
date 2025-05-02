@@ -41,10 +41,10 @@ true not        # false
 true      # bool
 
 # Variables: Mutable, const, or static
-myVar 42 mutable i32       # Mutable
-myVar 23 set               # Update to 23
-myConst 100 const i32      # Runtime constant
-myStatic 50 static i32     # Compile-time constant
+myVar 42 mutable i32       # Mutable, owns the value
+myVar 23 set               # Update to 23, drops old value
+myConst 100 const i32      # Runtime constant, owns the value
+myStatic 50 static i32     # Compile-time constant, owned by program
 
 # Functions: Defined with parameters and return types
 add function
@@ -52,7 +52,6 @@ add function
     i32 b
 do
     a ?65 # If a is not provided, push 65
-
     a b +
     return # Put into the main stack what's in the local function stack
 end with i32
@@ -95,7 +94,7 @@ end
 numbers [10 20 30] static array[i32]
 sum 0 mutable i32
 value in numbers while
-    sum dup value + set end
+    sum dup value + set
 end # sum = 60
 
 # Structs: Composite types with methods
@@ -131,10 +130,10 @@ end
 val 42 mutable Value
 val "hello" set
 
-# List: dynamique arrays
+# List: Dynamic arrays
 myList (43 54 65) static list[i32]
 
-# Hashmap: list with choosen keys
+# Hashmap: List with chosen keys
 myHashmap {"first"=4 "second"=5} static hashmap[string i32]
 
 # Modules: Import with require
@@ -143,47 +142,84 @@ myHashmap {"first"=4 "second"=5} static hashmap[string i32]
 
 "std.io" require io
 yarrow "Yarrow!" static string
-"Hello, ${yarrow}" io.write_line call # there is string interpolation
+"Hello, ${yarrow}" io.write_line call # There is string interpolation
 
 # Stack Manipulation: Control the stack
-42 dup    # [42, 42]
+42 dup    # [42, 42] for simple types; borrows for complex types
 1 2 swap  # [2, 1]
 1 2 3 rot # [2, 3, 1]
 42 pop    # Remove 42
-drop      # Remove all the value on the stack
+drop      # Remove all values on the stack
 
 # Defer: Run at scope exit
 file 0 mutable pointer[i32]
 file open_file call set
-
 defer
     file close_file call
 end
 
-# Error Handling: Basic try/catch
+# Memory Management: Stack-based ownership and regions
+# Yarrow manages memory using stack ownership, explicit variable ownership,
+# borrowing, region-based heap management, and compile-time checks.
+
+# Stack Ownership: Stack owns temporary values, dropped when popped
+"temp" # Pushes string, owned by stack
+pop    # Drops string, freeing memory
+
+# Variable Ownership: Variables own values, dropped at scope exit
+myStr "hello" mutable string
+myStr "world" set # Drops "hello", assigns "world"
+# myStr dropped at scope exit
+
+# Borrowing: Create safe references with borrow operator
+myList (1 2 3) mutable list[i32]
+myList borrow # Pushes &list[i32]
+io.write_line call
+release # Ends borrow
+myList 4 @push call # Allowed after release
+
+# Regions: Heap data allocated in regions, freed as a unit
+myRegion region
+defer myRegion @free_region call
+myList (1 2 3) mutable list[i32] in myRegion
+# Region freed, dropping myList
+
+# Compile-Time Checks: Prevent use-after-pop, use-after-free
+# myList borrow
+# myList pop # Error: Cannot pop while borrowed
+
+# Error Handling: Errors as values with unwrap and handle
+Error enum
+    CustomError
+    OutOfMemory
+end
+
 risky_operation function do
     error.CustomError return
-end with i32 or error # return a value of i32 or an error
+end with i32 or Error
 
 main function do
     risky_operation call unwrap # Pushes i32 or propagates Error
-
-    # If no error, i32 is on the stack
     io.write_line call
 end
 
 main function do
-    # If you want to handle the error locally
-    risky_operation call catch # Error is on the stack
-        dup error.CustomError == if
-            "Caught CustomError" io.write_line call
-            0 # Push fallback value
-        else
-            error.OutOfMemory return # Propagate a different error
+    risky_operation call handle
+        match
+            error.CustomError case
+                "Caught CustomError" io.write_line call
+            end
+            else
+                "Unknown error" io.write_line call
+            end
         end
+        0 # Fallback value
     end
+    io.write_line call
+end
 
-    # If no error, i32 is on the stack; if error handled, fallback value (0) is on stack
+main function do
+    risky_operation call handle 0 # If error, push 0
     io.write_line call
 end
 
@@ -192,24 +228,53 @@ end
 
 Person struct
     string name
-    i32 age
+    list[i32] scores
 end
 
 Person implement
-    greet function do
-        name " says hello!" +
+    add_score function
+        i32 score
+    do
+        this.scores score @push call
         return
-    end
+    end with void or Error
+
+    greet function do
+        this.name " says hello!" +
+        return
+    end with string or Error
 end
 
 main function do
-    person {name="Alice" age=30} mutable Person
-    person.greet call # "Alice says hello!"
+    myRegion region
+    defer myRegion @free_region call
+
+    person {name="Alice" scores=(10 20)} mutable Person in myRegion
+    person borrow
+    person.greet call unwrap
+    io.write_line call # Prints "Alice says hello!"
+    release
+
+    30 person.add_score call handle
+        match
+            error.OutOfMemory case
+                "No memory" io.write_line call
+            end
+            else
+                "Unknown error" io.write_line call
+            end
+        end
+    end
+
+    person move person2 set # Transfer ownership
+    person2.scores io.write_line call # Prints [10, 20, 30]
+
     i32 i in [1 2 3] while
-        i person.age < if
+        i 30 < if
             "Younger" io.write_line call
         end
     end
+    # Region freed, dropping person2
 end
 
-# That's Yarrow in a nutshell! Stack-based, typed, and modular.
+# That's Yarrow in a nutshell! Stack-based, typed, modular, and memory-safe.
