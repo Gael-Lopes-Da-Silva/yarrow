@@ -11,9 +11,9 @@
 5 3 -    # 2 (5 - 3)
 4 2 *    # 8 (4 * 2)
 10 4 /   # 2.5 (10 / 4)
-10 3 //  # 3 (Euclidean division)
-10 3 %   # 1 (remainder)
-2 3 **   # 8 (2^3)
+10 3 //  # 3 (10 // 3)
+10 3 %   # 1 (10 % 3)
+2 3 ^    # 8 (2 ^ 3)
 
 # Logical Operators: Work with bools
 true false and  # false
@@ -27,11 +27,11 @@ true not        # false
 3 5 <     # true
 
 # Bitwise Operators: For integers
-1 2 &     # 0 (1 & 2)
-1 5 |     # 5 (1 | 5)
-5 2 <<    # 20 (5 << 2)
-5 2 >>    # 1 (5 >> 2)
-5 ~       # -6 (~5)
+1 2 and    # 0 (1 & 2)
+1 5 or     # 5 (1 | 5)
+5 2 <<     # 20 (5 << 2)
+5 2 >>     # 1 (5 >> 2)
+5 not      # -6 (~5)
 
 # Types: Numeric, bool, string, and more
 42        # u8 (smallest fitting integer)
@@ -91,9 +91,9 @@ counter 5 < while
     break # Exit early
 end
 
-numbers [10 20 30] static array[i32]
+numbers [10 20 30] static [i32][3]array
 sum 0 mutable i32
-value in numbers while
+value numbers @in call while
     sum dup value + set
 end # sum = 60
 
@@ -131,12 +131,6 @@ end
 val 42 mutable Value
 val "hello" set
 
-# List: Dynamic arrays
-myList (43 54 65) static list[i32]
-
-# Hashmap: List with chosen keys
-myHashmap {"first"=4 "second"=5} static hashmap[string i32]
-
 # Modules: Import with require
 "std.math.sqrt" require
 16 sqrt call # 4.0
@@ -144,6 +138,12 @@ myHashmap {"first"=4 "second"=5} static hashmap[string i32]
 "std.io" require io
 yarrow "Yarrow!" static string
 "Hello, ${yarrow}" io.write_line call # There is string interpolation
+
+# List: Dynamic arrays
+myList (43 54 65) static [i32]list
+
+# Hashmap: List with chosen keys
+myHashmap {"first"=4 "second"=5} static [string i32]hashmap
 
 # Stack Manipulation: Control the stack
 42 dup    # [42, 42] for simple types; borrows for complex types
@@ -153,7 +153,7 @@ yarrow "Yarrow!" static string
 drop      # Remove all values on the stack
 
 # Defer: Run at scope exit
-file 0 mutable pointer[i32]
+file 0 mutable [i32]pointer
 file open_file call set
 defer file close_file call end
 
@@ -171,16 +171,17 @@ myStr "world" set # Drops "hello", assigns "world"
 # myStr dropped at scope exit
 
 # Borrowing: Create safe references with borrow operator
-myList (1 2 3) mutable list[i32]
-myList borrow # Pushes &list[i32]
+myList (1 2 3) mutable [i32]list
+myList @borrow call # Pushes &list[i32]
 io.write_line call
-release # Ends borrow
+@release call # Ends borrow
 myList 4 @push call # Allowed after release
 
 # Regions: Heap data allocated in regions, freed as a unit
-myRegion region
+myRegion @make_region
 defer myRegion @free_region call end
-myList (1 2 3) mutable list[i32] in myRegion
+myList (1 2 3) mutable [i32]list
+myList myRegion @put_region call
 # Region freed, dropping myList
 
 # Compile-Time Checks: Prevent use-after-pop, use-after-free
@@ -227,7 +228,7 @@ end
 
 Person struct
     string name
-    list[i32] scores
+    [i32]list scores
 end
 
 Person implement
@@ -245,13 +246,14 @@ Person implement
 end
 
 main function do
-    myRegion region
+    myRegion @make_region
     defer myRegion @free_region call end
 
-    person {name="Alice" scores=(10 20)} new Person mutable Person in myRegion
-    person borrow .greet call unwrap
+    person {name="Alice" scores=(10 20)} new Person mutable Person
+    person myRegion @put_region call
+    person @borrow call .greet call unwrap
     io.write_line call # Prints "Alice says hello!"
-    release
+    @release call
 
     30 person.add_score call handle
         match
@@ -267,7 +269,7 @@ main function do
     person move person2 set # Transfer ownership
     person2.scores io.write_line call # Prints [10, 20, 30]
 
-    i32 i in [1 2 3] while
+    i [1 2 3] @in call while
         i 30 < if
             "Younger" io.write_line call
         end
