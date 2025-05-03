@@ -21,17 +21,22 @@ class TokenKind(Enum):
     RIGHT_CURLY = "right_curly_brace"
     LEFT_SQUARE = "left_square_bracket"
     RIGHT_SQUARE = "right_square_bracket"
+
+    COLON = "colon"
+    SEMI_COLON = "semi_colon"
     COMMA = "comma"
     DOT = "dot"
     QUESTION = "question"
-
     PLUS = "plus"
     MINUS = "minus"
-    MULTIPLICATION = "multiplication"
-    DIVISION = "division"
-    EUCLIDIAN = "euclidian_division"
-    REMAINDER = "remainder"
-    POWER = "power"
+    STAR = "star"
+    SLASH = "slash"
+    SLASH_SLASH = "slash_slash"
+    PERCENT = "percent"
+    STAR_STAR = "star_star"
+    EXCLAMATION = "exclamation"
+    AMPERSAND = "ampersand"
+    BAR = "bar"
 
     EQUAL = "equal"
     EQUAL_EQUAL = "equal_equal"
@@ -41,15 +46,9 @@ class TokenKind(Enum):
     LESS = "less"
     LESS_EQUAL = "less_equal"
 
-    BITWISE_AND = "bitwise_and"
-    BITWISE_OR = "bitwise_or"
-    BITWISE_XOR = "bitwise_xor"
-    BITWISE_NOT = "bitwise_not"
-    LEFT_SHIFT = "left_shift"
-    RIGHT_SHIFT = "right_shift"
-
     IDENTIFIER = "identifier"
     STRING = "string"
+    RUNE = "rune"
     INTEGER = "integer"
     FLOAT = "float"
     BOOLEAN = "boolean"
@@ -58,7 +57,14 @@ class TokenKind(Enum):
 
     AND = "logical_and"
     OR = "logical_or"
+    XOR = "logical_xor"
     NOT = "logical_not"
+    LEFT_SHIFT = "left_shift"
+    RIGHT_SHIFT = "right_shift"
+
+    BORROW = "borrow"
+    RELEASE = "release"
+    REGION = "region"
 
     IF = "if"
     ELSE = "else"
@@ -67,9 +73,10 @@ class TokenKind(Enum):
     CONTINUE = "continue"
     MATCH = "match"
     CASE = "case"
+    IN = "in"
 
-    TRY = "try"
-    CATCH = "catch"
+    UNWRAP = "unwrap"
+    HANDLE = "handle"
 
     FUNCTION = "function"
     RETURN = "return"
@@ -86,6 +93,7 @@ class TokenKind(Enum):
     IMPLEMENT = "implement"
     ENUM = "enum"
     UNION = "union"
+    NEW = "new"
 
     POP = "pop"
     DROP = "drop"

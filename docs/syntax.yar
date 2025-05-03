@@ -105,13 +105,14 @@ end
 
 Point implement
     distance function do
-        this.x this.x *
-        this.y this.y * +
+        @this.x @this.x *
+        @this.y @this.y * +
         return
     end
 end
 
-point {x=5 y=20} mutable Point
+point 5 20 new Point mutable Point
+# point {x=5 y=20} new Point mutable Point
 point.x 10 set
 point.distance call # 500 (10^2 + 20^2)
 
@@ -154,9 +155,7 @@ drop      # Remove all values on the stack
 # Defer: Run at scope exit
 file 0 mutable pointer[i32]
 file open_file call set
-defer
-    file close_file call
-end
+defer file close_file call end
 
 # Memory Management: Stack-based ownership and regions
 # Yarrow manages memory using stack ownership, explicit variable ownership,
@@ -180,7 +179,7 @@ myList 4 @push call # Allowed after release
 
 # Regions: Heap data allocated in regions, freed as a unit
 myRegion region
-defer myRegion @free_region call
+defer myRegion @free_region call end
 myList (1 2 3) mutable list[i32] in myRegion
 # Region freed, dropping myList
 
@@ -247,11 +246,10 @@ end
 
 main function do
     myRegion region
-    defer myRegion @free_region call
+    defer myRegion @free_region call end
 
-    person {name="Alice" scores=(10 20)} mutable Person in myRegion
-    person borrow
-    person.greet call unwrap
+    person {name="Alice" scores=(10 20)} new Person mutable Person in myRegion
+    person borrow .greet call unwrap
     io.write_line call # Prints "Alice says hello!"
     release
 
