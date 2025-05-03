@@ -27,11 +27,12 @@ true not        # false
 3 5 <     # true
 
 # Bitwise Operators: For integers
-1 2 and    # 0 (1 & 2)
-1 5 or     # 5 (1 | 5)
-5 2 <<     # 20 (5 << 2)
-5 2 >>     # 1 (5 >> 2)
-5 not      # -6 (~5)
+1 2 and    # 0
+1 5 or     # 5
+4 5 xor    # 1
+5 2 <<     # 20
+5 2 >>     # 1
+5 not      # -6
 
 # Types: Numeric, bool, string, and more
 42        # u8 (smallest fitting integer)
@@ -51,14 +52,14 @@ add function
     i32 a
     i32 b
 do
-    a ?65 # If a is not provided, push 65
+    a 65 ? # If a is not provided, push 65
     a b +
     return # Put into the main stack what's in the local function stack
 end with i32
 
 main function do
     10 20 add call  # Calls add(10, 20) -> 30
-    {b=20} add call # Calls add(b: 20) where `a` default to 65 -> 85
+    {b 20} add call # Calls add(b: 20) where `a` default to 65 -> 85
 end # Return void if not specified
 
 # Control Flow: If/else and match
@@ -112,7 +113,7 @@ Point implement
 end
 
 point 5 20 new Point mutable Point
-# point {x=5 y=20} new Point mutable Point
+# point {x 5 y 20} new Point mutable Point
 point.x 10 set
 point.distance call # 500 (10^2 + 20^2)
 
@@ -143,7 +144,7 @@ yarrow "Yarrow!" static string
 myList (43 54 65) static [i32]list
 
 # Hashmap: List with chosen keys
-myHashmap {"first"=4 "second"=5} static [string i32]hashmap
+myHashmap {"first" 4 "second" 5} static [string i32]hashmap
 
 # Stack Manipulation: Control the stack
 42 dup    # [42, 42] for simple types; borrows for complex types
@@ -219,7 +220,7 @@ main function do
 end
 
 main function do
-    risky_operation call handle 0 # If error, push 0
+    risky_operation call handle 0 end # If error, push 0
     io.write_line call
 end
 
@@ -249,7 +250,7 @@ main function do
     myRegion @make_region
     defer myRegion @free_region call end
 
-    person {name="Alice" scores=(10 20)} new Person mutable Person
+    person {name "Alice" scores (10 20)} new Person mutable Person
     person myRegion @put_region call
     person @borrow call .greet call unwrap
     io.write_line call # Prints "Alice says hello!"

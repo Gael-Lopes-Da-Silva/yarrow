@@ -121,6 +121,7 @@ class TypeKind(enum.Enum):
     ERROR = "error"
     TYPE = "type"
     STRING = "string"
+    RUNE = "rune"
     ARRAY = "array"
     LIST = "list"
     HASHMAP = "hashmap"
@@ -213,9 +214,9 @@ class Logger:
         if location:
             line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
             pointer = (
-                " " * (len(str(location.line)) + 2 + location.start) + Logger.POINTER
+                " " * (len(str(location.line)) + 2 + location.start) + Logger.POINTER * max(1, location.end - location.start)
             )
-            output += f"{Style.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Style.RED}{pointer * max(1, location.end - location.start)}"
+            output += f"{Style.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Style.RED}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
                 if location_message is not None
@@ -238,9 +239,9 @@ class Logger:
         if location:
             line = f"{location.line}│ {SOURCE.splitlines()[location.line - 1]}"
             pointer = (
-                " " * (len(str(location.line)) + 2 + location.start) + Logger.POINTER
+                " " * (len(str(location.line)) + 2 + location.start) + Logger.POINTER * max(1, location.end - location.start)
             )
-            output += f"{Style.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Style.YELLOW}{pointer * max(1, location.end - location.start)}"
+            output += f"{Style.GREY}\n| location: {PATH}:{location.line}:{location.start}\n|   {line}\n|   {Style.YELLOW}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
                 if location_message is not None
@@ -463,9 +464,7 @@ class Tokenizer:
                 )
                 raise GlobalException
 
-            if self.peek() == "\\":
-                self.advance()
-
+            if self.match("\\"):
                 if self.eof():
                     Logger.error(
                         "Incomplete escape sequence in string literal !",
@@ -475,7 +474,7 @@ class Tokenizer:
                     raise GlobalException
 
                 escape_rune = self.peek()
-                if escape_rune in ["\\", "'", '"', "n", "r", "t", "v", "b", "a", "f"]:
+                if escape_rune in ["\\", "'", '"', "$", "n", "r", "t", "v", "b", "a", "f"]:
                     self.advance()
                 else:
                     Logger.error(
@@ -484,6 +483,17 @@ class Tokenizer:
                         location_message="unknown escape sequence",
                     )
                     raise GlobalException
+            elif self.match("$") and self.match("{"):
+                while not self.eof() and self.peek() != "}":
+                    self.advance()
+
+                if self.eof() or not self.match("}"):
+                    Logger.error(
+                        f"Incomplete escape sequence in string literal !",
+                        location=self.get_location(),
+                        location_message="should be closed with `}`",
+                    )
+                raise GlobalException
             else:
                 self.advance()
 
@@ -539,8 +549,8 @@ class Tokenizer:
             )
             raise GlobalException
 
-        location = self.get_location()
-        if ((location.end - 1) - (location.start + 1)) > 1:
+        content = SOURCE[self.start + 1 : self.current - 1]
+        if len(content.replace("\\", "")) > 1:
             Logger.error(
                 "Invalid rune syntax !",
                 location=self.get_location(),
@@ -555,8 +565,14 @@ class Tokenizer:
             self.advance()
 
         text = SOURCE[self.start : self.current]
-        token_type = self.get(text.lower()) or TokenKind.IDENTIFIER
+        token_type = self.get_keyword(text.lower()) or TokenKind.IDENTIFIER
         self.add_token(token_type)
+
+    def get_keyword(self, key: str) -> TokenKind | None:
+        for keyword in self.keywords:
+            if keyword.name == key:
+                return keyword.kind
+        return None
 
     def add_token(self, kind: TokenKind) -> None:
         self.tokens.append(
@@ -691,6 +707,12 @@ class Parser:
             case TokenKind.CARET:
                 return Instruction(
                     "power",
+                    {"type": None, "value": token.lexeme},
+                    token,
+                )
+            case TokenKind.QUESTION:
+                return Instruction(
+                    "default",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
@@ -890,8 +912,8 @@ class Parser:
         contained_value_type = None
         token = self.expect(TokenKind.LEFT_SQUARE)
         if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE)
-            contained_value_type = self.expect(TokenKind.TYPE)
+            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
             if self.expect(TokenKind.RIGHT_SQUARE) is None:
                 Logger.error(
@@ -914,7 +936,7 @@ class Parser:
                 )
                 raise GlobalException
 
-        variable_type = self.expect(TokenKind.TYPE)
+        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
         if variable_type is None:
             Logger.error(
                 "Invalid type syntax !",
@@ -944,8 +966,8 @@ class Parser:
         contained_value_type = None
         token = self.expect(TokenKind.LEFT_SQUARE)
         if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE)
-            contained_value_type = self.expect(TokenKind.TYPE)
+            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
             if self.expect(TokenKind.RIGHT_SQUARE) is None:
                 Logger.error(
@@ -968,7 +990,7 @@ class Parser:
                 )
                 raise GlobalException
 
-        variable_type = self.expect(TokenKind.TYPE)
+        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
         if variable_type is None:
             Logger.error(
                 "Invalid type syntax !",
@@ -998,8 +1020,8 @@ class Parser:
         contained_value_type = None
         token = self.expect(TokenKind.LEFT_SQUARE)
         if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE)
-            contained_value_type = self.expect(TokenKind.TYPE)
+            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
             if self.expect(TokenKind.RIGHT_SQUARE) is None:
                 Logger.error(
@@ -1022,7 +1044,7 @@ class Parser:
                 )
                 raise GlobalException
 
-        variable_type = self.expect(TokenKind.TYPE)
+        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
         if variable_type is None:
             Logger.error(
                 "Invalid type syntax !",
@@ -1050,7 +1072,7 @@ class Parser:
     def handle_functions(self, token: Token) -> Instruction:
         parameters = []
         while not self.eof() and self.peek().kind != TokenKind.DO:
-            if self.peek().type not in [
+            if self.peek().kind not in [
                 TokenKind.LEFT_SQUARE,
                 TokenKind.TYPE,
                 TokenKind.IDENTIFIER,
@@ -1067,8 +1089,8 @@ class Parser:
             contained_value_type = None
             token = self.expect(TokenKind.LEFT_SQUARE)
             if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE)
-                contained_value_type = self.expect(TokenKind.TYPE)
+                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
                 if self.expect(TokenKind.RIGHT_SQUARE) is None:
                     Logger.error(
@@ -1091,7 +1113,7 @@ class Parser:
                     )
                     raise GlobalException
 
-            variable_type = self.expect(TokenKind.TYPE)
+            variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
             variable_name = self.expect(TokenKind.IDENTIFIER)
 
             if variable_type is None:
@@ -1133,7 +1155,7 @@ class Parser:
             raise GlobalException
 
         body = []
-        while not self.eof() and self.peek().type != TokenKind.END:
+        while not self.eof() and self.peek().kind != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
@@ -1149,7 +1171,7 @@ class Parser:
         return_type = None
         return_error = None
         if not self.eof() and self.expect(TokenKind.WITH) is not None:
-            return_type = self.expect(TokenKind.TYPE)
+            return_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
             if return_type is None:
                 Logger.error(
                     "Invalid function syntax !",
@@ -1228,7 +1250,7 @@ class Parser:
         while not self.eof() and self.peek().kind != TokenKind.END:
             else_token = self.expect(TokenKind.ELSE)
             if else_token is not None:
-                while not self.eof and self.peek().kind != TokenKind.END:
+                while not self.eof() and self.peek().kind != TokenKind.END:
                     instruction = self.parse_instruction()
                     if instruction is not None:
                         else_body.append(instruction)
@@ -1240,6 +1262,7 @@ class Parser:
                         location_message="you need to close a case with `end`",
                     )
                     raise GlobalException
+
                 break
 
             case_condition = []
@@ -1268,7 +1291,7 @@ class Parser:
                 break
 
             case_body = []
-            while not self.eof and self.peek().kind != TokenKind.END:
+            while not self.eof() and self.peek().kind != TokenKind.END:
                 instruction = self.parse_instruction()
                 if instruction is not None:
                     case_body.append(instruction)
@@ -1343,8 +1366,8 @@ class Parser:
             contained_value_type = None
             token = self.expect(TokenKind.LEFT_SQUARE)
             if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE)
-                contained_value_type = self.expect(TokenKind.TYPE)
+                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
                 if self.expect(TokenKind.RIGHT_SQUARE) is None:
                     Logger.error(
@@ -1367,7 +1390,7 @@ class Parser:
                     )
                     raise GlobalException
 
-            variable_type = self.expect(TokenKind.TYPE)
+            variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
             variable_name = self.expect(TokenKind.IDENTIFIER)
 
             if variable_type is None:
@@ -1493,8 +1516,8 @@ class Parser:
             contained_value_type = None
             token = self.expect(TokenKind.LEFT_SQUARE)
             if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE)
-                contained_value_type = self.expect(TokenKind.TYPE)
+                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
 
                 if self.expect(TokenKind.RIGHT_SQUARE) is None:
                     Logger.error(
@@ -1517,7 +1540,7 @@ class Parser:
                     )
                     raise GlobalException
 
-            union_type = self.expect(TokenKind.TYPE)
+            union_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
             if union_type is None:
                 Logger.error(
                     "Invalid union syntax !",
@@ -1528,7 +1551,7 @@ class Parser:
 
             body.append(
                 {
-                    "actual_type": variable_type,
+                    "actual_type": union_type,
                     "contained_type": {
                         "key_type": contained_key_type,
                         "value_type": contained_value_type,
@@ -1587,7 +1610,7 @@ class Parser:
 
     def handle_defers(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().kind != TokenKind:
+        while not self.eof() and self.peek().kind != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
@@ -1595,7 +1618,7 @@ class Parser:
         if self.eof() or self.expect(TokenKind.END) is None:
             Logger.error(
                 "Defer not closed !",
-                location=self.peek_previous().location,
+                location=token.location,
                 location_message="you need to close a defer with `end`",
             )
             raise GlobalException
@@ -1611,7 +1634,7 @@ class Parser:
 
     def handle_handles(self, token: Token) -> Instruction:
         body = []
-        while not self.eof() and self.peek().kind != TokenKind:
+        while not self.eof() and self.peek().kind != TokenKind.END:
             instruction = self.parse_instruction()
             if instruction is not None:
                 body.append(instruction)
@@ -1619,7 +1642,7 @@ class Parser:
         if self.eof() or self.expect(TokenKind.END) is None:
             Logger.error(
                 "Handle not closed !",
-                location=self.peek_previous().location,
+                location=token.location,
                 location_message="you need to close a handle with `end`",
             )
             raise GlobalException
@@ -1655,7 +1678,9 @@ class Parser:
     def handle_lists(self, token: Token) -> Instruction:
         body = []
         while not self.eof() and self.peek().kind != TokenKind.RIGHT_PAREN:
-            body.append(self.advance())
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
 
         if self.eof() or self.expect(TokenKind.RIGHT_PAREN) is None:
             Logger.error(
@@ -1674,7 +1699,9 @@ class Parser:
     def handle_arrays(self, token: Token) -> Instruction:
         body = []
         while not self.eof() and self.peek().kind != TokenKind.RIGHT_SQUARE:
-            body.append(self.advance())
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
 
         if self.eof() or self.expect(TokenKind.RIGHT_SQUARE) is None:
             Logger.error(
@@ -1693,18 +1720,9 @@ class Parser:
     def handle_hashmaps(self, token: Token) -> Instruction:
         body = []
         while not self.eof() and self.peek().kind != TokenKind.RIGHT_CURLY:
-            hashmap_value = self.advance()
-
-            if self.eof() or self.expect(TokenKind.EQUAL) is None:
-                Logger.error(
-                    "Invalid hashmap syntax !",
-                    location=self.peek_previous().location,
-                    location_message="you need to put a `=` between keys and values",
-                )
-                raise GlobalException
-
-            hashmap_key = self.advance()
-            body.append({"key": hashmap_key, "value": hashmap_value})
+            instruction = self.parse_instruction()
+            if instruction is not None:
+                body.append(instruction)
 
         if self.eof() or self.expect(TokenKind.RIGHT_CURLY) is None:
             Logger.error(
@@ -1732,7 +1750,7 @@ class Parser:
         return token
 
     def expect(self, expected_type: TokenKind) -> Token | None:
-        if not self.eof() and self.peek().type == expected_type:
+        if not self.eof() and self.peek().kind == expected_type:
             return self.advance()
         return None
 
@@ -1749,6 +1767,9 @@ class Compiler:
 
 
 class Cli:
+    def __init__(self) -> None:
+        pass
+
     def scan_file(self, path: str) -> None:
         global SOURCE
         global PATH
@@ -1765,12 +1786,11 @@ class Cli:
             )
             exit(1)
 
-        tokenizer = Tokenizer()
-        parser = Parser()
-
         if SOURCE != "":
             try:
-                parser.parse(tokenizer.tokenize())
+                tokenizer = Tokenizer()
+                parser = Parser(tokenizer.tokenize())
+                parser.parse()
                 print(parser.instructions)
             except Exception as error:
                 if not isinstance(error, GlobalException):
