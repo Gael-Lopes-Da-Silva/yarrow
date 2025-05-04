@@ -1,5 +1,6 @@
 import sys
 import enum
+import math
 
 
 # ERRORS
@@ -216,7 +217,7 @@ class Logger:
             pointer = " " * (
                 len(str(location.line)) + 2 + location.start
             ) + Logger.POINTER * max(1, location.end - location.start)
-            output += f"{Style.GREY}\n| location:{f" {self.path}:{location.line}:{location.start}" if self.path else ""}\n|   {line}\n|   {Style.RED}{pointer}"
+            output += f"{Style.GREY}\n| location:{f' {self.path}:{location.line}:{location.start}' if self.path else ''}\n|   {line}\n|   {Style.RED}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
                 if location_message
@@ -242,7 +243,7 @@ class Logger:
             pointer = " " * (
                 len(str(location.line)) + 2 + location.start
             ) + Logger.POINTER * max(1, location.end - location.start)
-            output += f"{Style.GREY}\n| location:{f" {self.path}:{location.line}:{location.start}" if self.path else ""}\n|   {line}\n|   {Style.YELLOW}{pointer}"
+            output += f"{Style.GREY}\n| location:{f' {self.path}:{location.line}:{location.start}' if self.path else ''}\n|   {line}\n|   {Style.YELLOW}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
                 if location_message
@@ -485,7 +486,6 @@ class Tokenizer:
                     "\\",
                     "'",
                     '"',
-                    "$",
                     "n",
                     "r",
                     "t",
@@ -500,17 +500,6 @@ class Tokenizer:
                         f"Invalid escape sequence '\\{escape_rune}' in string literal !",
                         location=self.get_location(),
                         location_message="unknown escape sequence",
-                    )
-                    raise GlobalException
-            elif self.match("$") and self.match("{"):
-                while not self.eof() and self.peek() != "}":
-                    self.advance()
-
-                if self.eof() or not self.match("}"):
-                    self.logger.error(
-                        f"Incomplete escape sequence in string literal !",
-                        location=self.get_location(),
-                        location_message="should be closed with `}`",
                     )
                     raise GlobalException
             else:
@@ -669,17 +658,21 @@ class Parser:
                     token,
                 )
             case TokenKind.INTEGER:
-                # TODO: check for integer size and choose smallest fiting type
+                int_value = int(token.lexeme)
+                int_type = self.get_smallest_integer_type(int_value)
+
                 return Instruction(
                     "push",
-                    {"type": TypeKind.I64, "value": int(token.lexeme)},
+                    {"type": int_type, "value": int_value},
                     token,
                 )
             case TokenKind.FLOAT:
-                # TODO: check for float size and bounds and choose smallest fiting type
+                float_value = float(token.lexeme)
+                float_type = self.get_smallest_float_type(float_value)
+
                 return Instruction(
                     "push",
-                    {"type": TypeKind.F64, "value": float(token.lexeme)},
+                    {"type": float_type, "value": float_value},
                     token,
                 )
             case TokenKind.BOOLEAN:
@@ -1196,7 +1189,9 @@ class Parser:
                 location=self.peek_previous().location,
                 location_message="there should be a function body after this",
             )
-            self.logger.info("Open a function body with a `do` and close it with a `end` !")
+            self.logger.info(
+                "Open a function body with a `do` and close it with a `end` !"
+            )
             raise GlobalException
 
         body = []
@@ -1797,6 +1792,54 @@ class Parser:
             token,
         )
 
+    def get_smallest_integer_type(self, value: int) -> TypeKind:
+        if value >= 0:
+            if value <= 2**8 - 1:
+                return TypeKind.U8
+            elif value <= 2**16 - 1:
+                return TypeKind.U16
+            elif value <= 2**32 - 1:
+                return TypeKind.U32
+            elif value <= 2**64 - 1:
+                return TypeKind.U64
+            elif value <= 2**128 - 1:
+                return TypeKind.U128
+
+        if -2**7 <= value <= 2**7 - 1:
+            return TypeKind.I8
+        elif -2**15 <= value <= 2**15 - 1:
+            return TypeKind.I16
+        elif -2**31 <= value <= 2**31 - 1:
+            return TypeKind.I32
+        elif -2**63 <= value <= 2**63 - 1:
+            return TypeKind.I64
+        else:
+            return TypeKind.I128
+
+    def get_smallest_float_type(self, value: float) -> TypeKind:
+        if math.isnan(value) or math.isinf(value):
+            self.logger.error(
+                f"Invalid float value {value} (NaN or Infinity) !",
+                location=self.get_location(),
+                location_message="need to be a valid float value"
+            )
+            raise GlobalException
+        if value == 0.0:
+            return TypeKind.F16
+
+        abs_value = abs(value)
+        str_value = f"{abs_value:.16e}".split("e")[0].replace(".", "").rstrip("0")
+        significant_digits = len(str_value)
+
+        if abs_value <= 65504 and significant_digits <= 4:
+            return TypeKind.F16
+        elif abs_value <= 3.4e38 and significant_digits <= 7:
+            return TypeKind.F32
+        elif abs_value <= 1.8e308 and significant_digits <= 16:
+            return TypeKind.F64
+        else:
+            return TypeKind.F128
+
     def peek_previous(self) -> Token:
         return self.tokens[self.current - 1]
 
@@ -1862,12 +1905,8 @@ class Cli:
         return source.replace("\t", "").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def main():
+if __name__ == "__main__":
     cli = Cli()
 
     if len(sys.argv) == 2:
         cli.scan_file(sys.argv[1])
-
-
-if __name__ == "__main__":
-    main()
