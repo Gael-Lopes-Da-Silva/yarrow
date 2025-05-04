@@ -1,3 +1,4 @@
+import os
 import sys
 import enum
 import math
@@ -1631,9 +1632,12 @@ class Compiler:
     def __init__(self, source: str, path: str):
         self.source = source
         self.path = path
+        self.output_path = ""
         self.logger = Logger(source, path)
         self.instructions = []
         self.current = 0
+        self.temp_count = 0
+        self.label_count = 0
         self.ir = []
 
     def __repr__(self) -> str:
@@ -1641,10 +1645,27 @@ class Compiler:
 
     def compile(self, instructions: list) -> None:
         self.instructions = instructions
+        self.output_path = os.path.splitext(self.path)[0] + ".ll"
+
+        self.emit_preamble()
+        self.emit_runtime_declaration()
+        self.emit_start_main_function()
 
         while not self.eof():
             instruction = self.advance()
             self.translate_instruction(instruction)
+
+        self.emit_end_main_function()
+
+        try:
+            with open(self.output_path, "w", encoding="utf-8") as file:
+                for line in self.ir:
+                    file.write(line + "\n")
+        except Exception:
+            self.logger.error(
+                f"Failed to write LLVM IR to `{self.output_path}` !",
+            )
+            raise GlobalException
 
     def translate_instruction(self, instruction: Instruction) -> None:
         match instruction.kind:
@@ -1666,6 +1687,39 @@ class Compiler:
                 "target triple = 'x86_64-pc-linux-gnu'",
             ]
         )
+
+    def emit_runtime_declaration(self) -> None:
+        self.ir.extend([])
+
+    def emit_start_main_function(self) -> None:
+        self.ir.extend(
+            [
+                "define i32 @main() #0 {",
+                "entry:",
+                "   %stack = alloca [1024 * i8], align 16",
+                "   %stack_pointer = alloca i8*, align 8",
+                "   store i8* %stack, i8** %stack_pointer, align 8",
+            ]
+        )
+
+    def emit_end_main_function(self) -> None:
+        self.ir.extend(
+            [
+                "   ret i32 0",
+                "}",
+                "attributes #0 = { noinline nounwind optnone uwtable }",
+            ]
+        )
+
+    def next_temp(self) -> str:
+        temp = self.temp_count
+        self.temp_count += 1
+        return str(temp)
+
+    def next_label(self) -> str:
+        label = f"bb{self.label_count}"
+        self.label_count += 1
+        return label
 
     def peek(self) -> Instruction:
         return self.instructions[self.current]
@@ -1705,6 +1759,8 @@ class Cli:
                 compiler = Compiler(self.source, self.path)
 
                 compiler.compile(parser.parse(tokenizer.tokenize()))
+
+                print(compiler)
             except Exception as error:
                 if not isinstance(error, GlobalException):
                     raise
