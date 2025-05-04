@@ -216,7 +216,7 @@ class Logger:
             line = f"{location.line}│ {self.source.splitlines()[location.line - 1]}"
             pointer = " " * (
                 len(str(location.line)) + 2 + location.start
-            ) + Logger.POINTER * max(1, location.end - location.start)
+            ) + self.pointer * max(1, location.end - location.start)
             output += f"{Style.GREY}\n| location:{f' {self.path}:{location.line}:{location.start}' if self.path else ''}\n|   {line}\n|   {Style.RED}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
@@ -242,7 +242,7 @@ class Logger:
             line = f"{location.line}│ {self.source.splitlines()[location.line - 1]}"
             pointer = " " * (
                 len(str(location.line)) + 2 + location.start
-            ) + Logger.POINTER * max(1, location.end - location.start)
+            ) + self.pointer * max(1, location.end - location.start)
             output += f"{Style.GREY}\n| location:{f' {self.path}:{location.line}:{location.start}' if self.path else ''}\n|   {line}\n|   {Style.YELLOW}{pointer}"
             output += (
                 f" {location_message}{Style.RESET}"
@@ -928,175 +928,37 @@ class Parser:
         return None
 
     def handle_mutables(self, token: Token) -> Instruction:
-        contained_key_type = None
-        contained_value_type = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied type definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        contained_size = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_size = self.expect(TokenKind.INTEGER)
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied size definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
-        if variable_type is None:
-            self.logger.error(
-                "Invalid type syntax !",
-                location=self.peek_previous().location,
-                location_message="there should be a type after this",
-            )
-            raise GlobalException
+        variable_type = self.parse_type()
 
         return Instruction(
             "mutable",
             {
                 "type": None,
-                "value": {
-                    "actual_type": variable_type,
-                    "contained_type": {
-                        "key_type": contained_key_type,
-                        "value_type": contained_value_type,
-                    },
-                    "contained_size": contained_size,
-                },
+                "value": variable_type,
             },
             token,
         )
 
     def handle_consts(self, token: Token) -> Instruction:
-        contained_key_type = None
-        contained_value_type = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied type definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        contained_size = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_size = self.expect(TokenKind.INTEGER)
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied size definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
-        if variable_type is None:
-            self.logger.error(
-                "Invalid type syntax !",
-                location=self.peek_previous().location,
-                location_message="there should be a type after this",
-            )
-            raise GlobalException
+        variable_type = self.parse_type()
 
         return Instruction(
             "const",
             {
                 "type": None,
-                "value": {
-                    "actual_type": variable_type,
-                    "contained_type": {
-                        "key_type": contained_key_type,
-                        "value_type": contained_value_type,
-                    },
-                    "contained_size": contained_size,
-                },
+                "value": variable_type,
             },
             token,
         )
 
     def handle_statics(self, token: Token) -> Instruction:
-        contained_key_type = None
-        contained_value_type = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-            contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied type definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        contained_size = None
-        token = self.expect(TokenKind.LEFT_SQUARE)
-        if token is not None:
-            contained_size = self.expect(TokenKind.INTEGER)
-
-            if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=token.location,
-                    location_message="close the contaied size definition with the corresponding square bracket",
-                )
-                raise GlobalException
-
-        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
-        if variable_type is None:
-            self.logger.error(
-                "Invalid type syntax !",
-                location=self.peek_previous().location,
-                location_message="there should be a type after this",
-            )
-            raise GlobalException
+        variable_type = self.parse_type()
 
         return Instruction(
             "static",
             {
                 "type": None,
-                "value": {
-                    "actual_type": variable_type,
-                    "contained_type": {
-                        "key_type": contained_key_type,
-                        "value_type": contained_value_type,
-                    },
-                    "contained_size": contained_size,
-                },
+                "value": variable_type,
             },
             token,
         )
@@ -1105,7 +967,6 @@ class Parser:
         parameters = []
         while not self.eof() and self.peek().kind != TokenKind.DO:
             if self.peek().kind not in [
-                TokenKind.LEFT_SQUARE,
                 TokenKind.TYPE,
                 TokenKind.IDENTIFIER,
                 TokenKind.DO,
@@ -1117,41 +978,7 @@ class Parser:
                 )
                 raise GlobalException
 
-            contained_key_type = None
-            contained_value_type = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied type definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            contained_size = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_size = self.expect(TokenKind.INTEGER)
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied size definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            variable_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
+            variable_type = self.parse_type(True)
             variable_name = self.expect(TokenKind.IDENTIFIER)
 
             if variable_type is None:
@@ -1170,17 +997,7 @@ class Parser:
                 raise GlobalException
 
             parameters.append(
-                {
-                    "variable_name": variable_name,
-                    "variable_type": {
-                        "actual_type": variable_type,
-                        "contained_type": {
-                            "key_type": contained_key_type,
-                            "value_type": contained_value_type,
-                        },
-                        "contained_size": contained_size,
-                    },
-                }
+                {"variable_name": variable_name, "variable_type": variable_type}
             )
 
         if self.eof() or self.expect(TokenKind.DO) is None:
@@ -1211,9 +1028,7 @@ class Parser:
         return_type = None
         return_error = None
         if not self.eof() and self.expect(TokenKind.WITH) is not None:
-            return_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
+            return_type = self.parse_type(True)
             if return_type is None:
                 self.logger.error(
                     "Invalid function syntax !",
@@ -1226,7 +1041,7 @@ class Parser:
                 raise GlobalException
 
             if not self.eof() and self.expect(TokenKind.OR) is not None:
-                return_error = self.expect(TokenKind.TYPE)
+                return_error = self.parse_type(True)
                 if return_error is None:
                     self.logger.error(
                         "Invalid function syntax !",
@@ -1393,7 +1208,6 @@ class Parser:
         body = []
         while not self.eof() and self.peek().kind != TokenKind.END:
             if self.peek().kind not in [
-                TokenKind.LEFT_SQUARE,
                 TokenKind.TYPE,
                 TokenKind.IDENTIFIER,
             ]:
@@ -1404,41 +1218,7 @@ class Parser:
                 )
                 raise GlobalException
 
-            contained_key_type = None
-            contained_value_type = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied type definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            contained_size = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_size = self.expect(TokenKind.INTEGER)
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied size definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            variable_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
+            variable_type = self.parse_type(True)
             variable_name = self.expect(TokenKind.IDENTIFIER)
 
             if variable_type is None:
@@ -1457,17 +1237,7 @@ class Parser:
                 raise GlobalException
 
             body.append(
-                {
-                    "variable_name": variable_name,
-                    "variable_type": {
-                        "actual_type": variable_type,
-                        "contained_type": {
-                            "key_type": contained_key_type,
-                            "value_type": contained_value_type,
-                        },
-                        "contained_size": contained_size,
-                    },
-                }
+                {"variable_name": variable_name, "variable_type": variable_type}
             )
 
         if self.eof() or self.expect(TokenKind.END) is None:
@@ -1560,41 +1330,7 @@ class Parser:
     def handle_unions(self, token: Token) -> Instruction:
         body = []
         while not self.eof() and self.peek().kind != TokenKind.END:
-            contained_key_type = None
-            contained_value_type = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_key_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-                contained_value_type = self.expect(TokenKind.TYPE) or self.expect(
-                    TokenKind.IDENTIFIER
-                )
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied type definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            contained_size = None
-            token = self.expect(TokenKind.LEFT_SQUARE)
-            if token is not None:
-                contained_size = self.expect(TokenKind.INTEGER)
-
-                if self.expect(TokenKind.RIGHT_SQUARE) is None:
-                    self.logger.error(
-                        "Invalid type syntax !",
-                        location=token.location,
-                        location_message="close the contaied size definition with the corresponding square bracket",
-                    )
-                    raise GlobalException
-
-            union_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
+            union_type = self.parse_type(True)
             if union_type is None:
                 self.logger.error(
                     "Invalid union syntax !",
@@ -1603,16 +1339,7 @@ class Parser:
                 )
                 raise GlobalException
 
-            body.append(
-                {
-                    "actual_type": union_type,
-                    "contained_type": {
-                        "key_type": contained_key_type,
-                        "value_type": contained_value_type,
-                    },
-                    "contained_size": contained_size,
-                }
-            )
+            body.append(union_type)
 
         if self.eof() or self.expect(TokenKind.END) is None:
             self.logger.error(
@@ -1711,12 +1438,12 @@ class Parser:
         )
 
     def handle_news(self, token: Token) -> Instruction:
-        identifier = self.expect(TokenKind.IDENTIFIER)
-        if identifier is None:
+        new_type = self.parse_type(True)
+        if new_type is None:
             self.logger.error(
                 "Invalid new syntax !",
                 location=token.location,
-                location_message="there should be an identifier after this",
+                location_message="there should be a type after this",
             )
             raise GlobalException
 
@@ -1724,7 +1451,7 @@ class Parser:
             "new",
             {
                 "type": None,
-                "value": {"identifier": identifier},
+                "value": {"type": new_type},
             },
             token,
         )
@@ -1805,13 +1532,13 @@ class Parser:
             elif value <= 2**128 - 1:
                 return TypeKind.U128
 
-        if -2**7 <= value <= 2**7 - 1:
+        if -(2**7) <= value <= 2**7 - 1:
             return TypeKind.I8
-        elif -2**15 <= value <= 2**15 - 1:
+        elif -(2**15) <= value <= 2**15 - 1:
             return TypeKind.I16
-        elif -2**31 <= value <= 2**31 - 1:
+        elif -(2**31) <= value <= 2**31 - 1:
             return TypeKind.I32
-        elif -2**63 <= value <= 2**63 - 1:
+        elif -(2**63) <= value <= 2**63 - 1:
             return TypeKind.I64
         else:
             return TypeKind.I128
@@ -1821,7 +1548,7 @@ class Parser:
             self.logger.error(
                 f"Invalid float value {value} (NaN or Infinity) !",
                 location=self.get_location(),
-                location_message="need to be a valid float value"
+                location_message="need to be a valid float value",
             )
             raise GlobalException
         if value == 0.0:
@@ -1839,6 +1566,46 @@ class Parser:
             return TypeKind.F64
         else:
             return TypeKind.F128
+
+    def parse_type(self, no_error: bool = False) -> dict | None:
+        variable_type = self.expect(TokenKind.TYPE) or self.expect(TokenKind.IDENTIFIER)
+        if variable_type is None:
+            if no_error:
+                return None
+
+            self.logger.error(
+                "Invalid type syntax !",
+                location=self.peek_previous().location,
+                location_message="there should be a type after this",
+            )
+            raise GlobalException
+
+        key_type = None
+        value_type = None
+        contained_size = None
+        if not self.eof() and self.expect(TokenKind.LESS) is not None:
+            key_type = self.parse_type()
+            value_type = self.parse_type(True)
+
+            if value_type is None:
+                contained_size = self.expect(TokenKind.INTEGER)
+
+            if self.eof() or self.expect(TokenKind.GREATER) is None:
+                self.logger.error(
+                    "Invalid type syntax !",
+                    location=variable_type.location,
+                    location_message="you need to close a contained type definition with `>`",
+                )
+                raise GlobalException
+
+        return {
+            "type": variable_type,
+            "contained_type": {
+                "key_type": key_type,
+                "value_type": value_type,
+            },
+            "contained_size": contained_size,
+        }
 
     def peek_previous(self) -> Token:
         return self.tokens[self.current - 1]
@@ -1865,9 +1632,51 @@ class Compiler:
         self.source = source
         self.path = path
         self.logger = Logger(source, path)
+        self.instructions = []
+        self.current = 0
+        self.ir = []
+
+    def __repr__(self) -> str:
+        return f"{self.ir}"
 
     def compile(self, instructions: list) -> None:
-        pass
+        self.instructions = instructions
+
+        while not self.eof():
+            instruction = self.advance()
+            self.translate_instruction(instruction)
+
+    def translate_instruction(self, instruction: Instruction) -> None:
+        match instruction.kind:
+            case "push":
+                pass
+
+            case _:
+                self.logger.warning(
+                    f"Unsupported instruction '{instruction.kind}'",
+                    location=instruction.token.location,
+                )
+
+    def emit_preamble(self) -> None:
+        self.ir.extend(
+            [
+                "; ModuleID = 'yarrow'",
+                f"source_filename = '{self.path}'",
+                "target datalayout = 'e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128'",
+                "target triple = 'x86_64-pc-linux-gnu'",
+            ]
+        )
+
+    def peek(self) -> Instruction:
+        return self.instructions[self.current]
+
+    def advance(self) -> Instruction:
+        instruction = self.peek()
+        self.current += 1
+        return instruction
+
+    def eof(self) -> bool:
+        return self.current >= len(self.instructions)
 
 
 class Cli:
@@ -1893,10 +1702,9 @@ class Cli:
             try:
                 tokenizer = Tokenizer(self.source, self.path)
                 parser = Parser(self.source, self.path)
+                compiler = Compiler(self.source, self.path)
 
-                parser.parse(tokenizer.tokenize())
-
-                print(parser)
+                compiler.compile(parser.parse(tokenizer.tokenize()))
             except Exception as error:
                 if not isinstance(error, GlobalException):
                     raise

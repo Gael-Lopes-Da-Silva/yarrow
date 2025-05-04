@@ -92,7 +92,7 @@ counter 5 < while
     break # Exit early
 end
 
-numbers [10 20 30] static [i32][3]array
+numbers [10 20 30] static array<i32 3>
 sum 0 mutable i32
 value numbers @in call while
     sum dup value + set
@@ -141,10 +141,10 @@ yarrow "Yarrow!" static string
 "Hello, ${yarrow}" io.write_line call # There is string interpolation
 
 # List: Dynamic arrays
-myList (43 54 65) static [i32]list
+myList (43 54 65) static list<i32>
 
 # Hashmap: List with chosen keys
-myHashmap {"first" 4 "second" 5} static [string i32]hashmap
+myHashmap {"first" 4 "second" 5} static hashmap<string i32>
 
 # Stack Manipulation: Control the stack
 42 dup    # [42, 42] for simple types; borrows for complex types
@@ -154,7 +154,7 @@ myHashmap {"first" 4 "second" 5} static [string i32]hashmap
 drop      # Remove all values on the stack
 
 # Defer: Run at scope exit
-file 0 mutable [i32]pointer
+file 0 mutable pointer<i32>
 file open_file call set
 defer file close_file call end
 
@@ -172,7 +172,7 @@ myStr "world" set # Drops "hello", assigns "world"
 # myStr dropped at scope exit
 
 # Borrowing: Create safe references with borrow operator
-myList (1 2 3) mutable [i32]list
+myList (1 2 3) mutable list<i32>
 myList @borrow call # Pushes &list[i32]
 io.write_line call
 @release call # Ends borrow
@@ -181,7 +181,7 @@ myList 4 @push call # Allowed after release
 # Regions: Heap data allocated in regions, freed as a unit
 myRegion @make_region
 defer myRegion @free_region call end
-myList (1 2 3) mutable [i32]list
+myList (1 2 3) mutable list<i32>
 myList myRegion @put_region call
 # Region freed, dropping myList
 
@@ -229,7 +229,7 @@ end
 
 Person struct
     string name
-    [i32]list scores
+    list<i32> scores
 end
 
 Person implement
