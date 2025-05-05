@@ -27,19 +27,27 @@ true not        # false
 3 5 <     # true
 
 # Bitwise Operators: For integers
-1 2 and    # 0
-1 5 or     # 5
-4 5 xor    # 1
-5 2 <<     # 20
-5 2 >>     # 1
-5 not      # -6
+1 2 and      # 0
+1 5 or       # 5
+4 5 xor      # 1
+5 2 lshift   # 20
+5 2 rshift   # 1
+5 not        # -6
 
 # Types: Numeric, bool, string, and more
 42        # u8 (smallest fitting integer)
 -900      # i16
 3.14      # f16
 "hello"   # string
+'\n'      # rune (char)
 true      # bool
+
+# Stack Manipulation: Control the stack
+42 dup    # [42, 42] for simple types; borrows for complex types
+1 2 swap  # [2, 1]
+1 2 3 rot # [2, 3, 1]
+42 pop    # Remove 42 also work with reference, releasing borrows
+drop      # Remove all values on the stack and release all borrows
 
 # Variables: Mutable, const, or static
 myVar 42 mutable i32       # Mutable, owns the value
@@ -60,9 +68,13 @@ end with i32
 main function do
     10 20 add call  # Calls add(10, 20) -> 30
     {b 20} add call # Calls add(b: 20) where `a` default to 65 -> 85
+    # You can pass an hashmap to a function, if the function does not accept an hashmap
+    # it will try to check for key identifiers and apply their values to the corresponding
+    # parameters
 end # Return void if not specified
 
 # Control Flow: If/else and match
+# For simplicity, there is no else if/elif, check match for that
 5 10 < if
     "less"
 else
@@ -71,13 +83,13 @@ end
 
 score 85 mutable i32
 score match
-    dup 100 <= case
+    dup 100 <= case # Cases accept a boolean
         "A"
     end
     dup 85 == case
         "exact match"
     end
-    dup 30 > dup 90 < and case
+    dup 30 > over 90 < and case
         "range match"
     end
     else
@@ -88,15 +100,18 @@ end
 # Loops: Conditional or iterable
 counter 0 mutable i32
 counter 5 < while
-    counter dup 1 + set
+    counter dup 1 + set # Incrementation
     break # Exit early
 end
 
-numbers [10 20 30] static array<i32 3>
+numbers [10 20 30] static array<i32 3> # If size not specified, will infer it
 sum 0 mutable i32
-value numbers @in call while
+
+# Here @in put each value of the array (for each iteration) in value (type infered
+# from array) and return true until the end of array, return false at the end
+value numbers @in call while # While consume a boolean
     sum dup value + set
-end # sum = 60
+end
 
 # Structs: Composite types with methods
 Point struct
@@ -105,17 +120,20 @@ Point struct
 end
 
 Point implement
-    distance function do
-        @this.x @this.x *
-        @this.y @this.y * +
+    distance function
+        reference<Point> self
+    do
+        self.x self.x *
+        self.y self.y * +
         return
     end
 end
 
 point 5 20 new Point mutable Point
-# point {x 5 y 20} new Point mutable Point
+point2 {x 5 y 20} new Point mutable Point # Like functions, we can specify fields
 point.x 10 set
-point.distance call # 500 (10^2 + 20^2)
+# Here we need to pass a reference, see memory management bellow
+point @borrow call point.distance call # 500 (10^2 + 20^2)
 
 # Enums: Named values
 Color enum
@@ -137,8 +155,7 @@ val "hello" set
 16 sqrt call # 4.0
 
 "std.io" require io
-yarrow "Yarrow!" static string
-"Hello, ${yarrow}" io.write_line call # There is string interpolation
+"Hello, Yarrow!" io.write_line call
 
 # List: Dynamic arrays
 myList (43 54 65) static list<i32>
@@ -146,17 +163,10 @@ myList (43 54 65) static list<i32>
 # Hashmap: List with chosen keys
 myHashmap {"first" 4 "second" 5} static hashmap<string i32>
 
-# Stack Manipulation: Control the stack
-42 dup    # [42, 42] for simple types; borrows for complex types
-1 2 swap  # [2, 1]
-1 2 3 rot # [2, 3, 1]
-42 pop    # Remove 42
-drop      # Remove all values on the stack
-
 # Defer: Run at scope exit
 file 0 mutable pointer<i32>
 file open_file call set
-defer file close_file call end
+defer file close_file call end # Defer body is executed in reverse
 
 # Memory Management: Stack-based ownership and regions
 # Yarrow manages memory using stack ownership, explicit variable ownership,
@@ -167,16 +177,21 @@ defer file close_file call end
 pop    # Drops string, freeing memory
 
 # Variable Ownership: Variables own values, dropped at scope exit
-myStr "hello" mutable string
-myStr "world" set # Drops "hello", assigns "world"
-# myStr dropped at scope exit
+main function do
+    myStr "hello" mutable string
+    myStr "world" set # Drops "hello", assigns "world"
+end # myStr dropped at scope exit
 
 # Borrowing: Create safe references with borrow operator
+# There can only be one borrow of a value but it can move
 myList (1 2 3) mutable list<i32>
-myList @borrow call # Pushes &list[i32]
-io.write_line call
-@release call # Ends borrow
-myList 4 @push call # Allowed after release
+myList @borrow call # Pushes reference<list<i32>>
+# Use the reference<list<i32>>
+pop # Ends borrow by popping the reference from the stack
+myList 4 @list_push call # Allowed after release
+myList2 0 const list<i32>
+myList myList2 @move call # Transfer the ownership of the data from myList to myList2
+myList 4 @list_push call # Compile time error because does not own the value anymore
 
 # Regions: Heap data allocated in regions, freed as a unit
 myRegion @make_region
@@ -186,28 +201,24 @@ myList myRegion @put_region call
 # Region freed, dropping myList
 
 # Compile-Time Checks: Prevent use-after-pop, use-after-free
-# myList borrow
-# myList pop # Error: Cannot pop while borrowed
+myList @borrow call
+myList pop # Error: Cannot pop while borrowed, need to pop reference before to release borrow
 
 # Error Handling: Errors as values with unwrap and handle
-Error enum
-    CustomError
-    OutOfMemory
-end
-
 risky_operation function do
-    error.CustomError return
-end with i32 or Error
+    error.CustomError return # create new error value
+end with i32 or error
 
 main function do
-    risky_operation call unwrap # Pushes i32 or propagates Error
+    risky_operation call unwrap # Pushes i32 or propagates error.CustomError
+    # will crash the program and throw CustomError
     io.write_line call
 end
 
 main function do
     risky_operation call handle
         match
-            error.CustomError case
+            error.CustomError == case
                 "Caught CustomError" io.write_line call
             end
             else
@@ -234,14 +245,17 @@ end
 
 Person implement
     add_score function
+        reference<Person> self # The reference need to point to mutable value
         i32 score
     do
-        this.scores score @push call
+        self.scores score @list_push call unwrap
         return
     end with void or Error
 
-    greet function do
-        this.name " says hello!" +
+    greet function
+        reference<Person> self
+    do
+        self.name "says hello!" ' ' @string_join call unwrap
         return
     end with string or Error
 end
@@ -252,13 +266,15 @@ main function do
 
     person {name "Alice" scores (10 20)} new Person mutable Person
     person myRegion @put_region call
-    person @borrow call .greet call unwrap
-    io.write_line call # Prints "Alice says hello!"
-    @release call
 
-    30 person.add_score call handle
+    person @borrow call # Put a reference<Person> on the stack
+    person.greet call unwrap # Use the reference<Person> to call greet and release borrow
+    io.write_line call # Prints "Alice says hello!"
+
+    person @borrow call
+    30 person.add_score call handle # Consume the reference and the score
         match
-            error.OutOfMemory case
+            error.OutOfMemory == case
                 "No memory" io.write_line call
             end
             else
@@ -267,10 +283,7 @@ main function do
         end
     end
 
-    person move person2 set # Transfer ownership
-    person2.scores io.write_line call # Prints [10, 20, 30]
-
-    i [1 2 3] @in call while
+    i [12 27 36] @in call while
         i 30 < if
             "Younger" io.write_line call
         end
