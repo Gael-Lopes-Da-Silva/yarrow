@@ -2,6 +2,7 @@ import os
 import sys
 import enum
 import math
+import uuid
 
 
 # ERRORS
@@ -1649,6 +1650,7 @@ class Compiler:
         self.temp_count = 0
         self.label_count = 0
         self.symbol_table = {}
+        self.functions = {}
         self.ir = {
             "preamble": [
                 '; ModuleID = "yarrow"',
@@ -1660,6 +1662,7 @@ class Compiler:
             "runtime_declarations": [
                 "declare void @llvm.trap()",
             ],
+            "functions": [],
             "start_main": [
                 "define i32 @main() #0 {",
                 "entry:",
@@ -1711,6 +1714,16 @@ class Compiler:
     def compile(self, instructions: list) -> None:
         self.instructions = instructions
         self.output_path = os.path.splitext(self.path)[0] + ".ll"
+
+        while not self.eof():
+            instruction = self.peek()
+            if instruction.kind == "function":
+                self.process_function_declaration(instruction)
+                self.advance()
+            else:
+                self.advance()
+
+        self.current = 0
 
         while not self.eof():
             instruction = self.advance()
