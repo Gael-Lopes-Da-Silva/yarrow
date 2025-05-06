@@ -1714,13 +1714,17 @@ class Compiler:
         self.instructions = instructions.copy()
         self.output_path = os.path.splitext(self.path)[0] + ".ll"
 
-        while not self.eof():
-            instruction = self.advance()
-            if instruction.kind == "function":
-                self.emit_function(instruction)
+        i = 0
+        while i < len(self.instructions):
+            if self.instructions[i].kind == "function":
+                self.current = i
+                self.emit_function(self.instructions[i])
+                self.instructions.pop(i)
+                self.instructions.pop(i - 1)
+            else:
+                i += 1
 
         self.current = 0
-
         while not self.eof():
             instruction = self.advance()
             self.translate_instruction(instruction)
@@ -1735,7 +1739,9 @@ class Compiler:
             )
             raise GlobalException
 
-    def translate_instruction(self, instruction: Instruction) -> None:
+    def translate_instruction(
+        self, instruction: Instruction, expected_return_type: TypeKind | None = None
+    ) -> None:
         match instruction.kind:
             case "push":
                 content = instruction.content
@@ -1833,9 +1839,7 @@ class Compiler:
                         temp1 = self.next_temp()
                         type_id = self.next_temp()
                         type_index = (
-                            list(TypeKind).index(value_type)
-                            if value_type in TypeKind
-                            else 0
+                            list(TypeKind).index(value) if value in TypeKind else 0
                         )
                         self.ir["global_declarations"].append(
                             f"   @.type.{type_id} = private unnamed_addr constant {{ i32, ptr }} {{ i32 {type_index}, ptr null }}"
@@ -1883,6 +1887,8 @@ class Compiler:
 
             case "call":
                 self.emit_call(instruction)
+            case "return":
+                self.emit_return(instruction, expected_return_type)
 
             case "pop":
                 self.emit_pop()
@@ -2103,8 +2109,8 @@ class Compiler:
     def emit_function(self, instruction: Instruction) -> None:
         if (
             self.current == 0
-            or self.instructions[self.current - 2].kind != "push"
-            or self.instructions[self.current - 2].content["type"] != TypeKind.VOID
+            or self.instructions[self.current - 1].kind != "push"
+            or self.instructions[self.current - 1].content["type"] != TypeKind.VOID
         ):
             self.logger.error(
                 "Function must be preceded by an identifier",
@@ -2114,7 +2120,7 @@ class Compiler:
             raise GlobalException
 
         function_data = instruction.content["value"]
-        function_name = self.instructions[self.current - 2].content["value"]
+        function_name = self.instructions[self.current - 1].content["value"]
 
         return_type = function_data["return_type"]
         llvm_return_type = "void"
@@ -2122,6 +2128,20 @@ class Compiler:
         if return_type:
             type_kind_return = TypeKind[return_type["type"].lexeme.upper()]
             llvm_return_type = self.type_map[type_kind_return][0]
+
+        if llvm_return_type != "void":
+            has_return = False
+            for body_instruction in function_data["body"]:
+                if body_instruction.kind == "return":
+                    has_return = True
+                    break
+            if not has_return:
+                self.logger.error(
+                    f"Function '{function_name}' with non-void return type '{llvm_return_type}' must contain a return statement",
+                    location=instruction.token.location,
+                    location_message="add a return statement in the function body",
+                )
+                raise GlobalException
 
         parameter_types = []
         parameter_names = []
@@ -2133,6 +2153,13 @@ class Compiler:
             parameter_type_kinds.append(param_type_kind)
             parameter_types.append(self.type_map[param_type_kind][0])
             parameter_names.append(parameter["variable_name"].lexeme)
+            expected_type = TypeKind[parameter["variable_type"]["type"].lexeme.upper()]
+            if param_type_kind != expected_type:
+                self.logger.error(
+                    f"Type mismatch for parameter '{parameter['variable_name'].lexeme}': expected {expected_type}, got {param_type_kind}",
+                    location=parameter["variable_type"]["type"].location,
+                )
+                raise GlobalException
 
         self.symbol_table[function_name] = {
             "kind": "function",
@@ -2148,68 +2175,58 @@ class Compiler:
             "entry:",
         ]
 
-        if function_data["body"]:
-            function_ir.extend(
-                [
-                    "   %stack = alloca [1024 x i8], align 16",
-                    "   %stack_pointer = alloca ptr, align 8",
-                    "   %type_stack = alloca [1024 x i32], align 4",
-                    "   %type_stack_pointer = alloca ptr, align 8",
-                    "   store ptr %stack, ptr %stack_pointer, align 8",
-                    "   store ptr %type_stack, ptr %type_stack_pointer, align 8",
-                    "   %stack_end = getelementptr [1024 x i8], [1024 x i8]* %stack, i32 0, i32 1024",
-                ]
-            )
+        function_ir.extend(
+            [
+                "   %stack = alloca [1024 x i8], align 16",
+                "   %stack_pointer = alloca ptr, align 8",
+                "   %type_stack = alloca [1024 x i32], align 4",
+                "   %type_stack_pointer = alloca ptr, align 8",
+                "   store ptr %stack, ptr %stack_pointer, align 8",
+                "   store ptr %type_stack, ptr %type_stack_pointer, align 8",
+                "   %stack_end = getelementptr [1024 x i8], [1024 x i8]* %stack, i32 0, i32 1024",
+            ]
+        )
 
         saved_stack_types = self.stack_types.copy()
         self.stack_types = []
         for parameter_type, param_name, param_type_kind in zip(
             parameter_types, parameter_names, parameter_type_kinds
         ):
-            temp1 = self.next_temp()
             size = self.type_map[param_type_kind][1]
-            function_ir.extend(
-                [
-                    f"   %t{temp1} = load ptr, ptr %stack_pointer, align 8",
-                    f"   store {parameter_type} %{param_name}, ptr %t{temp1}, align {min(size, 8)}",
-                    f"   %t{temp1}.1 = getelementptr i8, ptr %t{temp1}, i32 {size}",
-                    f"   store ptr %t{temp1}.1, ptr %stack_pointer, align 8",
-                ]
+            saved_temp_count = self.temp_count
+            saved_label_count = self.label_count
+            function_ir.append(
+                f"   %t{self.next_temp()} = load ptr, ptr %stack_pointer, align 8"
             )
-            self.stack_types.append((param_type_kind, size))
+            self.ir["body_main"] = function_ir
+            self.emit_push(parameter_type, f"%{param_name}", param_type_kind, size)
+            function_ir = self.ir["body_main"]
+            self.ir["body_main"] = []
+            self.temp_count = saved_temp_count
+            self.label_count = saved_label_count
 
         saved_body_main = self.ir["body_main"]
         self.ir["body_main"] = []
         for body_instruction in function_data["body"]:
-            self.translate_instruction(body_instruction)
+            self.translate_instruction(
+                body_instruction, expected_return_type=type_kind_return
+            )
         function_ir.extend(self.ir["body_main"])
         self.ir["body_main"] = saved_body_main
         self.stack_types = saved_stack_types
 
-        if llvm_return_type != "void":
-            temp1 = self.next_temp()
-            size = self.type_map[type_kind_return][1]
-            function_ir.extend(
-                [
-                    f"   %t{temp1} = load ptr, ptr %stack_pointer, align 8",
-                    f"   %t{temp1}.1 = getelementptr i8, ptr %t{temp1}, i32 -{size}",
-                    f"   %t{temp1}.2 = load {llvm_return_type}, ptr %t{temp1}.1, align {min(size, 8)}",
-                    f"   ret {llvm_return_type} %t{temp1}.2",
-                ]
-            )
-        else:
+        if llvm_return_type == "void":
             function_ir.append("   ret void")
 
-        function_ir.append("}")
+        function_ir.extend(
+            [
+                "error:",
+                "   call void @llvm.trap()",
+                "   unreachable",
+                "}",
+            ]
+        )
         self.ir["functions"].extend(function_ir)
-
-        i = 0
-        while i < len(self.instructions):
-            if self.instructions[i].kind == "function":
-                self.instructions.pop(i)
-                self.instructions.pop(i - 1)
-            else:
-                i += 1
 
     def emit_call(self, instruction: Instruction) -> None:
         if (
@@ -2223,30 +2240,6 @@ class Compiler:
                 location_message="expected function identifier before call",
             )
             raise GlobalException
-
-        temp1 = self.next_temp()
-        label1 = self.next_label()
-        self.ir["body_main"].extend(
-            [
-                f"   %t{temp1} = load ptr, ptr %type_stack_pointer, align 8",
-                f"   %t{temp1}.1 = icmp ugt ptr %t{temp1}, %type_stack",
-                f"   br i1 %t{temp1}.1, label %{label1}, label %error",
-                f"{label1}:",
-            ]
-        )
-
-        temp2 = self.next_temp()
-        label2 = self.next_label()
-        self.ir["body_main"].extend(
-            [
-                f"   %t{temp2} = load ptr, ptr %type_stack_pointer, align 8",
-                f"   %t{temp2}.1 = getelementptr i8, ptr %t{temp2}, i32 -4",
-                f"   %t{temp2}.2 = load i32, ptr %t{temp2}.1, align 4",
-                f"   %t{temp2}.3 = icmp eq i32 %t{temp2}.2, {TypeKind.VOID.value}",
-                f"   br i1 %t{temp2}.3, label %{label2}, label %error",
-                f"{label2}:",
-            ]
-        )
 
         function_name = self.instructions[self.current - 2].content["value"]
         self.emit_pop()
@@ -2274,22 +2267,47 @@ class Compiler:
             )
             raise GlobalException
 
-        parameters = []
         for i in range(parameter_count):
-            temp3 = self.next_temp()
-            parameter_type = parameter_types[parameter_count - 1 - i]
+            expected_type = parameter_type_kinds[parameter_count - 1 - i]
+            actual_type, _ = self.stack_types[-(i + 1)]
+            if actual_type != expected_type:
+                self.logger.error(
+                    f"Type mismatch for parameter {i + 1}: expected {expected_type}, got {actual_type}",
+                    location=instruction.token.location,
+                )
+                raise GlobalException
+
+        parameters = []
+        total_size = 0
+        for i in range(parameter_count):
             param_type_kind = parameter_type_kinds[parameter_count - 1 - i]
+            parameter_type = parameter_types[parameter_count - 1 - i]
             size = self.type_map[param_type_kind][1]
+            total_size += size
+            temp2 = self.next_temp()
+            self.ir["body_main"].extend(
+                [
+                    f"   %t{temp2} = load ptr, ptr %stack_pointer, align 8",
+                    f"   %t{temp2}.1 = getelementptr i8, ptr %t{temp2}, i32 -{total_size}",
+                    f"   %t{temp2}.2 = load {parameter_type}, ptr %t{temp2}.1, align {min(size, 8)}",
+                ]
+            )
+            parameters.append(f"{parameter_type} %t{temp2}.2")
+
+        if parameter_count > 0:
+            temp3 = self.next_temp()
             self.ir["body_main"].extend(
                 [
                     f"   %t{temp3} = load ptr, ptr %stack_pointer, align 8",
-                    f"   %t{temp3}.1 = getelementptr i8, ptr %t{temp3}, i32 -{size}",
-                    f"   %t{temp3}.2 = load {parameter_type}, ptr %t{temp3}.1, align {min(size, 8)}",
+                    f"   %t{temp3}.1 = getelementptr i8, ptr %t{temp3}, i32 -{total_size}",
                     f"   store ptr %t{temp3}.1, ptr %stack_pointer, align 8",
+                    f"   %t{temp3}.2 = load ptr, ptr %type_stack_pointer, align 8",
+                    f"   %t{temp3}.3 = getelementptr i8, ptr %t{temp3}.2, i32 -{parameter_count * 4}",
+                    f"   store ptr %t{temp3}.3, ptr %type_stack_pointer, align 8",
                 ]
             )
-            parameters.append(f"{parameter_type} %t{temp3}.2")
-            self.stack_types.pop()
+            for _ in range(parameter_count):
+                self.stack_types.pop()
 
         return_type_kind = function_data["return_type_kind"]
         if llvm_return_type != "void":
@@ -2302,6 +2320,10 @@ class Compiler:
                     f"   store {llvm_return_type} %t{temp4}, ptr %t{temp4}.1, align {min(size, 8)}",
                     f"   %t{temp4}.2 = getelementptr i8, ptr %t{temp4}.1, i32 {size}",
                     f"   store ptr %t{temp4}.2, ptr %stack_pointer, align 8",
+                    f"   %t{temp4}.3 = load ptr, ptr %type_stack_pointer, align 8",
+                    f"   store i32 {return_type_kind.value}, ptr %t{temp4}.3, align 4",
+                    f"   %t{temp4}.4 = getelementptr i8, ptr %t{temp4}.3, i32 4",
+                    f"   store ptr %t{temp4}.4, ptr %type_stack_pointer, align 8",
                 ]
             )
             self.stack_types.append((return_type_kind, size))
@@ -2310,10 +2332,49 @@ class Compiler:
                 f"   call {llvm_return_type} @{function_name}({', '.join(parameters)})"
             )
 
+    def emit_return(
+        self, instruction: Instruction, expected_return_type: TypeKind | None = None
+    ) -> None:
+        if expected_return_type is not None:
+            if not self.stack_types:
+                self.logger.error(
+                    "Return statement with empty stack in function with non-void return type",
+                    location=instruction.token.location,
+                    location_message=f"expected a value of type {expected_return_type} on the stack",
+                )
+                raise GlobalException
+
+            top_type, top_size = self.stack_types[-1]
+            if top_type != expected_return_type:
+                self.logger.error(
+                    f"Type mismatch in return statement: expected {expected_return_type}, got {top_type}",
+                    location=instruction.token.location,
+                    location_message="return value type must match function's return type",
+                )
+                raise GlobalException
+
+            llvm_type = self.type_map[expected_return_type][0]
+            temp1 = self.next_temp()
+            self.ir["body_main"].extend(
+                [
+                    f"   %t{temp1} = load ptr, ptr %stack_pointer, align 8",
+                    f"   %t{temp1}.1 = getelementptr i8, ptr %t{temp1}, i32 -{top_size}",
+                    f"   %t{temp1}.2 = load {llvm_type}, ptr %t{temp1}.1, align {min(top_size, 8)}",
+                    f"   ret {llvm_type} %t{temp1}.2",
+                ]
+            )
+        else:
+            if self.stack_types:
+                self.logger.warning(
+                    "Return statement with non-empty stack in void function",
+                    location=instruction.token.location,
+                    location_message="stack values will be ignored",
+                )
+            self.ir["body_main"].append("   ret void")
+
     def load_typed_value(
         self, offset: int, expected_type: TypeKind | None = None
     ) -> tuple:
-        self.current_operation = "load_typed"
         if offset >= len(self.stack_types):
             self.logger.error(
                 f"Stack underflow: attempted to load element at offset {offset}, but stack has only {len(self.stack_types)} elements",
@@ -2381,6 +2442,8 @@ class Compiler:
                         location=instruction.token.location,
                     )
                     raise GlobalException
+            elif value[i].isprintable() and value[i] not in '"\\':
+                result += value[i]
             else:
                 result += f"\\{ord(value[i]):02X}"
             i += 1
