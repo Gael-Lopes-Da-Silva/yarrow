@@ -1649,7 +1649,7 @@ class Compiler:
         self.temp_count = 0
         self.label_count = 0
         self.stack_types = []
-        self.symbol_table = {}
+        self.stack_symbols = {}
         self.type_map = {
             TypeKind.I8: ("i8", 1),
             TypeKind.U8: ("i8", 1),
@@ -1749,64 +1749,43 @@ class Compiler:
                 value = content["value"]
 
                 match value_type:
-                    case TypeKind.I8 | TypeKind.U8:
+                    case (
+                        TypeKind.I8
+                        | TypeKind.U8
+                        | TypeKind.I16
+                        | TypeKind.U16
+                        | TypeKind.I32
+                        | TypeKind.U32
+                        | TypeKind.I64
+                        | TypeKind.U64
+                        | TypeKind.I128
+                        | TypeKind.U128
+                    ):
                         temp1 = self.next_temp()
-                        self.ir["body_main"].append(f"   %t{temp1} = add i8 0, {value}")
-                        self.emit_push("i8", f"%t{temp1}", value_type, 1)
-                    case TypeKind.I16 | TypeKind.U16:
-                        temp1 = self.next_temp()
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["body_main"].append(
-                            f"   %t{temp1} = add i16 0, {value}"
+                            f"   %t{temp1} = add {llvm_type} 0, {value}"
                         )
-                        self.emit_push("i16", f"%t{temp1}", value_type, 2)
-                    case TypeKind.I32 | TypeKind.U32:
+                        self.emit_push(llvm_type, f"%t{temp1}", value_type, llvm_size)
+
+                    case TypeKind.F16 | TypeKind.F32 | TypeKind.F64 | TypeKind.F128:
                         temp1 = self.next_temp()
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["body_main"].append(
-                            f"   %t{temp1} = add i32 0, {value}"
+                            f"   %t{temp1} = fadd {llvm_type} 0.0, {value}"
                         )
-                        self.emit_push("i32", f"%t{temp1}", value_type, 4)
-                    case TypeKind.I64 | TypeKind.U64:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = add i64 0, {value}"
-                        )
-                        self.emit_push("i64", f"%t{temp1}", value_type, 8)
-                    case TypeKind.I128 | TypeKind.U128:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = add i128 0, {value}"
-                        )
-                        self.emit_push("i128", f"%t{temp1}", value_type, 16)
-                    case TypeKind.F16:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = fadd half 0.0, {value}"
-                        )
-                        self.emit_push("half", f"%t{temp1}", value_type, 2)
-                    case TypeKind.F32:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = fadd float 0.0, {value}"
-                        )
-                        self.emit_push("float", f"%t{temp1}", value_type, 4)
-                    case TypeKind.F64:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = fadd double 0.0, {value}"
-                        )
-                        self.emit_push("double", f"%t{temp1}", value_type, 8)
-                    case TypeKind.F128:
-                        temp1 = self.next_temp()
-                        self.ir["body_main"].append(
-                            f"   %t{temp1} = fadd fp128 0.0, {value}"
-                        )
-                        self.emit_push("fp128", f"%t{temp1}", value_type, 16)
+                        self.emit_push(llvm_type, f"%t{temp1}", value_type, llvm_size)
+
                     case TypeKind.BOOL:
                         temp1 = self.next_temp()
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["body_main"].append(
-                            f"   %t{temp1} = add i1 0, {'1' if value else '0'}"
+                            f"   %t{temp1} = add {llvm_type} 0, {'1' if value else '0'}"
                         )
-                        self.emit_push("i1", f"%t{temp1}", value_type, 1)
+                        self.emit_push(llvm_type, f"%t{temp1}", value_type, llvm_size)
 
                     case TypeKind.STRING:
                         temp1 = self.next_temp()
@@ -1815,25 +1794,29 @@ class Compiler:
                         string_id = self.next_temp()
                         string_data = self.escape_string(value, instruction)
                         string_len = len(value)
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["global_declarations"].append(
                             f'@.str.{string_id} = private unnamed_addr constant [{string_len} x i8] c"{string_data}"'
                         )
                         self.ir["body_main"].extend(
                             [
                                 f"   %t{temp1} = getelementptr [{string_len} x i8], [{string_len} x i8]* @.str.{string_id}, i32 0, i32 0",
-                                f"   %t{temp2} = insertvalue {{ ptr, i32 }} undef, ptr %t{temp1}, 0",
-                                f"   %t{temp3} = insertvalue {{ ptr, i32 }} %t{temp2}, i32 {string_len}, 1",
+                                f"   %t{temp2} = insertvalue {llvm_type} undef, ptr %t{temp1}, 0",
+                                f"   %t{temp3} = insertvalue {llvm_type} %t{temp2}, i32 {string_len}, 1",
                             ]
                         )
-                        self.emit_push("{ ptr, i32 }", f"%t{temp3}", value_type, 8)
+                        self.emit_push(llvm_type, f"%t{temp3}", value_type, llvm_size)
 
                     case TypeKind.RUNE:
                         rune_value = self.rune_to_unicode(value, instruction)
                         temp1 = self.next_temp()
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["body_main"].append(
-                            f"   %t{temp1} = add i32 0, {rune_value}"
+                            f"   %t{temp1} = add {llvm_type} 0, {rune_value}"
                         )
-                        self.emit_push("i32", f"%t{temp1}", value_type, 4)
+                        self.emit_push(llvm_type, f"%t{temp1}", value_type, llvm_size)
 
                     case TypeKind.TYPE:
                         temp1 = self.next_temp()
@@ -1841,16 +1824,20 @@ class Compiler:
                         type_index = (
                             list(TypeKind).index(value) if value in TypeKind else 0
                         )
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
                         self.ir["global_declarations"].append(
                             f"   @.type.{type_id} = private unnamed_addr constant {{ i32, ptr }} {{ i32 {type_index}, ptr null }}"
                         )
                         self.ir["body_main"].append(
                             f"   %t{temp1} = getelementptr {{ i32, ptr }}, {{ i32, ptr }}* @.type.{type_id}, i32 0, i32 0"
                         )
-                        self.emit_push("ptr", f"%t{temp1}", value_type, 8)
+                        self.emit_push(llvm_type, f"%t{temp1}", value_type, llvm_size)
 
                     case TypeKind.VOID:
-                        self.emit_push("ptr", "null", value_type, 8)
+                        llvm_type = self.type_map[value_type][0]
+                        llvm_size = self.type_map[value_type][1]
+                        self.emit_push(llvm_type, "null", value_type, llvm_size)
 
                     case _:
                         self.logger.warning(
@@ -1908,7 +1895,7 @@ class Compiler:
                 f"{label2}:",
             ]
         )
-        self.stack_types.append((type_kind, size))
+        self.stack_types.append(type_kind)
 
     def emit_pop(self) -> None:
         if not self.stack_types:
@@ -1922,7 +1909,7 @@ class Compiler:
         temp2 = self.next_temp()
         label1 = self.next_label()
         label2 = self.next_label()
-        _, size = self.stack_types.pop()
+        size = self.type_map[self.stack_types.pop()][1]
         self.ir["body_main"].extend(
             [
                 f"   %t{temp1} = load ptr, ptr %stack_pointer, align 8",
@@ -1956,8 +1943,8 @@ class Compiler:
             )
             raise GlobalException
 
-        type_kind, size = self.stack_types[-1]
-        llvm_type = self.type_map[type_kind][0]
+        type_kind = self.stack_types[-1]
+        llvm_type, size = self.type_map[type_kind]
         value, _ = self.load_typed_value(0, type_kind)
         temp1 = self.next_temp()
         self.ir["body_main"].extend(
@@ -1973,7 +1960,7 @@ class Compiler:
                 f"   store ptr %t{temp1}.4, ptr %type_stack_pointer, align 8",
             ]
         )
-        self.stack_types.append((type_kind, size))
+        self.stack_types.append(type_kind)
 
     def emit_swap(self) -> None:
         if len(self.stack_types) < 2:
@@ -1983,8 +1970,10 @@ class Compiler:
             )
             raise GlobalException
 
-        type_kind1, size1 = self.stack_types[-1]
-        type_kind2, size2 = self.stack_types[-2]
+        type_kind1 = self.stack_types[-1]
+        size1 = self.type_map[type_kind1][1]
+        type_kind2 = self.stack_types[-2]
+        size2 = self.type_map[type_kind2][1]
         value1, llvm_type1 = self.load_typed_value(0, type_kind1)
         value2, llvm_type2 = self.load_typed_value(1, type_kind2)
         temp1 = self.next_temp()
@@ -2017,7 +2006,8 @@ class Compiler:
             )
             raise GlobalException
 
-        type_kind, size = self.stack_types[-2]
+        type_kind = self.stack_types[-2]
+        size = self.type_map[type_kind][1]
         value, llvm_type = self.load_typed_value(1, type_kind)
         temp1 = self.next_temp()
         self.ir["body_main"].extend(
@@ -2034,7 +2024,7 @@ class Compiler:
                 f"   store ptr %t{temp1}.5, ptr %type_stack_pointer, align 8",
             ]
         )
-        self.stack_types.append((type_kind, size))
+        self.stack_types.append(type_kind)
 
     def emit_rot(self) -> None:
         if len(self.stack_types) < 3:
@@ -2044,9 +2034,12 @@ class Compiler:
             )
             raise GlobalException
 
-        type_kind1, size1 = self.stack_types[-1]
-        type_kind2, size2 = self.stack_types[-2]
-        type_kind3, size3 = self.stack_types[-3]
+        type_kind1 = self.stack_types[-1]
+        size1 = self.type_map[type_kind1][1]
+        type_kind2 = self.stack_types[-2]
+        size2 = self.type_map[type_kind2][1]
+        type_kind3 = self.stack_types[-3]
+        size3 = self.type_map[type_kind3][1]
         value1, llvm_type1 = self.load_typed_value(0, type_kind1)
         value2, llvm_type2 = self.load_typed_value(1, type_kind2)
         value3, llvm_type3 = self.load_typed_value(2, type_kind3)
@@ -2134,7 +2127,7 @@ class Compiler:
                 )
                 raise GlobalException
 
-        self.symbol_table[function_name] = {
+        self.stack_symbols[function_name] = {
             "kind": "function",
             "type": llvm_return_type,
             "parameter_types": parameter_types,
@@ -2218,8 +2211,8 @@ class Compiler:
         self.emit_pop()
 
         if (
-            function_name not in self.symbol_table
-            or self.symbol_table[function_name]["kind"] != "function"
+            function_name not in self.stack_symbols
+            or self.stack_symbols[function_name]["kind"] != "function"
         ):
             self.logger.error(
                 f"Undefined function '{function_name}'",
@@ -2227,7 +2220,7 @@ class Compiler:
             )
             raise GlobalException
 
-        function_data = self.symbol_table[function_name]
+        function_data = self.stack_symbols[function_name]
         llvm_return_type = function_data["type"]
         parameter_types = function_data["parameter_types"]
         parameter_type_kinds = function_data["parameter_type_kinds"]
@@ -2242,7 +2235,7 @@ class Compiler:
 
         for i in range(parameter_count):
             expected_type = parameter_type_kinds[parameter_count - 1 - i]
-            actual_type, _ = self.stack_types[-(i + 1)]
+            actual_type = self.stack_types[-(i + 1)]
             if actual_type != expected_type:
                 self.logger.error(
                     f"Type mismatch for parameter {i + 1}: expected {expected_type}, got {actual_type}",
@@ -2283,7 +2276,9 @@ class Compiler:
                 self.stack_types.pop()
 
         return_type_kind = function_data["return_type_kind"]
-        function_call = f"call {llvm_return_type} @{function_name}({', '.join(parameters)})"
+        function_call = (
+            f"call {llvm_return_type} @{function_name}({', '.join(parameters)})"
+        )
         if llvm_return_type != "void":
             temp4 = self.next_temp()
             size = self.type_map[return_type_kind][1]
@@ -2300,11 +2295,9 @@ class Compiler:
                     f"   store ptr %t{temp4}.4, ptr %type_stack_pointer, align 8",
                 ]
             )
-            self.stack_types.append((return_type_kind, size))
+            self.stack_types.append(return_type_kind)
         else:
-            self.ir["body_main"].append(
-                f"   {function_call}"
-            )
+            self.ir["body_main"].append(f"   {function_call}")
 
     def emit_return(
         self, instruction: Instruction, expected_return_type: TypeKind | None = None
@@ -2318,7 +2311,8 @@ class Compiler:
                 )
                 raise GlobalException
 
-            top_type, top_size = self.stack_types[-1]
+            top_type = self.stack_types[-1]
+            top_size = self.type_map[top_type][1]
             if top_type != expected_return_type:
                 self.logger.error(
                     f"Type mismatch in return statement: expected {expected_return_type}, got {top_type}",
@@ -2358,10 +2352,11 @@ class Compiler:
 
         total_offset = 0
         for i in range(offset):
-            _, size = self.stack_types[-(i + 1)]
+            size = self.type_map[self.stack_types[-(i + 1)]][1]
             total_offset += size
 
-        type_kind, size = self.stack_types[-(offset + 1)]
+        type_kind = self.stack_types[-(offset + 1)]
+        size = self.type_map[type_kind][1]
         llvm_type = self.type_map[type_kind][0]
 
         temp1 = self.next_temp()
