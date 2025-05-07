@@ -1850,34 +1850,7 @@ class Compiler:
                         self.emit_push("ptr", f"%t{temp1}", value_type, 8)
 
                     case TypeKind.VOID:
-                        if value not in self.symbol_table:
-                            self.logger.error(
-                                f"Undefined identifier '{value}'",
-                                location=instruction.token.location,
-                            )
-                            raise GlobalException
-
-                        symbol = self.symbol_table[value]
-                        temp1 = self.next_temp()
-
-                        if symbol["kind"] == "variable":
-                            self.ir["body_main"].append(
-                                f"   %t{temp1} = getelementptr {symbol['type']}, ptr %{value}, i32 0"
-                            )
-                            self.emit_push("ptr", f"%t{temp1}", value_type, 8)
-                        elif symbol["kind"] == "function":
-                            self.emit_push("ptr", f"@{value}", value_type, 8)
-                        elif symbol["kind"] in ["struct", "enum", "union"]:
-                            self.ir["body_main"].append(
-                                f"   %t{temp1} = getelementptr {{ i32, ptr }}, {{ i32, ptr }}* @.{symbol['kind']}.{value}, i32 0, i32 0"
-                            )
-                            self.emit_push("ptr", f"%t{temp1}", value_type, 8)
-                        else:
-                            self.logger.error(
-                                f"Invalid symbol kind for '{value}'",
-                                location=instruction.token.location,
-                            )
-                            raise GlobalException
+                        self.emit_push("ptr", "null", value_type, 8)
 
                     case _:
                         self.logger.warning(
@@ -2310,12 +2283,13 @@ class Compiler:
                 self.stack_types.pop()
 
         return_type_kind = function_data["return_type_kind"]
+        function_call = f"call {llvm_return_type} @{function_name}({', '.join(parameters)})"
         if llvm_return_type != "void":
             temp4 = self.next_temp()
             size = self.type_map[return_type_kind][1]
             self.ir["body_main"].extend(
                 [
-                    f"   %t{temp4} = call {llvm_return_type} @{function_name}({', '.join(parameters)})",
+                    f"   %t{temp4} = {function_call}",
                     f"   %t{temp4}.1 = load ptr, ptr %stack_pointer, align 8",
                     f"   store {llvm_return_type} %t{temp4}, ptr %t{temp4}.1, align {min(size, 8)}",
                     f"   %t{temp4}.2 = getelementptr i8, ptr %t{temp4}.1, i32 {size}",
@@ -2329,7 +2303,7 @@ class Compiler:
             self.stack_types.append((return_type_kind, size))
         else:
             self.ir["body_main"].append(
-                f"   call {llvm_return_type} @{function_name}({', '.join(parameters)})"
+                f"   {function_call}"
             )
 
     def emit_return(
