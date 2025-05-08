@@ -2,10 +2,6 @@
 # Yarrow is a stack-based language with a rich type system and modular design.
 # Let's dive in with examples! Everything is evaluated on a stack.
 
-# Comments: Single-line only with #
-# This is a comment
-42 # Can follow code
-
 # Arithmetic Operators: Stack-based, operands popped in reverse order
 1 2 +    # 3 (1 + 2)
 5 3 -    # 2 (5 - 3)
@@ -43,34 +39,29 @@ true not        # false
 true      # bool
 
 # Stack Manipulation: Control the stack
-42 dup    # [42, 42] for simple types; borrows for complex types
-1 2 swap  # [2, 1]
-1 2 3 rot # [2, 3, 1]
-42 pop    # Remove 42 also work with reference, releasing borrows
-drop      # Remove all values on the stack and release all borrows
+42 dup    # [42] -> [42, 42] For simple types, borrows for complex types
+1 2 swap  # [1, 2] -> [2, 1]
+1 2 3 rot # [1, 2, 3] -> [2, 3, 1]
+42 pop    # [42] -> [] Remove 42 also work with reference, releasing borrows
+drop      # [2, 3] -> [] Remove all values on the stack and release all borrows
 
 # Variables: Mutable, const, or static
-myVar 42 mutable i32       # Mutable, owns the value
-myVar 23 set               # Update to 23, drops old value
-myConst 100 const i32      # Runtime constant, owns the value
-myStatic 50 static i32     # Compile-time constant, owned by program
+42 myVar mutable i32       # Mutable, owns the value
+23 myVar set               # Update to 23, drops old value
+100 myConst const i32      # Runtime constant, owns the value
+50 myStatic static i32     # Compile-time constant, owned by program
 
 # Functions: Defined with parameters and return types
 add function
-    i32 a
-    i32 b
+    i32
+    i32 # The two value are copied into the local stack
 do
-    a 65 ? # If a is not provided, push 65
-    a b +
-    return # Put into the main stack what's in the local function stack
+    + # We add the two value from the stack
+    return # Return the top value of the stack
 end with i32
 
 main function do
     10 20 add call  # Calls add(10, 20) -> 30
-    {b 20} add call # Calls add(b: 20) where `a` default to 65 -> 85
-    # You can pass an hashmap to a function, if the function does not accept an hashmap
-    # it will try to check for key identifiers and apply their values to the corresponding
-    # parameters
 end # Return void if not specified
 
 # Control Flow: If/else and match
@@ -98,18 +89,16 @@ score match
 end
 
 # Loops: Conditional or iterable
-counter 0 mutable i32
+0 counter mutable i32
 counter 5 < while
     counter dup 1 + set # Incrementation
     break # Exit early
 end
 
-numbers [10 20 30] static array<i32 3> # If size not specified, will infer it
-sum 0 mutable i32
+[10 20 30] numbers static array<i32 3> # If size not specified, will infer it
+0 sum mutable i32
 
-# Here @in put each value of the array (for each iteration) in value (type infered
-# from array) and return true until the end of array, return false at the end
-value numbers @in call while # While consume a boolean
+numbers value for # Iterate throught iterable data structures
     sum dup value + set
 end
 
@@ -121,17 +110,16 @@ end
 
 Point implement
     distance function
-        reference<Point> self
+        reference<Point>
     do
-        self.x self.x *
-        self.y self.y * +
+        self const reference<Point>
+        self.x self.x * self.y self.y * +
         return
     end
 end
 
-point 5 20 new Point mutable Point
-point2 {x 5 y 20} new Point mutable Point # Like functions, we can specify fields
-point.x 10 set
+{x 5 y 20} point mutable Point
+10 point.x set
 # Here we need to pass a reference, see memory management bellow
 point @borrow call point.distance call # 500 (10^2 + 20^2)
 
@@ -147,8 +135,8 @@ Value union
     string
 end
 
-val 42 mutable Value
-val "hello" set
+42 val mutable Value
+"hello" val set
 
 # Modules: Import with require
 "std.math.sqrt" require
@@ -158,14 +146,13 @@ val "hello" set
 "Hello, Yarrow!" io.write_line call
 
 # List: Dynamic arrays
-myList (43 54 65) static list<i32>
+(43 54 65) myList static list<i32>
 
 # Hashmap: List with chosen keys
-myHashmap {"first" 4 "second" 5} static hashmap<string i32>
+{"first" 4 "second" 5} myHashmap static hashmap<string i32>
 
 # Defer: Run at scope exit
-file 0 mutable pointer<i32>
-file open_file call set
+"myfile.txt" 'r' open_file call file mutable pointer<i32>
 defer file close_file call end # Defer body is executed in reverse
 
 # Memory Management: Stack-based ownership and regions
@@ -178,25 +165,25 @@ pop    # Drops string, freeing memory
 
 # Variable Ownership: Variables own values, dropped at scope exit
 main function do
-    myStr "hello" mutable string
-    myStr "world" set # Drops "hello", assigns "world"
+    "hello" myStr mutable string
+    "world" myStr set # Drops "hello", assigns "world"
 end # myStr dropped at scope exit
 
 # Borrowing: Create safe references with borrow operator
 # There can only be one borrow of a value but it can move
-myList (1 2 3) mutable list<i32>
+(1 2 3) myList mutable list<i32>
 myList @borrow call # Pushes reference<list<i32>>
 # Use the reference<list<i32>>
 pop # Ends borrow by popping the reference from the stack
 myList 4 @list_push call # Allowed after release
-myList2 0 const list<i32>
+0 myList2 const list<i32>
 myList myList2 @move call # Transfer the ownership of the data from myList to myList2
 myList 4 @list_push call # Compile time error because does not own the value anymore
 
 # Regions: Heap data allocated in regions, freed as a unit
 myRegion @make_region
 defer myRegion @free_region call end
-myList (1 2 3) mutable list<i32>
+(1 2 3) myList mutable list<i32>
 myList myRegion @put_region call
 # Region freed, dropping myList
 
@@ -245,16 +232,21 @@ end
 
 Person implement
     add_score function
-        reference<Person> self # The reference need to point to mutable value
-        i32 score
+        reference<Person> # The reference need to point to mutable value
+        i32
     do
+        self const reference<Person>
+        score const i32
+
         self.scores score @list_push call unwrap
         return
     end with void or Error
 
     greet function
-        reference<Person> self
+        reference<Person>
     do
+        self const reference<Person>
+
         self.name "says hello!" ' ' @string_join call unwrap
         return
     end with string or Error
@@ -264,7 +256,7 @@ main function do
     myRegion @make_region
     defer myRegion @free_region call end
 
-    person {name "Alice" scores (10 20)} new Person mutable Person
+    {name "Alice" scores (10 20)} person mutable Person
     person myRegion @put_region call
 
     person @borrow call # Put a reference<Person> on the stack
@@ -283,7 +275,7 @@ main function do
         end
     end
 
-    i [12 27 36] @in call while
+    [12 27 36] i for
         i 30 < if
             "Younger" io.write_line call
         end
