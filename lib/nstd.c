@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -8,7 +9,7 @@ typedef struct {
     int size;
 } String;
 
-String* string_new(char* content) {
+String* string_new(const char* content) {
     if (!content) return NULL;
     String* str = (String*)malloc(sizeof(String));
     if (!str) return NULL;
@@ -21,11 +22,12 @@ String* string_new(char* content) {
     return str;
 }
 
-void string_free(String* str) {
-    if (!str) return;
+int string_free(String* str) {
+    if (!str) return -1;
     free(str->content);
     str->content = NULL;
     free(str);
+    return 0;
 }
 
 String* string_slice(String* str, size_t start, size_t end) {
@@ -59,6 +61,7 @@ String* string_join(String* str1, String* str2) {
     free(joined_content);
     return joined;
 }
+
 
 // DEFER
 #define DEFER_STACK_NAME defer_stack
@@ -103,3 +106,57 @@ typedef struct {
             } \
         } \
     } while (0)
+
+
+// UTILS
+char* file_read(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) return NULL;
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char* content = (char*)malloc(file_size + 1);
+    if (!content) {
+        fclose(file);
+        return NULL;
+    }
+
+    size_t bytes_read = fread(content, 1, file_size, file);
+    content[bytes_read] = '\0';
+
+    fclose(file);
+
+    return content;
+}
+
+int file_write(const char* filename, const char* content) {
+    FILE* file = fopen(filename, "w");
+    if (!file) return -1;
+
+    size_t bytes_written = fwrite(content, 1, strlen(content), file);
+
+    fclose(file);
+
+    if (bytes_written != strlen(content)) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int file_append(const char* filename, const char* content) {
+    FILE* file = fopen(filename, "a");
+    if (!file) return -1;
+
+    size_t bytes_written = fwrite(content, 1, strlen(content), file);
+
+    fclose(file);
+
+    if (bytes_written != strlen(content)) {
+        return -1;
+    }
+
+    return 0;
+}
