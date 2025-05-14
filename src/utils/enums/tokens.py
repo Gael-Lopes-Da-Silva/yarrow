@@ -18,7 +18,6 @@ class Tokens(enum.Enum):
     CARET = enum.auto()
     DOT = enum.auto()
     QUESTION = enum.auto()
-
     EXCLAMATION = enum.auto()
     AMPERSAND = enum.auto()
     BAR = enum.auto()
