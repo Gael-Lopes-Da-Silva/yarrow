@@ -233,7 +233,7 @@ class Tokenizer:
             # FIXME: add error
             pass
 
-        content = self.source[self.start + 1 : self.current - 1]
+        content = self.source[self.start[0] + 1 : self.current[0] - 1]
         if len(content.replace("\\", "")) > 1:
             # FIXME: add error
             pass
