@@ -1,9 +1,6 @@
 class Compiler:
-    def __init__(self, source: str, path: str):
-        self.source = source
-        self.path = path
+    def __init__(self):
         self.output_path = ""
-        self.logger = Logger(source, path)
         self.instructions = []
         self.current = 0
         self.temp_count = 0

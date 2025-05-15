@@ -4,7 +4,8 @@ from utils.token import Token
 
 
 class Tokenizer:
-    def __init__(self):
+    def __init__(self, log):
+        self.log = log
         self.source = ""
         self.start = [0, 0]
         self.current = [0, 0]
@@ -56,7 +57,7 @@ class Tokenizer:
             {type_kind.name.lower(): Tokens.TYPE for type_kind in Types}
         )
 
-    def tokenize(self, source):
+    def __call__(self, source):
         self.source = source
 
         while not self.__eof():
@@ -156,8 +157,12 @@ class Tokenizer:
                     self.__handle_identifiers()
 
                 case _:
-                    # FIXME: add warning
-                    pass
+                    self.log(
+                        "warning",
+                        "Unsupported symbol",
+                        location=self.__get_location(),
+                        code="W001",
+                    )
 
         return self.tokens
 
@@ -186,59 +191,113 @@ class Tokenizer:
     def __handle_strings(self):
         while not self.__eof() and self.__peek() != '"':
             if self.__peek() == "\n":
-                # FIXME: add error
-                pass
+                self.log(
+                    "error",
+                    "Invalid string syntax",
+                    location=self.__get_location(),
+                    information="new lines are not supported inside strings",
+                    code="E120",
+                )
+                exit(120)
 
             if self.__match("\\"):
                 if self.__eof():
-                    # FIXME: add error
-                    pass
+                    self.log(
+                        "error",
+                        "Invalid string syntax",
+                        location=[self.line, self.current[1] - 1, self.current[1]],
+                        information="escape symbols should be followed by a valid letter",
+                        code="E121",
+                    )
+                    exit(121)
 
                 escape_rune = self.__peek()
                 if escape_rune in ["\\", '"', "'", "n", "r", "t", "v", "b", "a", "f"]:
                     self.__advance()
                 else:
-                    # FIXME: add error
-                    pass
+                    self.log(
+                        "error",
+                        "Invalid string syntax",
+                        location=[self.line, self.current[1] - 1, self.current[1] + 1],
+                        information="escape symbols should be followed by a valid letter",
+                        code="E121",
+                    )
+                    exit(121)
             else:
                 self.__advance()
 
         if self.__eof() or not self.__match('"'):
-            # FIXME: add error
-            pass
+            self.log(
+                "error",
+                "Invalid string syntax",
+                location=self.__get_location(),
+                information="string literals need to be closed with a corresponding quote",
+                code="E122",
+            )
+            exit(122)
 
         self.__add_token(Tokens.STRING)
 
     def __handle_runes(self):
         while not self.__eof() and self.__peek() != "'":
             if self.__peek() == "\n":
-                # FIXME: add error
-                pass
+                self.log(
+                    "error",
+                    "Invalid rune syntax",
+                    location=self.__get_location(),
+                    information="new lines are not supported inside runes",
+                    code="E130",
+                )
+                exit(130)
 
             if self.__peek() == "\\":
                 self.__advance()
 
                 if self.__eof():
-                    # FIXME: add error
-                    pass
+                    self.log(
+                        "error",
+                        "Invalid rune syntax",
+                        location=[self.line, self.current[1] - 1, self.current[1]],
+                        information="escape symbols should be followed by a valid letter",
+                        code="E131",
+                    )
+                    exit(131)
 
                 escape_rune = self.__peek()
                 if escape_rune in ["\\", "'", '"', "n", "r", "t", "v", "b", "a", "f"]:
                     self.__advance()
                 else:
-                    # FIXME: add error
-                    pass
+                    self.log(
+                        "error",
+                        "Invalid rune syntax",
+                        location=[self.line, self.current[1] - 1, self.current[1] + 1],
+                        information="escape symbols should be followed by a valid letter",
+                        code="E131",
+                    )
+                    exit(131)
             else:
                 self.__advance()
 
         if self.__eof() or not self.__match("'"):
-            # FIXME: add error
-            pass
+            self.log(
+                "error",
+                "Invalid rune syntax",
+                location=self.__get_location(),
+                information="rune literals need to be closed with a corresponding quote",
+                code="E132",
+            )
+            exit(132)
 
         content = self.source[self.start[0] + 1 : self.current[0] - 1]
         if len(content.replace("\\", "")) > 1:
-            # FIXME: add error
-            pass
+            self.log(
+                "error",
+                "Invalid rune syntax",
+                location=self.__get_location(),
+                information="runes should only contain a letter or an escape sequence",
+                code="E133",
+            )
+            exit(133)
 
         self.__add_token(Tokens.RUNE)
 
@@ -274,7 +333,7 @@ class Tokenizer:
         return True
 
     def __get_location(self):
-        return (self.line, self.start[1], self.current[1])
+        return [self.line, self.start[1], self.current[1]]
 
     def __eof(self):
         return self.current[0] >= len(self.source)

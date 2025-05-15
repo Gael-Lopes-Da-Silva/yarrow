@@ -7,12 +7,13 @@ from utils.token import Token
 
 
 class Parser:
-    def __init__(self):
+    def __init__(self, log):
+        self.log = log
         self.tokens = []
         self.instructions = []
         self.current = 0
 
-    def parse(self, tokens):
+    def __call__(self, tokens):
         self.tokens = tokens.copy()
 
         while not self.__eof():
@@ -767,7 +768,9 @@ class Parser:
     def __handle_types(self, no_error=False, default_token=None):
         variable_type = default_token
         if variable_type is None:
-            variable_type = self.__expect(Tokens.TYPE) or self.__expect(Tokens.IDENTIFIER)
+            variable_type = self.__expect(Tokens.TYPE) or self.__expect(
+                Tokens.IDENTIFIER
+            )
             if variable_type is None:
                 if no_error:
                     return None

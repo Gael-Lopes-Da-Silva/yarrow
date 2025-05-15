@@ -1,0 +1,4 @@
+Invalid String Syntax
+---------------------
+
+This error occurs when an actual newline character (i.e., pressing Enter) is found within a string literal. Note that this is different from the escaped newline sequence `\n`, which is valid. String literals must not span multiple lines.

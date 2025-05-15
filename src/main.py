@@ -1,3 +1,4 @@
+from utils.log import Log
 from tokenizer import Tokenizer
 from parser import Parser
 
@@ -5,11 +6,9 @@ if __name__ == "__main__":
     with open("docs/syntax.yar", "r") as file:
         content = file.read()
 
-    tokenizer = Tokenizer()
-    parser = Parser()
+    log = Log(content, "docs/syntax.yar")
+    tokenize = Tokenizer(log)
+    parse = Parser(log)
 
-    tokens = tokenizer.tokenize(content)
-    instructions = parser.parse(tokens)
-
-    for instruction in instructions:
-        print(instruction)
+    tokens = tokenize(content)
+    instructions = parse(tokens)

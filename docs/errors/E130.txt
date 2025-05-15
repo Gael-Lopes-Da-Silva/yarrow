@@ -1,0 +1,4 @@
+Invalid Rune Syntax
+---------------------
+
+This error occurs when an actual newline character (i.e., pressing Enter) is found within a rune literal. Note that this is different from the escaped newline sequence `\n`, which is valid. Rune literals must not span multiple lines and must contain only one character or escape sequence.
