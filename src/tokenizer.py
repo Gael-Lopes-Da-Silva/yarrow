@@ -52,9 +52,9 @@ class Tokenizer:
             "true": Tokens.BOOLEAN,
             "false": Tokens.BOOLEAN,
         }
-        self.keywords.update({
-            type_kind.name.lower(): Tokens.TYPE for type_kind in Types
-        })
+        self.keywords.update(
+            {type_kind.name.lower(): Tokens.TYPE for type_kind in Types}
+        )
 
     def tokenize(self, source):
         self.source = source
@@ -162,7 +162,9 @@ class Tokenizer:
         return self.tokens
 
     def __handle_numbers(self):
-        while not self.__eof() and (self.__peek().isdigit() or self.__peek() in ["_", ","]):
+        while not self.__eof() and (
+            self.__peek().isdigit() or self.__peek() in ["_", ","]
+        ):
             self.__advance()
 
         if (
@@ -172,7 +174,9 @@ class Tokenizer:
         ):
             self.__advance()
 
-            while not self.__eof() and (self.__peek().isdigit() or self.__peek() in ["_", ","]):
+            while not self.__eof() and (
+                self.__peek().isdigit() or self.__peek() in ["_", ","]
+            ):
                 self.__advance()
 
             self.__add_token(Tokens.FLOAT)
@@ -191,7 +195,7 @@ class Tokenizer:
                     pass
 
                 escape_rune = self.__peek()
-                if escape_rune in ["\\", "'", '"', "n", "r", "t", "v", "b", "a", "f"]:
+                if escape_rune in ["\\", '"', "'", "n", "r", "t", "v", "b", "a", "f"]:
                     self.__advance()
                 else:
                     # FIXME: add error
@@ -239,7 +243,9 @@ class Tokenizer:
         self.__add_token(Tokens.RUNE)
 
     def __handle_identifiers(self):
-        while not self.__eof() and (self.__peek().isalnum() or self.__peek() in ["_", "@"]):
+        while not self.__eof() and (
+            self.__peek().isalnum() or self.__peek() in ["_", "@"]
+        ):
             self.__advance()
 
         text = self.source[self.start[0] : self.current[0]]

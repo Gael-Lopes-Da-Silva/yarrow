@@ -1,322 +1,324 @@
+import math
+
+from utils.enums.tokens import Tokens
+from utils.enums.types import Types
+from utils.instruction import Instruction
+from utils.token import Token
+
+
 class Parser:
-    def __init__(self, source: str, path: str) -> None:
-        self.source = source
-        self.path = path
-        self.logger = Logger(source, path)
+    def __init__(self):
         self.tokens = []
         self.instructions = []
         self.current = 0
 
-    def __repr__(self) -> str:
-        return f"{self.instructions}"
-
-    def parse(self, tokens: list) -> list:
+    def parse(self, tokens):
         self.tokens = tokens.copy()
 
-        while not self.eof():
-            instruction = self.parse_instruction()
+        while not self.__eof():
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 self.instructions.append(instruction)
 
         return self.instructions
 
-    def parse_instruction(self) -> Instruction | None:
-        token = self.advance()
+    def __parse_instruction(self):
+        token = self.__advance()
 
         match token.kind:
-            case TokenKind.IDENTIFIER:
+            case Tokens.IDENTIFIER:
                 return Instruction(
                     "push",
-                    {"type": TypeKind.VOID, "value": token.lexeme},
+                    {"type": Types.VOID, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.STRING:
+            case Tokens.STRING:
                 return Instruction(
                     "push",
-                    {"type": TypeKind.STRING, "value": str(token.lexeme[1:-1])},
+                    {"type": Types.STRING, "value": str(token.lexeme[1:-1])},
                     token,
                 )
-            case TokenKind.RUNE:
+            case Tokens.RUNE:
                 return Instruction(
                     "push",
-                    {"type": TypeKind.RUNE, "value": str(token.lexeme[1:-1])},
+                    {"type": Types.RUNE, "value": str(token.lexeme[1:-1])},
                     token,
                 )
-            case TokenKind.INTEGER:
-                int_value = int(token.lexeme)
-                int_type = self.get_smallest_integer_type(int_value)
+            case Tokens.INTEGER:
+                int_value = int(token.lexeme.replace("_", "").replace(",", ""))
+                int_type = self.__get_smallest_integer_type(int_value)
 
                 return Instruction(
                     "push",
                     {"type": int_type, "value": int_value},
                     token,
                 )
-            case TokenKind.FLOAT:
-                float_value = float(token.lexeme)
-                float_type = self.get_smallest_float_type(float_value)
+            case Tokens.FLOAT:
+                float_value = float(token.lexeme.replace("_", "").replace(",", ""))
+                float_type = self.__get_smallest_float_type(float_value)
 
                 return Instruction(
                     "push",
                     {"type": float_type, "value": float_value},
                     token,
                 )
-            case TokenKind.BOOLEAN:
+            case Tokens.BOOLEAN:
                 return Instruction(
                     "push",
-                    {"type": TypeKind.BOOL, "value": token.lexeme.lower() == "true"},
+                    {"type": Types.BOOL, "value": token.lexeme.lower() == "true"},
                     token,
                 )
-            case TokenKind.TYPE:
+            case Tokens.TYPE:
                 return Instruction(
                     "push",
                     {
-                        "type": TypeKind.TYPE,
-                        "value": self.parse_type(default_token=token),
+                        "type": Types.TYPE,
+                        "value": self.__handle_types(default_token=token),
                     },
                     token,
                 )
 
-            case TokenKind.PLUS:
+            case Tokens.PLUS:
                 return Instruction(
                     "addition",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.MINUS:
+            case Tokens.MINUS:
                 return Instruction(
                     "subtraction",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.STAR:
+            case Tokens.ASTERISK:
                 return Instruction(
                     "multiplication",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.SLASH:
+            case Tokens.SLASH:
                 return Instruction(
                     "division",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.SLASH_SLASH:
+            case Tokens.SLASH_SLASH:
                 return Instruction(
                     "euclidian_division",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.PERCENT:
+            case Tokens.PERCENT:
                 return Instruction(
                     "remainder",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.CARET:
+            case Tokens.CARET:
                 return Instruction(
                     "power",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.QUESTION:
+            case Tokens.QUESTION:
                 return Instruction(
                     "default",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
 
-            case TokenKind.AND:
+            case Tokens.AND:
                 return Instruction(
                     "and",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.OR:
+            case Tokens.OR:
                 return Instruction(
                     "or",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.XOR:
+            case Tokens.XOR:
                 return Instruction(
                     "xor",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.NOT:
+            case Tokens.NOT:
                 return Instruction(
                     "not",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.LEFT_SHIFT:
+            case Tokens.LEFT_SHIFT:
                 return Instruction(
                     "left_shift",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.RIGHT_SHIFT:
+            case Tokens.RIGHT_SHIFT:
                 return Instruction(
                     "right_shift",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
 
-            case TokenKind.EQUAL_EQUAL:
+            case Tokens.EQUAL_EQUAL:
                 return Instruction(
                     "equal",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.NOT_EQUAL:
+            case Tokens.NOT_EQUAL:
                 return Instruction(
                     "not_equal",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.GREATER:
+            case Tokens.GREATER:
                 return Instruction(
                     "greater",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.GREATER_EQUAL:
+            case Tokens.GREATER_EQUAL:
                 return Instruction(
                     "greater_equal",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.LESS:
+            case Tokens.LESS:
                 return Instruction(
                     "less",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.LESS_EQUAL:
+            case Tokens.LESS_EQUAL:
                 return Instruction(
                     "less_equal",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
 
-            case TokenKind.POP:
+            case Tokens.POP:
                 return Instruction(
                     "pop",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.DROP:
+            case Tokens.DROP:
                 return Instruction(
                     "drop",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.DUP:
+            case Tokens.DUP:
                 return Instruction(
                     "dup",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.OVER:
+            case Tokens.OVER:
                 return Instruction(
                     "over",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.ROT:
+            case Tokens.ROT:
                 return Instruction(
                     "rot",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.SWAP:
+            case Tokens.SWAP:
                 return Instruction(
                     "swap",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
 
-            case TokenKind.RETURN:
+            case Tokens.RETURN:
                 return Instruction(
                     "return",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.CALL:
+            case Tokens.CALL:
                 return Instruction(
                     "call",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.BREAK:
+            case Tokens.BREAK:
                 return Instruction(
                     "break",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.CONTINUE:
+            case Tokens.CONTINUE:
                 return Instruction(
                     "continue",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.UNWRAP:
+            case Tokens.UNWRAP:
                 return Instruction(
                     "unwrap",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
-            case TokenKind.SET:
+            case Tokens.SET:
                 return Instruction(
                     "set",
                     {"type": None, "value": token.lexeme},
                     token,
                 )
 
-            case TokenKind.MUTABLE:
-                return self.handle_mutables(token)
-            case TokenKind.CONST:
-                return self.handle_consts(token)
-            case TokenKind.STATIC:
-                return self.handle_statics(token)
-            case TokenKind.FUNCTION:
-                return self.handle_functions(token)
-            case TokenKind.IF:
-                return self.handle_if_elses(token)
-            case TokenKind.MATCH:
-                return self.handle_matchs(token)
-            case TokenKind.WHILE:
-                return self.handle_whiles(token)
-            case TokenKind.FOR:
-                return self.handle_fors(token)
-            case TokenKind.STRUCT:
-                return self.handle_structs(token)
-            case TokenKind.IMPLEMENT:
-                return self.handle_implements(token)
-            case TokenKind.ENUM:
-                return self.handle_enums(token)
-            case TokenKind.UNION:
-                return self.handle_unions(token)
-            case TokenKind.REQUIRE:
-                return self.handle_requires(token)
-            case TokenKind.DOT:
-                return self.handle_dots(token)
-            case TokenKind.DEFER:
-                return self.handle_defers(token)
-            case TokenKind.HANDLE:
-                return self.handle_handles(token)
+            case Tokens.MUTABLE:
+                return self.__handle_mutables(token)
+            case Tokens.CONST:
+                return self.__handle_consts(token)
+            case Tokens.STATIC:
+                return self.__handle_statics(token)
+            case Tokens.FUNCTION:
+                return self.__handle_functions(token)
+            case Tokens.IF:
+                return self.__handle_if_elses(token)
+            case Tokens.MATCH:
+                return self.__handle_matchs(token)
+            case Tokens.WHILE:
+                return self.__handle_whiles(token)
+            case Tokens.FOR:
+                return self.__handle_fors(token)
+            case Tokens.STRUCT:
+                return self.__handle_structs(token)
+            case Tokens.IMPLEMENT:
+                return self.__handle_implements(token)
+            case Tokens.ENUM:
+                return self.__handle_enums(token)
+            case Tokens.UNION:
+                return self.__handle_unions(token)
+            case Tokens.REQUIRE:
+                return self.__handle_requires(token)
+            case Tokens.DOT:
+                return self.__handle_dots(token)
+            case Tokens.DEFER:
+                return self.__handle_defers(token)
+            case Tokens.HANDLE:
+                return self.__handle_handles(token)
 
-            case TokenKind.LEFT_SQUARE:
-                return self.handle_arrays(token)
-            case TokenKind.LEFT_CURLY:
-                return self.handle_hashmaps(token)
-            case TokenKind.LEFT_PAREN:
-                return self.handle_lists(token)
+            case Tokens.LEFT_SQUARE:
+                return self.__handle_arrays(token)
+            case Tokens.LEFT_CURLY:
+                return self.__handle_hashmaps(token)
+            case Tokens.LEFT_PAREN:
+                return self.__handle_lists(token)
 
         return None
 
-    def handle_mutables(self, token: Token) -> Instruction:
-        variable_type = self.parse_type()
+    def __handle_mutables(self, token):
+        variable_type = self.__handle_types()
 
         return Instruction(
             "mutable",
@@ -327,8 +329,8 @@ class Parser:
             token,
         )
 
-    def handle_consts(self, token: Token) -> Instruction:
-        variable_type = self.parse_type()
+    def __handle_consts(self, token):
+        variable_type = self.__handle_types()
 
         return Instruction(
             "const",
@@ -339,8 +341,8 @@ class Parser:
             token,
         )
 
-    def handle_statics(self, token: Token) -> Instruction:
-        variable_type = self.parse_type()
+    def __handle_statics(self, token):
+        variable_type = self.__handle_types()
 
         return Instruction(
             "static",
@@ -351,69 +353,43 @@ class Parser:
             token,
         )
 
-    def handle_functions(self, token: Token) -> Instruction:
+    def __handle_functions(self, token):
         parameters = []
-        while not self.eof() and self.peek().kind != TokenKind.DO:
-            if self.peek().kind != TokenKind.TYPE:
-                self.logger.error(
-                    "Invalid function syntax !",
-                    location=self.peek().location,
-                    location_message="parameters are only composed of types",
-                )
-                raise GlobalException
+        while not self.__eof() and self.__peek().kind != Tokens.DO:
+            if self.__peek().kind != Tokens.TYPE:
+                # FIXME: add error
+                pass
 
-            parameter_type = self.parse_type(no_error=True)
+            parameter_type = self.__handle_types(no_error=True)
             parameters.append(parameter_type)
 
-        if self.eof() or self.expect(TokenKind.DO) is None:
-            self.logger.error(
-                "Invalid function syntax !",
-                location=self.peek_previous().location,
-                location_message="there should be a function body after this",
-            )
-            self.logger.info(
-                "Open a function body with a `do` and close it with a `end` !"
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.DO) is None:
+            # FIXME: add error
+            pass
 
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Function not closed !",
-                location=self.peek_previous().location,
-                location_message="you need to close a function with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return_type = None
         return_error = None
-        if not self.eof() and self.expect(TokenKind.WITH) is not None:
-            return_type = self.parse_type(no_error=True)
+        if not self.__eof() and self.__expect(Tokens.WITH) is not None:
+            return_type = self.__handle_types(no_error=True)
             if return_type is None:
-                self.logger.error(
-                    "Invalid function syntax !",
-                    location=self.peek_previous().location,
-                    location_message="there should be a type after this",
-                )
-                self.logger.info(
-                    "If you don't want to specify a return type, don't put a `with`. It will return `void` by default !"
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
-            if not self.eof() and self.expect(TokenKind.OR) is not None:
-                return_error = self.parse_type(no_error=True)
+            if not self.__eof() and self.__expect(Tokens.OR) is not None:
+                return_error = self.__handle_types(no_error=True)
                 if return_error is None:
-                    self.logger.error(
-                        "Invalid function syntax !",
-                        location=self.peek_previous().location,
-                        location_message="there should be an error type after this",
-                    )
-                    raise GlobalException
+                    # FIXME: add error
+                    pass
 
         return Instruction(
             "function",
@@ -429,33 +405,27 @@ class Parser:
             token,
         )
 
-    def handle_if_elses(self, token: Token) -> Instruction:
+    def __handle_if_elses(self, token):
         if_body = []
-        while not self.eof() and self.peek().kind not in [
-            TokenKind.ELSE,
-            TokenKind.END,
+        while not self.__eof() and self.__peek().kind not in [
+            Tokens.ELSE,
+            Tokens.END,
         ]:
-            instruction = self.parse_instruction()
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 if_body.append(instruction)
 
         else_body = []
-        else_token = self.expect(TokenKind.ELSE)
-        if not self.eof() and else_token is not None:
-            while not self.eof() and self.peek().kind != TokenKind.END:
-                instruction = self.parse_instruction()
+        else_token = self.__expect(Tokens.ELSE)
+        if not self.__eof() and else_token is not None:
+            while not self.__eof() and self.__peek().kind != Tokens.END:
+                instruction = self.__parse_instruction()
                 if instruction is not None:
                     else_body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "If statement not closed !",
-                location=else_token.location
-                if else_token is not None
-                else token.location,
-                location_message="you need to close an if statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "if",
@@ -466,75 +436,55 @@ class Parser:
             token,
         )
 
-    def handle_matchs(self, token: Token) -> Instruction:
+    def __handle_matchs(self, token):
         cases = []
         else_body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            else_token = self.expect(TokenKind.ELSE)
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            else_token = self.__expect(Tokens.ELSE)
             if else_token is not None:
-                while not self.eof() and self.peek().kind != TokenKind.END:
-                    instruction = self.parse_instruction()
+                while not self.__eof() and self.__peek().kind != Tokens.END:
+                    instruction = self.__parse_instruction()
                     if instruction is not None:
                         else_body.append(instruction)
 
-                if self.eof() or self.expect(TokenKind.END) is None:
-                    self.logger.error(
-                        "Case not closed !",
-                        location=else_token.location,
-                        location_message="you need to close a case with `end`",
-                    )
-                    raise GlobalException
+                if self.__eof() or self.__expect(Tokens.END) is None:
+                    # FIXME: add error
+                    pass
 
                 break
 
             case_condition = []
-            while not self.eof() and self.peek().kind != TokenKind.CASE:
-                instruction = self.parse_instruction()
+            while not self.__eof() and self.__peek().kind != Tokens.CASE:
+                instruction = self.__parse_instruction()
                 if instruction is not None:
                     case_condition.append(instruction)
 
-            case_token = self.expect(TokenKind.CASE)
+            case_token = self.__expect(Tokens.CASE)
             if case_condition and case_token is None:
-                self.logger.error(
-                    "Invalid match syntax !",
-                    location=case_condition[-1].token.location,
-                    location_message="there should be a case body after this",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
             elif not case_condition and case_token is not None:
-                self.logger.error(
-                    "Invalid match syntax !",
-                    location=self.peek_previous().location,
-                    location_message="there should be a condition before this",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
             if not case_condition and case_token is None:
                 break
 
             case_body = []
-            while not self.eof() and self.peek().kind != TokenKind.END:
-                instruction = self.parse_instruction()
+            while not self.__eof() and self.__peek().kind != Tokens.END:
+                instruction = self.__parse_instruction()
                 if instruction is not None:
                     case_body.append(instruction)
 
-            if self.eof() or self.expect(TokenKind.END) is None:
-                self.logger.error(
-                    "Case not closed !",
-                    location=case_token.location,
-                    location_message="you need to close a case with `end`",
-                )
-                raise GlobalException
+            if self.__eof() or self.__expect(Tokens.END) is None:
+                # FIXME: add error
+                pass
 
             cases.append({"condition": case_condition, "body": case_body})
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Match statement not closed !",
-                location=token.location,
-                location_message="you need to close a match statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "match",
@@ -545,20 +495,16 @@ class Parser:
             token,
         )
 
-    def handle_whiles(self, token: Token) -> Instruction:
+    def __handle_whiles(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "While statement not closed !",
-                location=token.location,
-                location_message="you need to close a while statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "while",
@@ -569,20 +515,16 @@ class Parser:
             token,
         )
 
-    def handle_fors(self, token: Token) -> Instruction:
+    def __handle_fors(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "For statement not closed !",
-                location=token.location,
-                location_message="you need to close a for statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "for",
@@ -593,49 +535,33 @@ class Parser:
             token,
         )
 
-    def handle_structs(self, token: Token) -> Instruction:
+    def __handle_structs(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            if self.peek().kind not in [
-                TokenKind.TYPE,
-                TokenKind.IDENTIFIER,
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            if self.__peek().kind not in [
+                Tokens.TYPE,
+                Tokens.IDENTIFIER,
             ]:
-                self.logger.error(
-                    "Invalid struct syntax !",
-                    location=self.peek().location,
-                    location_message="struct fields are composed of a type followed by an identifier",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
-            variable_type = self.parse_type(no_error=True)
-            variable_name = self.expect(TokenKind.IDENTIFIER)
+            variable_type = self.__handle_types(no_error=True)
+            variable_name = self.__expect(Tokens.IDENTIFIER)
 
             if variable_type is None:
-                self.logger.error(
-                    "Invalid struct syntax !",
-                    location=variable_name.location,
-                    location_message="there should be a type before this",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
             elif variable_name is None:
-                self.logger.error(
-                    "Invalid struct syntax !",
-                    location=variable_type.location,
-                    location_message="there should be an identifier after this",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
             body.append(
                 {"variable_name": variable_name, "variable_type": variable_type}
             )
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Struct statement not closed !",
-                location=token.location,
-                location_message="you need to close a struct statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "struct",
@@ -646,31 +572,23 @@ class Parser:
             token,
         )
 
-    def handle_implements(self, token: Token) -> Instruction:
+    def __handle_implements(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            if self.peek().kind not in [
-                TokenKind.FUNCTION,
-                TokenKind.IDENTIFIER,
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            if self.__peek().kind not in [
+                Tokens.FUNCTION,
+                Tokens.IDENTIFIER,
             ]:
-                self.logger.error(
-                    "Invalid implement syntax !",
-                    location=self.peek().location,
-                    location_message="implement are composed of functions only",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
-            instruction = self.parse_instruction()
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Implement statement not closed !",
-                location=token.location,
-                location_message="you need to close an implement statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "implement",
@@ -681,31 +599,20 @@ class Parser:
             token,
         )
 
-    def handle_enums(self, token: Token) -> Instruction:
+    def __handle_enums(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            identifier = self.expect(TokenKind.IDENTIFIER)
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            identifier = self.__expect(Tokens.IDENTIFIER)
             if identifier is None:
-                self.logger.error(
-                    "Invalid enum syntax !",
-                    location=self.peek().location,
-                    location_message="there should be an identifier here",
-                )
-                self.logger.info(
-                    "After an identifier, you can give an integer or a float to start the enum from !"
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
-            value = self.expect(TokenKind.INTEGER) or self.expect(TokenKind.FLOAT)
+            value = self.__expect(Tokens.INTEGER) or self.__expect(Tokens.FLOAT)
             body.append({"identifier": identifier, "value": value})
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Enum statement not closed !",
-                location=token.location,
-                location_message="you need to close an enum statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "enum",
@@ -716,27 +623,19 @@ class Parser:
             token,
         )
 
-    def handle_unions(self, token: Token) -> Instruction:
+    def __handle_unions(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            union_type = self.parse_type(no_error=True)
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            union_type = self.__handle_types(no_error=True)
             if union_type is None:
-                self.logger.error(
-                    "Invalid union syntax !",
-                    location=self.peek().location,
-                    location_message="there should be a type here",
-                )
-                raise GlobalException
+                # FIXME: add error
+                pass
 
             body.append(union_type)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Union statement not closed !",
-                location=token.location,
-                location_message="you need to close an union statement with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "union",
@@ -747,8 +646,8 @@ class Parser:
             token,
         )
 
-    def handle_requires(self, token: Token) -> Instruction:
-        scope = self.expect(TokenKind.IDENTIFIER)
+    def __handle_requires(self, token):
+        scope = self.__expect(Tokens.IDENTIFIER)
 
         return Instruction(
             "require",
@@ -759,15 +658,11 @@ class Parser:
             token,
         )
 
-    def handle_dots(self, token: Token) -> Instruction:
-        identifier = self.expect(TokenKind.IDENTIFIER)
+    def __handle_dots(self, token):
+        identifier = self.__expect(Tokens.IDENTIFIER)
         if identifier is None:
-            self.logger.error(
-                "Invalid dot syntax !",
-                location=token.location,
-                location_message="there should be an identifier after this",
-            )
-            raise GlobalException
+            # FIXME: add error
+            pass
 
         return Instruction(
             "dot",
@@ -778,20 +673,16 @@ class Parser:
             token,
         )
 
-    def handle_defers(self, token: Token) -> Instruction:
+    def __handle_defers(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Defer not closed !",
-                location=token.location,
-                location_message="you need to close a defer with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "defer",
@@ -802,20 +693,16 @@ class Parser:
             token,
         )
 
-    def handle_handles(self, token: Token) -> Instruction:
+    def __handle_handles(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.END:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.END:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.END) is None:
-            self.logger.error(
-                "Handle not closed !",
-                location=token.location,
-                location_message="you need to close a handle with `end`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.END) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "handle",
@@ -826,20 +713,16 @@ class Parser:
             token,
         )
 
-    def handle_lists(self, token: Token) -> Instruction:
+    def __handle_lists(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.RIGHT_PAREN:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.RIGHT_PAREN:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.RIGHT_PAREN) is None:
-            self.logger.error(
-                "List not closed !",
-                location=token.location,
-                location_message="you need to close a list with `)`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.RIGHT_PAREN) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "list",
@@ -847,20 +730,16 @@ class Parser:
             token,
         )
 
-    def handle_arrays(self, token: Token) -> Instruction:
+    def __handle_arrays(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.RIGHT_SQUARE:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.RIGHT_SQUARE:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.RIGHT_SQUARE) is None:
-            self.logger.error(
-                "Array not closed !",
-                location=token.location,
-                location_message="you need to close an array with `]`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.RIGHT_SQUARE) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "array",
@@ -868,20 +747,16 @@ class Parser:
             token,
         )
 
-    def handle_hashmaps(self, token: Token) -> Instruction:
+    def __handle_hashmaps(self, token):
         body = []
-        while not self.eof() and self.peek().kind != TokenKind.RIGHT_CURLY:
-            instruction = self.parse_instruction()
+        while not self.__eof() and self.__peek().kind != Tokens.RIGHT_CURLY:
+            instruction = self.__parse_instruction()
             if instruction is not None:
                 body.append(instruction)
 
-        if self.eof() or self.expect(TokenKind.RIGHT_CURLY) is None:
-            self.logger.error(
-                "Hashmap not closed !",
-                location=token.location,
-                location_message="you need to close an hashmap with `}`",
-            )
-            raise GlobalException
+        if self.__eof() or self.__expect(Tokens.RIGHT_CURLY) is None:
+            # FIXME: add error
+            pass
 
         return Instruction(
             "hashmap",
@@ -889,46 +764,76 @@ class Parser:
             token,
         )
 
-    def get_smallest_integer_type(self, value: int) -> TypeKind:
+    def __handle_types(self, no_error=False, default_token=None):
+        variable_type = default_token
+        if variable_type is None:
+            variable_type = self.__expect(Tokens.TYPE) or self.__expect(Tokens.IDENTIFIER)
+            if variable_type is None:
+                if no_error:
+                    return None
+
+                # FIXME: add error
+                pass
+
+        key_type = None
+        value_type = None
+        contained_size = None
+        if not self.__eof() and self.__expect(Tokens.LESS) is not None:
+            key_type = self.__handle_types()
+            value_type = self.__handle_types(no_error=True)
+
+            if value_type is None:
+                contained_size = self.__expect(Tokens.INTEGER)
+
+            if self.__eof() or self.__expect(Tokens.GREATER) is None:
+                # FIXME: add error
+                pass
+
+        return {
+            "type": variable_type,
+            "contained_type": {
+                "key_type": key_type,
+                "value_type": value_type,
+            },
+            "contained_size": contained_size,
+        }
+
+    def __get_smallest_integer_type(self, value):
         if value >= 0:
             if value <= 2**8 - 1:
-                return TypeKind.U8
+                return Types.U8
             elif value <= 2**16 - 1:
-                return TypeKind.U16
+                return Types.U16
             elif value <= 2**32 - 1:
-                return TypeKind.U32
+                return Types.U32
             elif value <= 2**64 - 1:
-                return TypeKind.U64
+                return Types.U64
             elif value <= 2**128 - 1:
-                return TypeKind.U128
+                return Types.U128
 
         if -(2**7) <= value <= 2**7 - 1:
-            return TypeKind.I8
+            return Types.I8
         elif -(2**15) <= value <= 2**15 - 1:
-            return TypeKind.I16
+            return Types.I16
         elif -(2**31) <= value <= 2**31 - 1:
-            return TypeKind.I32
+            return Types.I32
         elif -(2**63) <= value <= 2**63 - 1:
-            return TypeKind.I64
+            return Types.I64
         else:
-            return TypeKind.I128
+            return Types.I128
 
-    def get_smallest_float_type(self, value: float) -> TypeKind:
+    def __get_smallest_float_type(self, value):
         if math.isnan(value) or math.isinf(value):
-            self.logger.error(
-                f"Invalid float value {value} (NaN or Infinity) !",
-                location=self.get_location(),
-                location_message="need to be a valid float value",
-            )
-            raise GlobalException
+            # FIXME: add error
+            pass
 
         if value == 0.0:
-            return TypeKind.F16
+            return Types.F16
 
         abs_value = abs(value)
 
         if abs_value < 1e-307:
-            return TypeKind.F16
+            return Types.F16
 
         significant_digits = 0
         if abs_value != 0.0:
@@ -951,75 +856,29 @@ class Parser:
             significant_digits = min(significant_digits, len(str_value))
 
         if abs_value <= 65504 and significant_digits <= 4:
-            return TypeKind.F16
+            return Types.F16
         elif abs_value <= 3.4e38 and significant_digits <= 7:
-            return TypeKind.F32
+            return Types.F32
         elif abs_value <= 1.8e308 and significant_digits <= 16:
-            return TypeKind.F64
+            return Types.F64
         else:
-            return TypeKind.F128
+            return Types.F128
 
-    def parse_type(
-        self, no_error: bool = False, default_token: Token | None = None
-    ) -> dict | None:
-        variable_type = default_token
-        if variable_type is None:
-            variable_type = self.expect(TokenKind.TYPE) or self.expect(
-                TokenKind.IDENTIFIER
-            )
-            if variable_type is None:
-                if no_error:
-                    return None
-
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=self.peek_previous().location,
-                    location_message="there should be a type after this",
-                )
-                raise GlobalException
-
-        key_type = None
-        value_type = None
-        contained_size = None
-        if not self.eof() and self.expect(TokenKind.LESS) is not None:
-            key_type = self.parse_type()
-            value_type = self.parse_type(no_error=True)
-
-            if value_type is None:
-                contained_size = self.expect(TokenKind.INTEGER)
-
-            if self.eof() or self.expect(TokenKind.GREATER) is None:
-                self.logger.error(
-                    "Invalid type syntax !",
-                    location=variable_type.location,
-                    location_message="you need to close a contained type definition with `>`",
-                )
-                raise GlobalException
-
-        return {
-            "type": variable_type,
-            "contained_type": {
-                "key_type": key_type,
-                "value_type": value_type,
-            },
-            "contained_size": contained_size,
-        }
-
-    def peek_previous(self) -> Token:
+    def __peek_previous(self):
         return self.tokens[self.current - 1]
 
-    def peek(self) -> Token:
+    def __peek(self):
         return self.tokens[self.current]
 
-    def advance(self) -> Token:
-        token = self.peek()
+    def __advance(self):
+        token = self.__peek()
         self.current += 1
         return token
 
-    def expect(self, expected_type: TokenKind) -> Token | None:
-        if not self.eof() and self.peek().kind == expected_type:
-            return self.advance()
+    def __expect(self, expected):
+        if not self.__eof() and self.__peek().kind == expected:
+            return self.__advance()
         return None
 
-    def eof(self) -> bool:
+    def __eof(self) -> bool:
         return self.current >= len(self.tokens)
