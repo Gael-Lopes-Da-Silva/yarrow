@@ -62,106 +62,104 @@ class Tokenizer:
         while not self.__eof():
             self.start[0] = self.current[0]
             self.start[1] = self.current[1]
-            self.__tokenize_lexeme()
+
+            lexeme = self.__advance()
+
+            match lexeme:
+                case " " | "\t":
+                    pass
+
+                case "\n":
+                    self.line += 1
+                    self.current[1] = 0
+
+                case "#":
+                    while not self.__eof() and self.__peek() != "\n":
+                        self.__advance()
+
+                case "(":
+                    self.__add_token(Tokens.LEFT_PAREN)
+                case ")":
+                    self.__add_token(Tokens.RIGHT_PAREN)
+                case "{":
+                    self.__add_token(Tokens.LEFT_CURLY)
+                case "}":
+                    self.__add_token(Tokens.RIGHT_CURLY)
+                case "[":
+                    self.__add_token(Tokens.LEFT_SQUARE)
+                case "]":
+                    self.__add_token(Tokens.RIGHT_SQUARE)
+                case ":":
+                    self.__add_token(Tokens.COLON)
+                case ";":
+                    self.__add_token(Tokens.SEMI_COLON)
+                case ",":
+                    self.__add_token(Tokens.COMMA)
+                case ".":
+                    self.__add_token(Tokens.DOT)
+                case "?":
+                    self.__add_token(Tokens.QUESTION)
+                case "%":
+                    self.__add_token(Tokens.PERCENT)
+                case "&":
+                    self.__add_token(Tokens.AMPERSAND)
+                case "|":
+                    self.__add_token(Tokens.BAR)
+                case "*":
+                    self.__add_token(Tokens.ASTERISK)
+                case "^":
+                    self.__add_token(Tokens.CARET)
+
+                case "/":
+                    self.__add_token(
+                        Tokens.SLASH_SLASH if self.__match("/") else Tokens.SLASH
+                    )
+                case "=":
+                    self.__add_token(
+                        Tokens.EQUAL_EQUAL if self.__match("=") else Tokens.EQUAL
+                    )
+                case "<":
+                    self.__add_token(
+                        Tokens.LESS_EQUAL if self.__match("=") else Tokens.LESS
+                    )
+                case ">":
+                    self.__add_token(
+                        Tokens.GREATER_EQUAL if self.__match("=") else Tokens.GREATER
+                    )
+                case "!":
+                    self.__add_token(
+                        Tokens.NOT_EQUAL if self.__match("=") else Tokens.EXCLAMATION
+                    )
+
+                case '"':
+                    self.__handle_strings()
+
+                case "'":
+                    self.__handle_runes()
+
+                case "-":
+                    if not self.__eof() and self.__peek().isdigit():
+                        self.__handle_numbers()
+                    else:
+                        self.__add_token(Tokens.MINUS)
+
+                case "+":
+                    if not self.__eof() and self.__peek().isdigit():
+                        self.__handle_numbers()
+                    else:
+                        self.__add_token(Tokens.PLUS)
+
+                case _ if lexeme.isdigit():
+                    self.__handle_numbers()
+
+                case _ if lexeme.isalpha() or lexeme in ["_", "@"]:
+                    self.__handle_identifiers()
+
+                case _:
+                    # FIXME: add warning
+                    pass
 
         return self.tokens
-
-    def __tokenize_lexeme(self):
-        lexeme = self.__advance()
-
-        match lexeme:
-            case " " | "\t":
-                pass
-
-            case "\n":
-                self.line += 1
-                self.current[1] = 0
-
-            case "#":
-                while not self.__eof() and self.__peek() != "\n":
-                    self.__advance()
-
-            case "(":
-                self.__add_token(Tokens.LEFT_PAREN)
-            case ")":
-                self.__add_token(Tokens.RIGHT_PAREN)
-            case "{":
-                self.__add_token(Tokens.LEFT_CURLY)
-            case "}":
-                self.__add_token(Tokens.RIGHT_CURLY)
-            case "[":
-                self.__add_token(Tokens.LEFT_SQUARE)
-            case "]":
-                self.__add_token(Tokens.RIGHT_SQUARE)
-            case ":":
-                self.__add_token(Tokens.COLON)
-            case ";":
-                self.__add_token(Tokens.SEMI_COLON)
-            case ",":
-                self.__add_token(Tokens.COMMA)
-            case ".":
-                self.__add_token(Tokens.DOT)
-            case "?":
-                self.__add_token(Tokens.QUESTION)
-            case "%":
-                self.__add_token(Tokens.PERCENT)
-            case "&":
-                self.__add_token(Tokens.AMPERSAND)
-            case "|":
-                self.__add_token(Tokens.BAR)
-            case "*":
-                self.__add_token(Tokens.ASTERISK)
-            case "^":
-                self.__add_token(Tokens.CARET)
-
-            case "/":
-                self.__add_token(
-                    Tokens.SLASH_SLASH if self.__match("/") else Tokens.SLASH
-                )
-            case "=":
-                self.__add_token(
-                    Tokens.EQUAL_EQUAL if self.__match("=") else Tokens.EQUAL
-                )
-            case "<":
-                self.__add_token(
-                    Tokens.LESS_EQUAL if self.__match("=") else Tokens.LESS
-                )
-            case ">":
-                self.__add_token(
-                    Tokens.GREATER_EQUAL if self.__match("=") else Tokens.GREATER
-                )
-            case "!":
-                self.__add_token(
-                    Tokens.NOT_EQUAL if self.__match("=") else Tokens.EXCLAMATION
-                )
-
-            case '"':
-                self.__handle_strings()
-
-            case "'":
-                self.__handle_runes()
-
-            case "-":
-                if not self.__eof() and self.__peek().isdigit():
-                    self.__handle_numbers()
-                else:
-                    self.__add_token(Tokens.MINUS)
-
-            case "+":
-                if not self.__eof() and self.__peek().isdigit():
-                    self.__handle_numbers()
-                else:
-                    self.__add_token(Tokens.PLUS)
-
-            case _ if lexeme.isdigit():
-                self.__handle_numbers()
-
-            case _ if lexeme.isalpha() or lexeme in ["_", "@"]:
-                self.__handle_identifiers()
-
-            case _:
-                # FIXME: add warning
-                pass
 
     def __handle_numbers(self):
         while not self.__eof() and (self.__peek().isdigit() or self.__peek() in ["_", ","]):
@@ -241,7 +239,7 @@ class Tokenizer:
         self.__add_token(Tokens.RUNE)
 
     def __handle_identifiers(self):
-        while not self.__eof() and (self.__peek().isalnum() or self.__peek() == "_"):
+        while not self.__eof() and (self.__peek().isalnum() or self.__peek() in ["_", "@"]):
             self.__advance()
 
         text = self.source[self.start[0] : self.current[0]]
