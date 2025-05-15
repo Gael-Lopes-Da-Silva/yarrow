@@ -358,15 +358,27 @@ class Parser:
         parameters = []
         while not self.__eof() and self.__peek().kind != Tokens.DO:
             if self.__peek().kind != Tokens.TYPE:
-                # FIXME: add error
-                pass
+                self.log(
+                    "error",
+                    "Invalid function syntax",
+                    location=token.location,
+                    information="function parameters are only composed of types",
+                    code="E140",
+                )
+                exit(140)
 
             parameter_type = self.__handle_types(no_error=True)
             parameters.append(parameter_type)
 
         if self.__eof() or self.__expect(Tokens.DO) is None:
-            # FIXME: add error
-            pass
+            self.log(
+                "error",
+                "Invalid function syntax",
+                location=token.location,
+                information="function need a body openned with `do` and closed with `end`",
+                code="E141",
+            )
+            exit(141)
 
         body = []
         while not self.__eof() and self.__peek().kind != Tokens.END:
@@ -375,8 +387,14 @@ class Parser:
                 body.append(instruction)
 
         if self.__eof() or self.__expect(Tokens.END) is None:
-            # FIXME: add error
-            pass
+            self.log(
+                "error",
+                "Invalid function syntax",
+                location=token.location,
+                information="function body need to be closed with `end`",
+                code="E142",
+            )
+            exit(142)
 
         return_type = None
         return_error = None
