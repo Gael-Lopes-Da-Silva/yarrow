@@ -10,18 +10,14 @@ class Log:
         self.line_delemiter = "│"
 
     def __call__(self, kind, message, location=None, information=None, code=None):
-        color = Style.BLACK_LIGHT
+        color_map = {
+            "error": Style.RED,
+            "warning": Style.YELLOW,
+            "note": Style.BLUE,
+            "debug": Style.PURPLE,
+        }
 
-        match kind.lower():
-            case "error":
-                color = Style.RED
-            case "warning":
-                color = Style.YELLOW
-            case "note":
-                color = Style.BLUE
-            case "debug":
-                color = Style.PURPLE
-
+        color = color_map.get(kind.lower(), Style.BLACK_LIGHT)
         output = f"[{color}{Style.BOLD}{kind.upper()}{Style.DEFAULT}] {message}"
 
         if code:

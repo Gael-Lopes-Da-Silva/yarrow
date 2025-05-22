@@ -361,7 +361,7 @@ class Parser:
                 self.log(
                     "error",
                     "Invalid function syntax",
-                    location=token.location,
+                    location=self.__peek().location,
                     information="function parameters are only composed of types",
                     code="E140",
                 )
@@ -370,7 +370,8 @@ class Parser:
             parameter_type = self.__handle_types(no_error=True)
             parameters.append(parameter_type)
 
-        if self.__eof() or self.__expect(Tokens.DO) is None:
+        do_token = self.__expect(Tokens.DO)
+        if do_token is None:
             self.log(
                 "error",
                 "Invalid function syntax",
@@ -386,11 +387,11 @@ class Parser:
             if instruction is not None:
                 body.append(instruction)
 
-        if self.__eof() or self.__expect(Tokens.END) is None:
+        if self.__expect(Tokens.END) is None:
             self.log(
                 "error",
                 "Invalid function syntax",
-                location=token.location,
+                location=do_token.location,
                 information="function body need to be closed with `end`",
                 code="E142",
             )
@@ -398,17 +399,31 @@ class Parser:
 
         return_type = None
         return_error = None
-        if not self.__eof() and self.__expect(Tokens.WITH) is not None:
+        with_token = self.__expect(Tokens.WITH)
+        if with_token is not None:
             return_type = self.__handle_types(no_error=True)
             if return_type is None:
-                # FIXME: add error
-                pass
+                self.log(
+                    "error",
+                    "Invalid function syntax",
+                    location=with_token.location,
+                    information="there should be a type after a `with` statement in a function definition",
+                    code="E143",
+                )
+                exit(143)
 
-            if not self.__eof() and self.__expect(Tokens.OR) is not None:
+            or_token = self.__expect(Tokens.OR)
+            if or_token is not None:
                 return_error = self.__handle_types(no_error=True)
                 if return_error is None:
-                    # FIXME: add error
-                    pass
+                    self.log(
+                        "error",
+                        "Invalid function syntax",
+                        location=or_token.location,
+                        information="there should be an error type after an `or` statement in a function definition",
+                        code="E144",
+                    )
+                    exit(144)
 
         return Instruction(
             "function",
@@ -436,21 +451,27 @@ class Parser:
 
         else_body = []
         else_token = self.__expect(Tokens.ELSE)
-        if not self.__eof() and else_token is not None:
+        if else_token is not None:
             while not self.__eof() and self.__peek().kind != Tokens.END:
                 instruction = self.__parse_instruction()
                 if instruction is not None:
                     else_body.append(instruction)
 
-        if self.__eof() or self.__expect(Tokens.END) is None:
-            # FIXME: add error
-            pass
+        if self.__expect(Tokens.END) is None:
+            self.log(
+                "error",
+                "Invalid if/else syntax",
+                location=else_token.location if else_token is not None else token.location,
+                information="if/else body need to be closed with `end`",
+                code="E145",
+            )
+            exit(145)
 
         return Instruction(
             "if",
             {
                 "type": None,
-                "value": {"if": if_body, "else": else_body},
+                "value": {"if_body": if_body, "else_body": else_body},
             },
             token,
         )
@@ -459,6 +480,26 @@ class Parser:
         cases = []
         else_body = []
         while not self.__eof() and self.__peek().kind != Tokens.END:
+            case_token = self.__expect(Tokens.CASE)
+            if case_token is not None:
+                case_body = []
+                while not self.__eof() and self.__peek().kind != Tokens.END:
+                    instruction = self.__parse_instruction()
+                    if instruction is not None:
+                        case_body.append(instruction)
+
+                if self.__expect(Tokens.END) is None:
+                    self.log(
+                        "error",
+                        "Invalid match syntax",
+                        location=case_token.location,
+                        information="case body need to be closed with `end`",
+                        code="E146",
+                    )
+                    exit(146)
+
+                cases.append(case_body)
+
             else_token = self.__expect(Tokens.ELSE)
             if else_token is not None:
                 while not self.__eof() and self.__peek().kind != Tokens.END:
@@ -466,44 +507,27 @@ class Parser:
                     if instruction is not None:
                         else_body.append(instruction)
 
-                if self.__eof() or self.__expect(Tokens.END) is None:
-                    # FIXME: add error
-                    pass
+                if self.__expect(Tokens.END) is None:
+                    self.log(
+                        "error",
+                        "Invalid match syntax",
+                        location=else_token.location,
+                        information="case body need to be closed with `end`",
+                        code="E146",
+                    )
+                    exit(146)
 
                 break
 
-            case_condition = []
-            while not self.__eof() and self.__peek().kind != Tokens.CASE:
-                instruction = self.__parse_instruction()
-                if instruction is not None:
-                    case_condition.append(instruction)
-
-            case_token = self.__expect(Tokens.CASE)
-            if case_condition and case_token is None:
-                # FIXME: add error
-                pass
-            elif not case_condition and case_token is not None:
-                # FIXME: add error
-                pass
-
-            if not case_condition and case_token is None:
-                break
-
-            case_body = []
-            while not self.__eof() and self.__peek().kind != Tokens.END:
-                instruction = self.__parse_instruction()
-                if instruction is not None:
-                    case_body.append(instruction)
-
-            if self.__eof() or self.__expect(Tokens.END) is None:
-                # FIXME: add error
-                pass
-
-            cases.append({"condition": case_condition, "body": case_body})
-
-        if self.__eof() or self.__expect(Tokens.END) is None:
-            # FIXME: add error
-            pass
+        if self.__expect(Tokens.END) is None:
+            self.log(
+                "error",
+                "Invalid match syntax",
+                location=token.location,
+                information="match body need to be closed with `end`",
+                code="E147",
+            )
+            exit(147)
 
         return Instruction(
             "match",
@@ -521,9 +545,15 @@ class Parser:
             if instruction is not None:
                 body.append(instruction)
 
-        if self.__eof() or self.__expect(Tokens.END) is None:
-            # FIXME: add error
-            pass
+        if self.__expect(Tokens.END) is None:
+            self.log(
+                "error",
+                "Invalid while syntax",
+                location=token.location,
+                information="while body need to be closed with `end`",
+                code="E148",
+            )
+            exit(148)
 
         return Instruction(
             "while",
@@ -541,9 +571,15 @@ class Parser:
             if instruction is not None:
                 body.append(instruction)
 
-        if self.__eof() or self.__expect(Tokens.END) is None:
-            # FIXME: add error
-            pass
+        if self.__expect(Tokens.END) is None:
+            self.log(
+                "error",
+                "Invalid for syntax",
+                location=token.location,
+                information="for body need to be closed with `end`",
+                code="E149",
+            )
+            exit(149)
 
         return Instruction(
             "for",
