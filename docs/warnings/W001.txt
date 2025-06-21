@@ -1,4 +1,0 @@
-Unsupported Symbol
-------------------
-
-This warning is issued when the tokenizer (lexer) encounters a character that it does not recognize or handle. While this is not considered a critical error, it is recommended to review and either handle or remove such symbols.

@@ -1,4 +1,0 @@
-Invalid String Syntax
----------------------
-
-This error occurs when an escape character (`\`) is used in a string literal without a valid escape sequence following it. For example, `\x` or `\q` would trigger this error if `x` or `q` are not recognized escape codes. Only defined escape sequences such as `\n`, `\t`, or `\\` are allowed.

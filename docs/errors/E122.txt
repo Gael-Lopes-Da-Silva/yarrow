@@ -1,4 +1,0 @@
-Invalid String Syntax
----------------------
-
-This error occurs when a string literal is opened but not properly closed with a matching quotation mark. This typically happens when the closing quote is missing due to a typo or an incomplete line. Unterminated strings can lead to parsing errors or unexpected behavior.
