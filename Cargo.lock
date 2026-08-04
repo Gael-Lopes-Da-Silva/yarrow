@@ -5,3 +5,11 @@ version = 4
 [[package]]
 name = "yarrow"
 version = "0.1.0"
+
+[[package]]
+name = "yarrow_cli"
+version = "0.1.0"
+
+[[package]]
+name = "yarrow_core"
+version = "0.1.0"
