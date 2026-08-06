@@ -2,8 +2,6 @@
 # Yarrow is a stack-based language with a rich type system and modular design.
 # Let's dive in with examples! Everything is evaluated on a stack.
 
-"test \y"
-
 # Arithmetic Operators: Stack-based, operands popped in reverse order
 1 2 +    # 3 (1 + 2)
 5 3 -    # 2 (5 - 3)
