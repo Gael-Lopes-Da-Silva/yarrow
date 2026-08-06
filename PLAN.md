@@ -5,11 +5,11 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 
 ## Pipeline status
 
-| Stage | State |
-|---|---|
-| Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`) |
-| Parser | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse |
-| Compiler | Only the core numeric/control subset lowers to JIT; everything else is `E301`–`E310` "not yet supported" |
+| Stage     | State                                                                                                                                                                                              |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`)                                                                                                                                     |
+| Parser    | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse                                                |
+| Compiler  | Core numeric/control subset + structs/field-access/methods/`self` lower to JIT; containers, strings, match, for, enums, unions, error handling, memory model are `E301`–`E308` "not yet supported" |
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -30,30 +30,34 @@ and the compiler reuses the same decoders.
   and stack-based implicit fallthrough return.
 - `if`/`else` and `while` plus `break`/`continue` (conditions precede the
   keyword, matching the spec).
+- **Structs, field access, methods, `self`** — struct declarations compute real
+  layouts (`layout`/`FieldLayout`/`StructLayout`, frame-slot backed); literals
+  `{x 5 y 20}` init fields (nested structs recurse, missing fields zeroed);
+  `point.x` loads / `10 point.x set` stores; `Point implement distance function`
+  lowers to `Point::distance` and `point.distance call` resolves by receiver
+  type; `self` is auto-bound to the method receiver; `@borrow`/`@move` are
+  handled as pointer identity (references reuse the same pointer).
 
 ## 2. Parsed but NOT compiled (currently `E301`)
 
 - **Strings** — `Expr::String`, the `string` type (`E303`), `@string_join`,
   string comparison/indexing.
-- **Structs** — field access `Expr::Member`, `{x 5 y 20}` map literal, `self`,
-  method calls (`point.distance call`), field `set`, aggregate layouts
-  (`layout()`/`FieldLayout` are already written but unused).
 - **Match** — `score match ... case ... else ... end`.
-- **For loops** — `numbers value for ... end` (requires containers/iterables).
+- **For loops** — iterable loop (needs containers/iterables).
 - **Containers** — array/list/hashmap literals and the `array<i32 3>`,
-  `list<i32>`, `hashmap<k v>` types (`E304/305/306`), indexing, builtins such as
+  `list<i32>`, `hashmap` types (`E304/305/306`), indexing, builtins such as
   `@list_push`.
 - **Enums** — `Color enum RED GREEN end` parses but members never become values.
 - **Unions** — `E308`.
 - **Modules** — `require` is silently ignored (no loader, no symbol resolution,
-  no std library: `sqrt`, `io.write_line`, `open_file`, `close_file`).
-- **All builtins** (`@borrow`, `@move`, `@list_push`, `@make_region`,
-  `@free_region`, `@put_region`, ...) — `Expr::Builtin` -> `E301`.
+  no std library: `sqrt`, `io.write_line`).
+- **All builtins** (`@list_push`, `@make_region`, `@free_region`, `@put_region`,
+  ...) — `Expr::Builtin`.
 - **Error handling** — `error`/`Error` types unresolved (`E302/E303`),
-  `with void or Error`, `unwrap`, `handle`, `error.CustomError`.
+  `with value or Error` unions, `unwrap`, `handle`, `error.CustomError`.
 - **Defer** — `defer ... call end`.
-- **Memory model** — ownership, borrows, `reference<T>` (currently just unwraps
-  to `T`), `pointer<T>` (`E307`), regions; nothing enforced.
+- **Memory model** — ownership, borrows, regions; structs/references are plain
+  pointers with no forcing.
 
 ## 3. Compiles but diverges from the spec (semantic mismatches)
 
@@ -72,15 +76,18 @@ and the compiler reuses the same decoders.
 
 - No require/module resolver, no standard-library prelude, no runtime for
   heap/regions/IO.
-- `structs` is a name-only map (`HashMap<String, ()>`); no aggregate types,
-  frame slots, or field offsets wired in (layout helpers exist, unused).
+- Structs are real layouts backed by frame slots, but structs are only ever
+  pointers: assigning a struct variable aliases (no copy semantics), and no
+  ownership/borrow enforcement exists yet.
 - Coercion gaps: `int -> bool` via `ireduce` on a comparison result (correct for
-  >8-bit); `bool -> int` only widens; no `float -> int` truncation test coverage.
+  > 8-bit); `bool -> int` only widens; no `float -> int` truncation test coverage.
 
 ## Suggested milestones (priority order)
 
-1. **Structs, field access, methods, `self`** — most self-contained; layout
-   helpers (`layout`, `FieldLayout`, `StructLayout`) already exist.
+1. **Structs, field access, methods, `self`** — done. Layouts are computed from
+   declarations and used for field loads/stores; method calls resolve by
+   receiver type; `self` is bound to the receiver; `@borrow`/`@move` are
+   pointer identity (ownership rules still unimplemented).
 2. **Match + For loops** — extends loop/merge machinery; small scope.
 3. **Strings, containers, builtins** — largest chunk, plus heap/runtime;
    unblocks lists, arrays, and string ops.

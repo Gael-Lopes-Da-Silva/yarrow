@@ -36,7 +36,10 @@ pub enum Ty {
     F64,
     F128,
     Void,
-    /// A pointer to a struct instance (frame slot) or a `reference<T>`.
+    /// A pointer to a struct instance (frame slot) or a `reference<T>`. The
+    /// payload is the struct's index into the compiler's layout table.
+    Struct(u32),
+    /// A raw pointer (reserved for `pointer<T>`; currently unused).
     Ptr,
 }
 
@@ -68,7 +71,7 @@ impl Ty {
     }
 
     pub fn is_pointer(self) -> bool {
-        self == Ty::Ptr
+        matches!(self, Ty::Ptr | Ty::Struct(_))
     }
 
     pub fn bits(self) -> u32 {
@@ -76,7 +79,7 @@ impl Ty {
             Ty::Bool | Ty::I8 | Ty::U8 => 8,
             Ty::I16 | Ty::U16 | Ty::F16 => 16,
             Ty::I32 | Ty::U32 | Ty::Rune | Ty::F32 => 32,
-            Ty::I64 | Ty::U64 | Ty::F64 | Ty::Ptr => 64,
+            Ty::I64 | Ty::U64 | Ty::F64 | Ty::Ptr | Ty::Struct(_) => 64,
             Ty::I128 | Ty::U128 | Ty::F128 => 128,
             Ty::Void => 0,
         }
@@ -111,6 +114,7 @@ impl Ty {
             Ty::F128 => irtypes::F128,
             Ty::Void => irtypes::I8,
             Ty::Ptr => ptr_type,
+            Ty::Struct(_) => ptr_type,
         }
     }
 
@@ -143,8 +147,9 @@ fn primitive_ty(p: Primitive) -> Option<Ty> {
     })
 }
 
-/// Resolve a Yarrow type to a physical `Ty`.
-pub fn resolve(ty: &Type, is_struct: &dyn Fn(&str) -> bool) -> CResult<Ty> {
+/// Resolve a Yarrow type to a physical `Ty`. Struct names resolve to
+/// `Ty::Struct(id)` where `id` is the index into the compiler's layout table.
+pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty> {
     let loc = ty.location;
     match &ty.kind {
         TypeKind::Primitive(p) => match primitive_ty(*p) {
@@ -155,23 +160,20 @@ pub fn resolve(ty: &Type, is_struct: &dyn Fn(&str) -> bool) -> CResult<Ty> {
                 "E303",
             )),
         },
-        TypeKind::Named(name) => {
-            if is_struct(name) {
-                Ok(Ty::Ptr)
-            } else {
-                Err(CompileError::unsupported(
-                    format!("unknown or unsupported type '{name}'"),
-                    loc,
-                    "E302",
-                ))
-            }
-        }
+        TypeKind::Named(name) => match struct_id(name) {
+            Some(id) => Ok(Ty::Struct(id)),
+            None => Err(CompileError::unsupported(
+                format!("unknown or unsupported type '{name}'"),
+                loc,
+                "E302",
+            )),
+        },
         TypeKind::Array { .. } => Err(CompileError::unsupported(
             "array types are not yet supported",
             loc,
             "E304",
         )),
-        TypeKind::Reference { inner } => resolve(inner, is_struct),
+        TypeKind::Reference { inner } => resolve(inner, struct_id),
         TypeKind::List { .. } => Err(CompileError::unsupported(
             "list types are not yet supported",
             loc,
@@ -199,8 +201,8 @@ pub fn resolve(ty: &Type, is_struct: &dyn Fn(&str) -> bool) -> CResult<Ty> {
 // Struct layouts
 // ---------------------------------------------------------------------------
 
-// Layout helpers are reserved for the upcoming struct/methods milestone.
-#[allow(dead_code)]
+/// A single field: its resolved physical type and byte offset within the
+/// containing struct.
 #[derive(Debug, Clone)]
 pub struct FieldLayout {
     pub name: String,
@@ -208,7 +210,7 @@ pub struct FieldLayout {
     pub offset: i32,
 }
 
-#[allow(dead_code)]
+/// The memory layout of a struct: fields, total size and alignment.
 #[derive(Debug, Clone)]
 pub struct StructLayout {
     pub name: String,
@@ -217,7 +219,6 @@ pub struct StructLayout {
     pub align: u32,
 }
 
-#[allow(dead_code)]
 fn field_align(ty: Ty) -> u32 {
     match ty {
         Ty::Bool | Ty::I8 | Ty::U8 => 1,
@@ -228,7 +229,6 @@ fn field_align(ty: Ty) -> u32 {
 }
 
 /// Compute the natural layout of `fields`.
-#[allow(dead_code)]
 pub fn layout(name: &str, fields: Vec<(String, Ty)>) -> StructLayout {
     let mut out = StructLayout {
         name: name.to_string(),

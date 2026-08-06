@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, Block, BlockArg, FuncRef, InstBuilder as _, TrapCode, Type as CLType, Value,
-    types as irtypes,
+    AbiParam, Block, BlockArg, FuncRef, InstBuilder as _, StackSlotData, StackSlotKind, TrapCode,
+    Type as CLType, Value, types as irtypes,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -26,7 +26,7 @@ use crate::tokenizer::token::Location;
 pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
-use types::{coerce, common_type, resolve};
+use types::{StructLayout, coerce, common_type, layout, resolve};
 
 /// A value on the compile-time operand stack: a Cranelift SSA value plus the
 /// physical `Ty` it carries.
@@ -53,7 +53,10 @@ struct LoopCtx {
 pub struct Compiler {
     module: JITModule,
     ptr_type: CLType,
-    structs: HashMap<String, ()>,
+    /// Struct name -> index into `struct_layouts`.
+    struct_ids: HashMap<String, u32>,
+    /// Layouts for every struct, indexed by `Ty::Struct(id).0`.
+    struct_layouts: Vec<StructLayout>,
     sigs: HashMap<String, cranelift_codegen::ir::Signature>,
     sig_tys: HashMap<String, (Vec<Ty>, Vec<Ty>)>,
     func_ids: HashMap<String, FuncId>,
@@ -69,7 +72,8 @@ impl Compiler {
         Ok(Self {
             module,
             ptr_type,
-            structs: HashMap::new(),
+            struct_ids: HashMap::new(),
+            struct_layouts: Vec::new(),
             sigs: HashMap::new(),
             sig_tys: HashMap::new(),
             func_ids: HashMap::new(),
@@ -77,14 +81,41 @@ impl Compiler {
         })
     }
 
-    /// Two-pass compilation: first declare every function (so whole-program
-    /// calls resolve), then compile each body.
+    /// Two-pass compilation: first register structs and declare every function
+    /// (so whole-program calls resolve), then compile each body.
     pub fn compile(&mut self, program: &Program) -> CResult<()> {
+        // Pass A: register every struct name.
+        for item in &program.items {
+            if let Stmt::Struct(d) = item {
+                self.struct_ids
+                    .entry(d.name.clone())
+                    .or_insert(self.struct_layouts.len() as u32);
+                self.struct_layouts.push(StructLayout {
+                    name: d.name.clone(),
+                    fields: Vec::new(),
+                    size: 0,
+                    align: 1,
+                });
+            }
+        }
+
+        // Pass B: resolve each struct's field types into a layout. Must happen
+        // before function signatures are declared, since those may use structs.
+        for item in &program.items {
+            if let Stmt::Struct(d) = item {
+                let mut fields = Vec::with_capacity(d.fields.len());
+                for f in &d.fields {
+                    let ty = self.resolve_ty(&f.ty)?;
+                    fields.push((f.name.clone(), ty));
+                }
+                let id = self.struct_ids[&d.name];
+                self.struct_layouts[id as usize] = layout(&d.name, fields);
+            }
+        }
+
+        // Pass C: declare every function.
         for item in &program.items {
             match item {
-                Stmt::Struct(d) => {
-                    self.structs.insert(d.name.clone(), ());
-                }
                 Stmt::Function(f) => self.declare_function(f, &f.name)?,
                 Stmt::Implement(imp) => {
                     for f in &imp.functions {
@@ -95,6 +126,7 @@ impl Compiler {
             }
         }
 
+        // Pass D: compile every function.
         for item in &program.items {
             match item {
                 Stmt::Function(f) => self.compile_function(f, &f.name)?,
@@ -173,12 +205,169 @@ impl Compiler {
         Ok(())
     }
 
-    fn is_struct(&self, name: &str) -> bool {
-        self.structs.contains_key(name)
+    fn resolve_ty(&self, t: &crate::parser::ast::Type) -> CResult<Ty> {
+        resolve(t, &|n| self.struct_ids.get(n).copied())
     }
 
-    fn resolve_ty(&self, t: &crate::parser::ast::Type) -> CResult<Ty> {
-        resolve(t, &|n| self.is_struct(n))
+    fn struct_layout(&self, id: u32) -> &StructLayout {
+        &self.struct_layouts[id as usize]
+    }
+
+    /// The struct index of `base`'s value, resolved statically. The base of a
+    /// member access is always ultimately a variable (`point`, `self`, or a
+    /// nested field), so no runtime type information is needed.
+    fn base_struct(&self, st: &FnState, base: &Expr) -> CResult<u32> {
+        match base {
+            Expr::Variable { name } => match st.vars.get(name) {
+                Some((_, Ty::Struct(id))) => Ok(*id),
+                Some((_, other)) => Err(CompileError::new(
+                    format!("'{name}' is a {other:?}, not a struct value"),
+                    Location::default(),
+                    "E340",
+                )),
+                None => Err(CompileError::new(
+                    format!("unknown variable '{name}'"),
+                    Location::default(),
+                    "E340",
+                )),
+            },
+            Expr::Member {
+                base: inner,
+                member,
+            } => {
+                let outer = self.base_struct(st, inner)?;
+                let lay = self.struct_layout(outer);
+                let field = lay
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *member)
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            format!("struct '{}' has no field '{member}'", lay.name),
+                            Location::default(),
+                            "E340",
+                        )
+                    })?;
+                match field.ty {
+                    Ty::Struct(id) => Ok(id),
+                    _ => Err(CompileError::new(
+                        format!("field '{member}' is not a struct value"),
+                        Location::default(),
+                        "E340",
+                    )),
+                }
+            }
+            _ => Err(CompileError::new(
+                "expected a struct value before '.'",
+                Location::default(),
+                "E340",
+            )),
+        }
+    }
+
+    fn find_field(&self, sid: u32, member: &str) -> CResult<types::FieldLayout> {
+        let lay = self.struct_layout(sid);
+        lay.fields
+            .iter()
+            .find(|f| f.name == member)
+            .cloned()
+            .ok_or_else(|| {
+                CompileError::new(
+                    format!("struct '{}' has no field '{member}'", lay.name),
+                    Location::default(),
+                    "E340",
+                )
+            })
+    }
+
+    /// Allocate a fresh frame slot for a struct and return a pointer to it.
+    fn alloc_struct(&mut self, b: &mut FunctionBuilder, id: u32) -> Value {
+        let lay = self.struct_layout(id);
+        let data = StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            lay.size,
+            lay.align.trailing_zeros() as u8,
+        );
+        let slot = b.create_sized_stack_slot(data);
+        b.ins().stack_addr(self.ptr_type, slot, 0)
+    }
+
+    /// Initialize `ptr` from a `{name value ...}` literal. Each key must be an
+    /// identifier matching a struct field; missing fields are zeroed so the
+    /// struct is always fully defined.
+    fn init_struct_fields(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        id: u32,
+        ptr: Value,
+        pairs: &[(Expr, Expr)],
+    ) -> CResult<()> {
+        let fields = self.struct_layout(id).fields.clone();
+        for (key, value_expr) in pairs {
+            let field_name = match key {
+                Expr::Variable { name } => name.as_str(),
+                _ => {
+                    return Err(CompileError::new(
+                        "struct literal field names must be identifiers",
+                        Location::default(),
+                        "E340",
+                    ));
+                }
+            };
+            let field = fields
+                .iter()
+                .find(|f| f.name == field_name)
+                .cloned()
+                .ok_or_else(|| {
+                    CompileError::new(
+                        format!(
+                            "struct '{}' has no field '{field_name}'",
+                            self.struct_layout(id).name
+                        ),
+                        Location::default(),
+                        "E340",
+                    )
+                })?;
+            // A nested struct literal `{inner {v 9}}` allocates a fresh slot
+            // for the inner struct and stores a pointer to it in the field.
+            if let (Ty::Struct(inner_id), Expr::Map(inner_pairs)) = (field.ty, value_expr) {
+                let inner_ptr = self.alloc_struct(b, inner_id);
+                self.init_struct_fields(b, st, stack, inner_id, inner_ptr, inner_pairs)?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    inner_ptr,
+                    ptr,
+                    field.offset,
+                );
+                continue;
+            }
+            self.compile_expr(b, st, stack, value_expr)?;
+            let slot = self.pop_slot(stack, "struct field value")?;
+            let val = coerce(b, slot.value, slot.ty, field.ty, self.ptr_type)?;
+            b.ins().store(
+                cranelift_codegen::ir::MemFlagsData::trusted(),
+                val,
+                ptr,
+                field.offset,
+            );
+        }
+        for field in &fields {
+            let provided = pairs
+                .iter()
+                .any(|(k, _)| matches!(k, Expr::Variable { name } if name == &field.name));
+            if !provided {
+                let zero = b.ins().iconst(field.ty.clty(self.ptr_type), 0);
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    zero,
+                    ptr,
+                    field.offset,
+                );
+            }
+        }
+        Ok(())
     }
 
     fn declare_function(&mut self, f: &Function, name: &str) -> CResult<()> {
@@ -221,14 +410,12 @@ impl Compiler {
             frefs: HashMap::new(),
         };
 
-        // Register imports for every function this body calls.
-        let mut called = std::collections::HashSet::new();
-        collect_calls(&f.body, &mut called);
-        for name in called {
-            if let Some(&fid) = self.func_ids.get(&name) {
-                let fr = self.module.declare_func_in_func(fid, &mut ctx.func);
-                st.frefs.insert(name, fr);
-            }
+        // Import every declared function so any callee (free or method) can be
+        // resolved later; frefs must be created before the FunctionBuilder
+        // takes ownership of `ctx.func`.
+        for (callee, &fid) in &self.func_ids {
+            let fr = self.module.declare_func_in_func(fid, &mut ctx.func);
+            st.frefs.insert(callee.clone(), fr);
         }
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -250,6 +437,17 @@ impl Compiler {
                 value: param_vals[i],
                 ty: *t,
             });
+        }
+
+        // In a method body, the receiver is param 0. Bind `self` to it so a
+        // `self const reference<Point>` declaration resolves without relying
+        // on stack position.
+        if name.contains("::")
+            && let Some((t, v)) = params_ty.first().zip(param_vals.first())
+        {
+            let var = b.declare_var(t.clty(self.ptr_type));
+            b.def_var(var, *v);
+            st.vars.insert("self".to_string(), (var, *t));
         }
 
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
@@ -304,7 +502,20 @@ impl Compiler {
                 value,
             } => {
                 let t = self.resolve_ty(ty)?;
+                // `self` was already bound to the receiver at function entry;
+                // the `self const reference<Point>` declaration is a no-op.
+                if name == "self" && st.vars.contains_key("self") {
+                    return Ok(());
+                }
                 let (val, val_ty) = match value {
+                    Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
+                        // Struct literal `{x 5 y 20}`: allocate a slot and
+                        // store each field by name.
+                        let Ty::Struct(id) = t else { unreachable!() };
+                        let ptr = self.alloc_struct(b, id);
+                        self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                        (ptr, t)
+                    }
                     Some(e) => {
                         self.compile_expr(b, st, stack, e)?;
                         let slot = self.pop_slot(stack, "value")?;
@@ -332,6 +543,12 @@ impl Compiler {
                         )
                     })?;
                     let (val, val_ty) = match value {
+                        Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
+                            let Ty::Struct(id) = t else { unreachable!() };
+                            let ptr = b.use_var(var);
+                            self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                            return Ok(());
+                        }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
                             let slot = self.pop_slot(stack, "value")?;
@@ -344,6 +561,30 @@ impl Compiler {
                     };
                     let val = coerce(b, val, val_ty, t, self.ptr_type)?;
                     b.def_var(var, val);
+                }
+                Expr::Member { base, member } => {
+                    let sid = self.base_struct(st, base)?;
+                    let field = self.find_field(sid, member)?.clone();
+                    self.compile_expr(b, st, stack, base)?;
+                    let ptr = self.pop_slot(stack, "field set target")?;
+                    let (val, val_ty) = match value {
+                        Some(e) => {
+                            self.compile_expr(b, st, stack, e)?;
+                            let slot = self.pop_slot(stack, "value")?;
+                            (slot.value, slot.ty)
+                        }
+                        None => {
+                            let slot = self.pop_slot(stack, "value")?;
+                            (slot.value, slot.ty)
+                        }
+                    };
+                    let val = coerce(b, val, val_ty, field.ty, self.ptr_type)?;
+                    b.ins().store(
+                        cranelift_codegen::ir::MemFlagsData::trusted(),
+                        val,
+                        ptr.value,
+                        field.offset,
+                    );
                 }
                 _ => {
                     return Err(CompileError::unsupported(
@@ -420,6 +661,10 @@ impl Compiler {
             let vals = self.pop_return_values(b, st, stack)?;
             b.ins().return_(&vals);
         }
+        // The rest of the function is unreachable; the compile-time stack is
+        // dead, so clear it to stop the implicit fallthrough return from
+        // picking up leftovers (e.g. a method receiver).
+        stack.clear();
         self.dead_block(b);
         Ok(())
     }
@@ -677,12 +922,36 @@ impl Compiler {
                 let v = b.use_var(var);
                 stack.push(Slot { value: v, ty: t });
             }
-            Expr::Member { .. } => {
-                return Err(CompileError::unsupported(
-                    "struct field access is not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Expr::Member { base, member } => {
+                let sid = self.base_struct(st, base)?;
+                let field = self.find_field(sid, member)?;
+                let fty = field.ty;
+                self.compile_expr(b, st, stack, base)?;
+                let ptr = self.pop_slot(stack, "field access")?;
+                let val = b.ins().load(
+                    fty.clty(self.ptr_type),
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    ptr.value,
+                    field.offset,
+                );
+                stack.push(Slot {
+                    value: val,
+                    ty: fty,
+                });
+            }
+            Expr::Builtin { name } if matches!(name.as_str(), "borrow" | "move") => {
+                // A borrow/move of a struct is the same pointer; ownership is
+                // checked at compile time (not yet enforced), so both are
+                // identity at codegen time.
+                let s = self.pop_slot(stack, name)?;
+                if !s.ty.is_pointer() {
+                    return Err(CompileError::new(
+                        format!("'{name}' requires a reference or struct value"),
+                        Location::default(),
+                        "E341",
+                    ));
+                }
+                stack.push(s);
             }
             Expr::Builtin { name } => {
                 return Err(CompileError::unsupported(
@@ -746,12 +1015,23 @@ impl Compiler {
     ) -> CResult<()> {
         let name = match target {
             Expr::Variable { name } => name.clone(),
-            Expr::Member { .. } => {
-                return Err(CompileError::unsupported(
-                    "method calls are not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Expr::Member { base, member } => {
+                let sid = self.base_struct(st, base)?;
+                let sname = self.struct_layout(sid).name.clone();
+                let method = format!("{sname}::{member}");
+                if !self.func_ids.contains_key(&method) {
+                    return Err(CompileError::new(
+                        format!("struct '{sname}' has no method '{member}'"),
+                        Location::default(),
+                        "E342",
+                    ));
+                }
+                method
+            }
+            Expr::Builtin { name: _ } => {
+                // `@borrow call` / `@move call` apply the builtin itself.
+                self.compile_expr(b, st, stack, target)?;
+                return Ok(());
             }
             _ => {
                 return Err(CompileError::new(
@@ -1103,86 +1383,5 @@ impl Compiler {
 
         b.switch_to_block(end);
         Ok(b.use_var(res_v))
-    }
-}
-
-/// Collect the names of every function called directly (via `x call`) in the
-/// given statement list, recursing into nested bodies.
-fn collect_calls(stmts: &[Stmt], out: &mut std::collections::HashSet<String>) {
-    for s in stmts {
-        match s {
-            Stmt::Expr(e)
-            | Stmt::Set {
-                target: _,
-                value: Some(e),
-            }
-            | Stmt::Return { value: Some(e) } => collect_calls_expr(e, out),
-            Stmt::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                collect_calls_expr(condition, out);
-                collect_calls(then_branch, out);
-                collect_calls(else_branch, out);
-            }
-            Stmt::While { condition, body } => {
-                collect_calls_expr(condition, out);
-                collect_calls(body, out);
-            }
-            Stmt::For { iterable, body, .. } => {
-                collect_calls_expr(iterable, out);
-                collect_calls(body, out);
-            }
-            Stmt::Match {
-                value,
-                cases,
-                else_branch,
-            } => {
-                collect_calls_expr(value, out);
-                for c in cases {
-                    collect_calls_expr(&c.condition, out);
-                    collect_calls(&c.body, out);
-                }
-                collect_calls(else_branch, out);
-            }
-            Stmt::Defer { body } | Stmt::Handle { body } => collect_calls(body, out),
-            _ => {}
-        }
-    }
-}
-
-fn collect_calls_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
-    match e {
-        Expr::Call { target } => {
-            if let Expr::Variable { name } = &**target {
-                out.insert(name.clone());
-            }
-            collect_calls_expr(target, out);
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_calls_expr(left, out);
-            collect_calls_expr(right, out);
-        }
-        Expr::Unary { operand, .. } => collect_calls_expr(operand, out),
-        Expr::Member { base, .. } => collect_calls_expr(base, out),
-        Expr::Unwrap { inner } => collect_calls_expr(inner, out),
-        Expr::Seq(elems) => {
-            for el in elems {
-                collect_calls_expr(el, out);
-            }
-        }
-        Expr::Array(elems) | Expr::List(elems) => {
-            for el in elems {
-                collect_calls_expr(el, out);
-            }
-        }
-        Expr::Map(pairs) => {
-            for (k, v) in pairs {
-                collect_calls_expr(k, out);
-                collect_calls_expr(v, out);
-            }
-        }
-        _ => {}
     }
 }
