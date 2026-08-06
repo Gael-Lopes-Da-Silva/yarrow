@@ -2,6 +2,7 @@ pub mod compiler;
 pub mod parser;
 pub mod tokenizer;
 
+pub use compiler::Compiler;
 pub use parser::ParseError;
 pub use parser::Parser;
 pub use parser::ast::Program;

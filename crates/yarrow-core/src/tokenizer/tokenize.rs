@@ -189,16 +189,39 @@ impl Tokenizer {
             self.advance();
         }
 
+        let mut is_float = false;
+
         if self.peek() == '.' && self.peek_next().is_ascii_digit() {
             self.advance();
             while self.peek().is_ascii_digit() || self.peek() == '_' {
                 self.advance();
             }
-            self.add_token(TokenKind::Float);
-        } else {
-            self.add_token(TokenKind::Integer);
+            is_float = true;
         }
 
+        // Scientific notation: e[+-]?digits. Backtrack when there is no digit
+        // after the 'e' so the 'e' can start an identifier instead.
+        if self.peek() == 'e' || self.peek() == 'E' {
+            let save = self.current;
+            self.advance();
+            if self.peek() == '+' || self.peek() == '-' {
+                self.advance();
+            }
+            if self.peek().is_ascii_digit() {
+                while self.peek().is_ascii_digit() || self.peek() == '_' {
+                    self.advance();
+                }
+                is_float = true;
+            } else {
+                self.current = save;
+            }
+        }
+
+        self.add_token(if is_float {
+            TokenKind::Float
+        } else {
+            TokenKind::Integer
+        });
         Ok(())
     }
 
@@ -373,5 +396,69 @@ impl Tokenizer {
 
     fn get_location(&self) -> Location {
         self.get_location_at(self.current)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(src: &str) -> Vec<(TokenKind, String)> {
+        Tokenizer::new(src.to_string())
+            .tokenize()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.kind != TokenKind::Eof)
+            .map(|t| (t.kind, t.lexeme))
+            .collect()
+    }
+
+    #[test]
+    fn signed_integer_literals() {
+        assert_eq!(
+            kinds("-900 +300 5 - 3"),
+            vec![
+                (TokenKind::Integer, "-900".to_string()),
+                (TokenKind::Integer, "+300".to_string()),
+                (TokenKind::Integer, "5".to_string()),
+                (TokenKind::Minus, "-".to_string()),
+                (TokenKind::Integer, "3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn signed_float_literals() {
+        assert_eq!(
+            kinds("-3.14 +0.5"),
+            vec![
+                (TokenKind::Float, "-3.14".to_string()),
+                (TokenKind::Float, "+0.5".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn scientific_notation() {
+        assert_eq!(
+            kinds("1e3 -1.5e-3 2.5E+2"),
+            vec![
+                (TokenKind::Float, "1e3".to_string()),
+                (TokenKind::Float, "-1.5e-3".to_string()),
+                (TokenKind::Float, "2.5E+2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn exponent_without_digits_stays_identifier() {
+        // `2e` must lex as the integer 2 followed by the identifier `e`.
+        assert_eq!(
+            kinds("2e"),
+            vec![
+                (TokenKind::Integer, "2".to_string()),
+                (TokenKind::Identifier, "e".to_string()),
+            ]
+        );
     }
 }

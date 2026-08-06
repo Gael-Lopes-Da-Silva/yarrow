@@ -9,6 +9,7 @@
 //! payload.
 
 pub mod ast;
+pub mod literals;
 
 pub use ast::*;
 
@@ -582,7 +583,7 @@ impl Parser {
             | TokenKind::True
             | TokenKind::False => {
                 let tok = self.advance();
-                let expr = literal_expr(tok);
+                let expr = literal_expr(tok)?;
                 ops.push(expr);
             }
             TokenKind::Identifier => {
@@ -779,7 +780,7 @@ impl Parser {
             | TokenKind::True
             | TokenKind::False => {
                 let tok = self.advance();
-                Ok(literal_expr(tok))
+                literal_expr(tok)
             }
             TokenKind::Identifier => {
                 let tok = self.advance();
@@ -929,23 +930,36 @@ fn pop_target(ops: &mut Vec<Expr>) -> Option<Expr> {
     Some(ops.remove(index))
 }
 
-fn literal_expr(tok: &Token) -> Expr {
+fn literal_expr(tok: &Token) -> ParseResult<Expr> {
+    let loc = tok.location;
     match tok.kind {
-        TokenKind::Integer => Expr::Integer {
+        TokenKind::Integer => {
+            literals::decode_int_literal(&tok.lexeme)
+                .map_err(|m| ParseError::new(m, loc, "E217"))?;
+            Ok(Expr::Integer {
+                value: tok.lexeme.clone(),
+            })
+        }
+        TokenKind::Float => {
+            literals::decode_float_literal(&tok.lexeme)
+                .map_err(|m| ParseError::new(m, loc, "E218"))?;
+            Ok(Expr::Float {
+                value: tok.lexeme.clone(),
+            })
+        }
+        TokenKind::String => Ok(Expr::String {
             value: tok.lexeme.clone(),
-        },
-        TokenKind::Float => Expr::Float {
-            value: tok.lexeme.clone(),
-        },
-        TokenKind::String => Expr::String {
-            value: tok.lexeme.clone(),
-        },
-        TokenKind::Rune => Expr::Rune {
-            value: tok.lexeme.clone(),
-        },
-        TokenKind::True => Expr::Bool { value: true },
-        TokenKind::False => Expr::Bool { value: false },
-        _ => Expr::variable(""),
+        }),
+        TokenKind::Rune => {
+            literals::decode_rune_literal(&tok.lexeme)
+                .map_err(|m| ParseError::new(m, loc, "E219"))?;
+            Ok(Expr::Rune {
+                value: tok.lexeme.clone(),
+            })
+        }
+        TokenKind::True => Ok(Expr::Bool { value: true }),
+        TokenKind::False => Ok(Expr::Bool { value: false }),
+        _ => Ok(Expr::variable("")),
     }
 }
 

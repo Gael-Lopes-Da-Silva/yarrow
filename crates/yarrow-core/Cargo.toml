@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cranelift-codegen = "0.133"
+cranelift-frontend = "0.133"
+cranelift-jit = "0.133"
+cranelift-module = "0.133"
+cranelift-native = "0.133"
