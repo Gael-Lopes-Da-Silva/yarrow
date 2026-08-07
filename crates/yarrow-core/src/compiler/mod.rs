@@ -19,14 +19,14 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
-use crate::parser::ast::{BinOp, Expr, Function, Program, StackOp, Stmt, UnOp};
+use crate::parser::ast::{BinOp, Expr, Function, MatchCase, Program, StackOp, Stmt, UnOp};
 use crate::parser::literals::{decode_float_literal, decode_int_literal, decode_rune_literal};
 use crate::tokenizer::token::Location;
 
 pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
-use types::{StructLayout, coerce, common_type, layout, resolve};
+use types::{StructLayout, align_of, coerce, common_type, layout, resolve, scalar_ty};
 
 /// A value on the compile-time operand stack: a Cranelift SSA value plus the
 /// physical `Ty` it carries.
@@ -343,6 +343,24 @@ impl Compiler {
                 );
                 continue;
             }
+            // An array field `{nums [1 2 3]}` stores a pointer to a fresh
+            // array slot, using the declared element type (not the inferred
+            // literal type, which would be I64 for integer elements).
+            if let (Ty::Array { .. }, Expr::Array(elems)) = (field.ty, value_expr) {
+                let field_ty = Compiler::infer_array_count(field.ty, elems)?;
+                let Ty::Array { elem, count } = field_ty else {
+                    unreachable!()
+                };
+                let arr_ptr = self.alloc_array(b, scalar_ty(elem), count);
+                self.init_array_elements(b, st, stack, scalar_ty(elem), arr_ptr, elems)?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    arr_ptr,
+                    ptr,
+                    field.offset,
+                );
+                continue;
+            }
             self.compile_expr(b, st, stack, value_expr)?;
             let slot = self.pop_slot(stack, "struct field value")?;
             let val = coerce(b, slot.value, slot.ty, field.ty, self.ptr_type)?;
@@ -368,6 +386,68 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Allocate a fresh frame slot for a fixed-size array of `count` elements
+    /// of type `elem` and return a pointer to it.
+    fn alloc_array(&mut self, b: &mut FunctionBuilder, elem: Ty, count: u32) -> Value {
+        let size = ((elem.elem_size() as u64) * (count as u64)).max(1) as u32;
+        let data = StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            align_of(elem).trailing_zeros() as u8,
+        );
+        let slot = b.create_sized_stack_slot(data);
+        b.ins().stack_addr(self.ptr_type, slot, 0)
+    }
+
+    /// Store every element of an `[a b c]` literal into `ptr`, coercing each
+    /// to `elem`. The literal's own element types are inferred when `elem` is
+    /// a scalar, but here the declared element type wins.
+    fn init_array_elements(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        elem: Ty,
+        ptr: Value,
+        elems: &[Expr],
+    ) -> CResult<()> {
+        let elem_size = elem.elem_size() as i32;
+        for (i, el) in elems.iter().enumerate() {
+            self.compile_expr(b, st, stack, el)?;
+            let slot = self.pop_slot(stack, "array element")?;
+            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type)?;
+            b.ins().store(
+                cranelift_codegen::ir::MemFlagsData::trusted(),
+                val,
+                ptr,
+                i as i32 * elem_size,
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the element count of an array typed value, filling in an
+    /// uninferred (`count == 0`) declared size from the initializer length.
+    fn infer_array_count(declared: Ty, elems: &[Expr]) -> CResult<Ty> {
+        let Ty::Array { elem, count } = declared else {
+            return Ok(declared);
+        };
+        if count != 0 && count != elems.len() as u32 {
+            return Err(CompileError::new(
+                format!(
+                    "array initializer has {} element(s) but the type declares {count}",
+                    elems.len()
+                ),
+                Location::default(),
+                "E345",
+            ));
+        }
+        Ok(Ty::Array {
+            elem,
+            count: elems.len() as u32,
+        })
     }
 
     fn declare_function(&mut self, f: &Function, name: &str) -> CResult<()> {
@@ -501,11 +581,16 @@ impl Compiler {
                 ty,
                 value,
             } => {
-                let t = self.resolve_ty(ty)?;
+                let mut t = self.resolve_ty(ty)?;
                 // `self` was already bound to the receiver at function entry;
                 // the `self const reference<Point>` declaration is a no-op.
                 if name == "self" && st.vars.contains_key("self") {
                     return Ok(());
+                }
+                // Fill in an inferred array size from the initializer before
+                // choosing how to build the value.
+                if let (Ty::Array { .. }, Some(Expr::Array(elems))) = (t, value) {
+                    t = Compiler::infer_array_count(t, elems)?;
                 }
                 let (val, val_ty) = match value {
                     Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
@@ -514,6 +599,15 @@ impl Compiler {
                         let Ty::Struct(id) = t else { unreachable!() };
                         let ptr = self.alloc_struct(b, id);
                         self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                        (ptr, t)
+                    }
+                    Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
+                        let Ty::Array { elem, count } = t else {
+                            unreachable!()
+                        };
+                        let elem = scalar_ty(elem);
+                        let ptr = self.alloc_array(b, elem, count);
+                        self.init_array_elements(b, st, stack, elem, ptr, elems)?;
                         (ptr, t)
                     }
                     Some(e) => {
@@ -547,6 +641,17 @@ impl Compiler {
                             let Ty::Struct(id) = t else { unreachable!() };
                             let ptr = b.use_var(var);
                             self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                            return Ok(());
+                        }
+                        Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
+                            let t = Compiler::infer_array_count(t, elems)?;
+                            let Ty::Array { elem, count } = t else {
+                                unreachable!()
+                            };
+                            let elem = scalar_ty(elem);
+                            let ptr = self.alloc_array(b, elem, count);
+                            self.init_array_elements(b, st, stack, elem, ptr, elems)?;
+                            b.def_var(var, ptr);
                             return Ok(());
                         }
                         Some(e) => {
@@ -603,13 +708,17 @@ impl Compiler {
 
             Stmt::While { condition, body } => self.emit_while(b, st, stack, condition, body)?,
 
-            Stmt::Match { .. } => {
-                return Err(CompileError::unsupported(
-                    "'match' is not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
-            }
+            Stmt::Match {
+                value,
+                cases,
+                else_branch,
+            } => self.emit_match(b, st, stack, value, cases, else_branch)?,
+
+            Stmt::For {
+                iterable,
+                var,
+                body,
+            } => self.emit_for(b, st, stack, iterable, var, body)?,
 
             Stmt::Return { .. } => self.emit_return(b, st, stack)?,
 
@@ -638,9 +747,9 @@ impl Compiler {
                 // Only meaningful at program level; no-op inside a body.
             }
 
-            Stmt::Defer { .. } | Stmt::Handle { .. } | Stmt::For { .. } => {
+            Stmt::Defer { .. } | Stmt::Handle { .. } => {
                 return Err(CompileError::unsupported(
-                    "'for'/'defer'/'handle' are not yet supported",
+                    "'defer'/'handle' are not yet supported",
                     Location::default(),
                     "E301",
                 ));
@@ -790,10 +899,13 @@ impl Compiler {
                 "E328",
             ));
         }
-        let ev: Vec<BlockArg> = else_stack[pre.len()..]
-            .iter()
-            .map(|s| BlockArg::Value(s.value))
-            .collect();
+        // Coerce the else-branch values to the then-branch's merge types so
+        // branches that differ only by width (I32 vs I64) still merge.
+        let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
+        for (s, want) in else_stack[pre.len()..].iter().zip(then_extra) {
+            let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type)?;
+            ev.push(BlockArg::Value(v));
+        }
         b.ins().jump(merge, &ev);
 
         b.switch_to_block(merge);
@@ -848,9 +960,223 @@ impl Compiler {
         Ok(())
     }
 
-    // ------------------------------------------------------------------
-    // Expressions
-    // ------------------------------------------------------------------
+    /// `value match <case ...> else <body> end`.
+    ///
+    /// The subject is evaluated once and lives on the compile-time stack for
+    /// the whole match (case conditions commonly `dup` it). Each case runs its
+    /// condition and, if truthy, its body; if no case matches, the `else`
+    /// branch runs. The subject is dropped when the match ends: the merge
+    /// point carries only the values the chosen branch left *beyond* the
+    /// subject, so the whole match behaves like a value-producing expression.
+    ///
+    /// An empty `value` (`Expr::variable("")`, produced when the parser saw a
+    /// bare `match`) means there is no subject; conditions then operate on the
+    /// stack as it was when the match started.
+    fn emit_match(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        value: &Expr,
+        cases: &[MatchCase],
+        else_branch: &[Stmt],
+    ) -> CResult<()> {
+        let pre = stack.clone();
+        let subject = if matches!(value, Expr::Variable { name } if name.is_empty()) {
+            None
+        } else {
+            self.compile_expr(b, st, stack, value)?;
+            Some(self.pop_slot(stack, "match value")?)
+        };
+        let mut sub_stack = pre.clone();
+        if let Some(s) = subject {
+            sub_stack.push(s);
+        }
+
+        let merge = b.create_block();
+        let body_blks: Vec<Block> = (0..cases.len()).map(|_| b.create_block()).collect();
+        let cond_blks: Vec<Block> = (0..cases.len().saturating_sub(1))
+            .map(|_| b.create_block())
+            .collect();
+        let else_blk = b.create_block();
+
+        let mut results_ty: Option<Vec<Ty>> = None;
+
+        for (i, case) in cases.iter().enumerate() {
+            if i > 0 {
+                b.switch_to_block(cond_blks[i - 1]);
+            }
+            *stack = sub_stack.clone();
+            let cond = self.eval_cond(b, st, stack, &case.condition)?;
+            if stack.len() != sub_stack.len() {
+                return Err(CompileError::new(
+                    "a 'match' case condition must leave the stack balanced",
+                    Location::default(),
+                    "E343",
+                ));
+            }
+            let false_target = if i + 1 < cases.len() {
+                cond_blks[i]
+            } else {
+                else_blk
+            };
+            b.ins().brif(cond, body_blks[i], &[], false_target, &[]);
+
+            b.switch_to_block(body_blks[i]);
+            *stack = sub_stack.clone();
+            self.compile_body(b, st, stack, &case.body)?;
+            let results = stack.split_off(sub_stack.len());
+            self.match_merge(b, merge, &mut results_ty, results)?;
+        }
+
+        b.switch_to_block(else_blk);
+        *stack = sub_stack.clone();
+        self.compile_body(b, st, stack, else_branch)?;
+        let results = stack.split_off(sub_stack.len());
+        self.match_merge(b, merge, &mut results_ty, results)?;
+
+        b.switch_to_block(merge);
+        *stack = pre;
+        for (i, t) in results_ty.iter().flatten().enumerate() {
+            let p = b.block_params(merge)[i];
+            stack.push(Slot { value: p, ty: *t });
+        }
+        Ok(())
+    }
+
+    /// Append the merge block params for one match branch and jump to it. The
+    /// first branch fixes the number/type of values every branch must leave;
+    /// later branches are coerced to those types before jumping.
+    fn match_merge(
+        &mut self,
+        b: &mut FunctionBuilder,
+        merge: Block,
+        results_ty: &mut Option<Vec<Ty>>,
+        results: Vec<Slot>,
+    ) -> CResult<()> {
+        let want: Vec<Ty> = match results_ty {
+            None => {
+                let want: Vec<Ty> = results.iter().map(|s| s.ty).collect();
+                for t in &want {
+                    b.append_block_param(merge, t.clty(self.ptr_type));
+                }
+                *results_ty = Some(want.clone());
+                want
+            }
+            Some(prev) => {
+                if prev.len() != results.len() {
+                    return Err(CompileError::new(
+                        "'match' branches must leave the same number of values",
+                        Location::default(),
+                        "E343",
+                    ));
+                }
+                prev.clone()
+            }
+        };
+        let mut args: Vec<BlockArg> = Vec::with_capacity(results.len());
+        for (s, t) in results.iter().zip(&want) {
+            let v = coerce(b, s.value, s.ty, *t, self.ptr_type)?;
+            args.push(BlockArg::Value(v));
+        }
+        b.ins().jump(merge, &args);
+        Ok(())
+    }
+
+    /// `iterable var for <body> end` over a fixed-size array. The iterable is
+    /// evaluated once, then each element is loaded into `var` in order.
+    fn emit_for(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        iterable: &Expr,
+        var: &str,
+        body: &[Stmt],
+    ) -> CResult<()> {
+        let pre = stack.clone();
+        self.compile_expr(b, st, stack, iterable)?;
+        let arr = self.pop_slot(stack, "'for' iterable")?;
+        let (elem, count) = match arr.ty {
+            Ty::Array { elem, count } => (scalar_ty(elem), count),
+            other => {
+                return Err(CompileError::new(
+                    format!("'for' requires an array iterable, got {other:?}"),
+                    Location::default(),
+                    "E344",
+                ));
+            }
+        };
+        let elem_size = elem.elem_size() as i64;
+
+        let zero = b.ins().iconst(irtypes::I64, 0);
+        let total = b.ins().iconst(irtypes::I64, count as i64);
+        let idx_v = b.declare_var(irtypes::I64);
+        b.def_var(idx_v, zero);
+        let ptr_v = b.declare_var(self.ptr_type);
+        b.def_var(ptr_v, arr.value);
+        let count_v = b.declare_var(irtypes::I64);
+        b.def_var(count_v, total);
+
+        let header = b.create_block();
+        let body_blk = b.create_block();
+        let step = b.create_block();
+        let end = b.create_block();
+        b.ins().jump(header, &[]);
+
+        b.switch_to_block(header);
+        *stack = pre.clone();
+        let idx = b.use_var(idx_v);
+        let n = b.use_var(count_v);
+        let more = b.ins().icmp(IntCC::UnsignedLessThan, idx, n);
+        b.ins().brif(more, body_blk, &[], end, &[]);
+
+        b.switch_to_block(body_blk);
+        *stack = pre.clone();
+        let idx = b.use_var(idx_v);
+        let base = b.use_var(ptr_v);
+        let stride = b.ins().iconst(irtypes::I64, elem_size);
+        let off = b.ins().imul(idx, stride);
+        let addr = b.ins().iadd(base, off);
+        let val = b.ins().load(
+            elem.clty(self.ptr_type),
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            addr,
+            0,
+        );
+        let loop_var = b.declare_var(elem.clty(self.ptr_type));
+        b.def_var(loop_var, val);
+        let saved = st.vars.insert(var.to_string(), (loop_var, elem));
+        st.loops.push(LoopCtx {
+            break_to: end,
+            continue_to: step,
+        });
+        self.compile_body(b, st, stack, body)?;
+        st.loops.pop();
+        if let Some(saved) = saved {
+            st.vars.insert(var.to_string(), saved);
+        } else {
+            st.vars.remove(var);
+        }
+        if stack.len() != pre.len() {
+            return Err(CompileError::new(
+                "'for' body must leave the stack balanced",
+                Location::default(),
+                "E325",
+            ));
+        }
+        b.ins().jump(step, &[]);
+
+        b.switch_to_block(step);
+        let idx = b.use_var(idx_v);
+        let next = b.ins().iadd_imm(idx, 1);
+        b.def_var(idx_v, next);
+        b.ins().jump(header, &[]);
+
+        b.switch_to_block(end);
+        *stack = pre;
+        Ok(())
+    }
 
     fn compile_expr(
         &mut self,
@@ -995,9 +1321,58 @@ impl Compiler {
                     self.compile_expr(b, st, stack, el)?;
                 }
             }
-            Expr::Array(_) | Expr::List(_) | Expr::Map(_) => {
+            Expr::Array(elems) => {
+                // Standalone array literal: infer the element type from the
+                // elements (integers become I64), allocate a slot and store.
+                let mut vals: Vec<Slot> = Vec::with_capacity(elems.len());
+                let mut elem_ty: Option<Ty> = None;
+                for el in elems {
+                    self.compile_expr(b, st, stack, el)?;
+                    let slot = self.pop_slot(stack, "array element")?;
+                    elem_ty = Some(match elem_ty {
+                        None => slot.ty,
+                        Some(t) => common_type(t, slot.ty).ok_or_else(|| {
+                            CompileError::new(
+                                format!(
+                                    "array literal elements have incompatible types {t:?} and {:?}",
+                                    slot.ty
+                                ),
+                                Location::default(),
+                                "E345",
+                            )
+                        })?,
+                    });
+                    vals.push(slot);
+                }
+                let elem_ty = elem_ty.ok_or_else(|| {
+                    CompileError::new(
+                        "empty array literal needs a type annotation",
+                        Location::default(),
+                        "E345",
+                    )
+                })?;
+                let ptr = self.alloc_array(b, elem_ty, elems.len() as u32);
+                let elem_size = elem_ty.elem_size() as i32;
+                for (i, slot) in vals.iter().enumerate() {
+                    let val = coerce(b, slot.value, slot.ty, elem_ty, self.ptr_type)?;
+                    b.ins().store(
+                        cranelift_codegen::ir::MemFlagsData::trusted(),
+                        val,
+                        ptr,
+                        i as i32 * elem_size,
+                    );
+                }
+                stack.push(Slot {
+                    value: ptr,
+                    ty: Ty::Array {
+                        elem: elem_ty.scalar_code().unwrap(),
+                        count: elems.len() as u32,
+                    },
+                });
+            }
+            Expr::List(_) | Expr::Map(_) => {
                 return Err(CompileError::unsupported(
-                    "container literals are not yet supported",
+                    "list/map literals are not yet supported here",
                     Location::default(),
                     "E301",
                 ));

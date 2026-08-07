@@ -39,6 +39,13 @@ pub enum Ty {
     /// A pointer to a struct instance (frame slot) or a `reference<T>`. The
     /// payload is the struct's index into the compiler's layout table.
     Struct(u32),
+    /// A pointer to a fixed-size array stored in a frame slot: the element
+    /// type (as a scalar code, see [`scalar_code`]) and element count.
+    /// `count == 0` means "size not yet inferred".
+    Array {
+        elem: u8,
+        count: u32,
+    },
     /// A raw pointer (reserved for `pointer<T>`; currently unused).
     Ptr,
 }
@@ -70,8 +77,32 @@ impl Ty {
         self == Ty::Bool
     }
 
+    /// A compact scalar code for `self`, used by `Ty::Array { elem, .. }`.
+    /// Returns `None` for non-scalar types.
+    pub fn scalar_code(self) -> Option<u8> {
+        Some(match self {
+            Ty::Bool => 0,
+            Ty::I8 => 1,
+            Ty::I16 => 2,
+            Ty::I32 => 3,
+            Ty::I64 => 4,
+            Ty::I128 => 5,
+            Ty::U8 => 6,
+            Ty::U16 => 7,
+            Ty::U32 => 8,
+            Ty::U64 => 9,
+            Ty::U128 => 10,
+            Ty::Rune => 11,
+            Ty::F16 => 12,
+            Ty::F32 => 13,
+            Ty::F64 => 14,
+            Ty::F128 => 15,
+            _ => return None,
+        })
+    }
+
     pub fn is_pointer(self) -> bool {
-        matches!(self, Ty::Ptr | Ty::Struct(_))
+        matches!(self, Ty::Ptr | Ty::Struct(_) | Ty::Array { .. })
     }
 
     pub fn bits(self) -> u32 {
@@ -79,7 +110,7 @@ impl Ty {
             Ty::Bool | Ty::I8 | Ty::U8 => 8,
             Ty::I16 | Ty::U16 | Ty::F16 => 16,
             Ty::I32 | Ty::U32 | Ty::Rune | Ty::F32 => 32,
-            Ty::I64 | Ty::U64 | Ty::F64 | Ty::Ptr | Ty::Struct(_) => 64,
+            Ty::I64 | Ty::U64 | Ty::F64 | Ty::Ptr | Ty::Struct(_) | Ty::Array { .. } => 64,
             Ty::I128 | Ty::U128 | Ty::F128 => 128,
             Ty::Void => 0,
         }
@@ -115,12 +146,35 @@ impl Ty {
             Ty::Void => irtypes::I8,
             Ty::Ptr => ptr_type,
             Ty::Struct(_) => ptr_type,
+            Ty::Array { .. } => ptr_type,
         }
     }
 
     /// Byte size of one scalar-typed value (pointers are pointer-sized).
     pub fn elem_size(self) -> u32 {
         self.bits().div_ceil(8)
+    }
+}
+
+/// Inverse of [`Ty::scalar_code`]: decode an array element type code.
+pub fn scalar_ty(code: u8) -> Ty {
+    match code {
+        0 => Ty::Bool,
+        1 => Ty::I8,
+        2 => Ty::I16,
+        3 => Ty::I32,
+        4 => Ty::I64,
+        5 => Ty::I128,
+        6 => Ty::U8,
+        7 => Ty::U16,
+        8 => Ty::U32,
+        9 => Ty::U64,
+        10 => Ty::U128,
+        11 => Ty::Rune,
+        12 => Ty::F16,
+        13 => Ty::F32,
+        14 => Ty::F64,
+        _ => Ty::F128,
     }
 }
 
@@ -168,11 +222,20 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
                 "E302",
             )),
         },
-        TypeKind::Array { .. } => Err(CompileError::unsupported(
-            "array types are not yet supported",
-            loc,
-            "E304",
-        )),
+        TypeKind::Array { element, size } => {
+            let elem = resolve(element, struct_id)?;
+            let code = elem.scalar_code().ok_or_else(|| {
+                CompileError::unsupported(
+                    format!("array element type {elem:?} is not yet supported"),
+                    loc,
+                    "E344",
+                )
+            })?;
+            Ok(Ty::Array {
+                elem: code,
+                count: size.unwrap_or(0) as u32,
+            })
+        }
         TypeKind::Reference { inner } => resolve(inner, struct_id),
         TypeKind::List { .. } => Err(CompileError::unsupported(
             "list types are not yet supported",
@@ -219,7 +282,9 @@ pub struct StructLayout {
     pub align: u32,
 }
 
-fn field_align(ty: Ty) -> u32 {
+/// The natural alignment of a value of type `ty` (pointers/aggregates align to
+/// a pointer-sized boundary).
+pub fn align_of(ty: Ty) -> u32 {
     match ty {
         Ty::Bool | Ty::I8 | Ty::U8 => 1,
         Ty::I16 | Ty::U16 | Ty::F16 => 2,
@@ -237,7 +302,7 @@ pub fn layout(name: &str, fields: Vec<(String, Ty)>) -> StructLayout {
         align: 1,
     };
     for (fname, fty) in fields {
-        let a = field_align(fty);
+        let a = align_of(fty);
         out.align = out.align.max(a);
         out.size = (out.size + (a - 1)) & !(a - 1);
         out.fields.push(FieldLayout {

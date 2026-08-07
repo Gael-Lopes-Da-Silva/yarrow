@@ -9,7 +9,7 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`)                                                                                                                                     |
 | Parser    | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse                                                |
-| Compiler  | Core numeric/control subset + structs/field-access/methods/`self` lower to JIT; containers, strings, match, for, enums, unions, error handling, memory model are `E301`–`E308` "not yet supported" |
+| Compiler  | Core numeric/control subset + structs/methods/`self` + `match` + `for` over fixed-size arrays lower to JIT; strings, lists/hashmaps, enums, unions, error handling, memory model are `E301`–`E308` "not yet supported" |
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -37,16 +37,27 @@ and the compiler reuses the same decoders.
   lowers to `Point::distance` and `point.distance call` resolves by receiver
   type; `self` is auto-bound to the method receiver; `@borrow`/`@move` are
   handled as pointer identity (references reuse the same pointer).
+- **Match** — `score match ... case ... else ... end`. The subject is evaluated
+  once and lives on the compile-time stack for the whole match (conditions
+  commonly `dup` it); the first truthy case runs its body, otherwise `else`;
+  the subject is dropped at the end so the match yields only the chosen
+  branch's value(s). A bare `match` (no subject) runs conditions against the
+  stack as it was when the match started.
+- **`for` loops over fixed-size arrays** — `numbers value for ... end` and
+  `[12 27 36] i for ... end`; supports `break`/`continue` and nested loops.
+- **Fixed-size arrays** — `array<i32 3>` types with literal `[a b c]`
+  initializers (standalone or in var decls/struct fields), scalar element
+  types, frame-slot storage; array sizes are inferred when omitted
+  (`array<i32>`).
 
 ## 2. Parsed but NOT compiled (currently `E301`)
 
 - **Strings** — `Expr::String`, the `string` type (`E303`), `@string_join`,
   string comparison/indexing.
-- **Match** — `score match ... case ... else ... end`.
-- **For loops** — iterable loop (needs containers/iterables).
-- **Containers** — array/list/hashmap literals and the `array<i32 3>`,
-  `list<i32>`, `hashmap` types (`E304/305/306`), indexing, builtins such as
-  `@list_push`.
+- **Lists/hashmaps** — `(a b c)` list literals, `{k v}` map literals, the
+  `list<i32>` / `hashmap<k v>` types (`E305/306`), indexing, builtins such as
+  `@list_push`. (Fixed-size `array<T n>` *does* compile, but only for scalar
+  elements and with no `index`/`get`/`set` word yet.)
 - **Enums** — `Color enum RED GREEN end` parses but members never become values.
 - **Unions** — `E308`.
 - **Modules** — `require` is silently ignored (no loader, no symbol resolution,
@@ -56,8 +67,8 @@ and the compiler reuses the same decoders.
 - **Error handling** — `error`/`Error` types unresolved (`E302/E303`),
   `with value or Error` unions, `unwrap`, `handle`, `error.CustomError`.
 - **Defer** — `defer ... call end`.
-- **Memory model** — ownership, borrows, regions; structs/references are plain
-  pointers with no forcing.
+- **Memory model** — ownership, borrows, regions; structs/references/arrays are
+  plain pointers with no forcing.
 
 ## 3. Compiles but diverges from the spec (semantic mismatches)
 
@@ -71,14 +82,17 @@ and the compiler reuses the same decoders.
 - **128-bit** — `i128/u128/f128` map to Cranelift types but 128->float
   conversions are rejected (`E310`) and 128-bit arithmetic is untested.
 - **Float mod/pow** — `%`/`^` on floats are unsupported (`E334`).
+- **Arrays** — element types are restricted to scalars (`E344` otherwise),
+  there is no array `index`/`get`/`set` word yet, and array values are
+  pointers into frame slots (copies alias the same storage).
 
 ## 4. Infrastructure gaps
 
 - No require/module resolver, no standard-library prelude, no runtime for
   heap/regions/IO.
-- Structs are real layouts backed by frame slots, but structs are only ever
-  pointers: assigning a struct variable aliases (no copy semantics), and no
-  ownership/borrow enforcement exists yet.
+- Structs and arrays are real layouts backed by frame slots, but are only ever
+  pointers: assigning them aliases (no copy semantics), and no ownership/borrow
+  enforcement exists yet.
 - Coercion gaps: `int -> bool` via `ireduce` on a comparison result (correct for
   > 8-bit); `bool -> int` only widens; no `float -> int` truncation test coverage.
 
@@ -88,9 +102,15 @@ and the compiler reuses the same decoders.
    declarations and used for field loads/stores; method calls resolve by
    receiver type; `self` is bound to the receiver; `@borrow`/`@move` are
    pointer identity (ownership rules still unimplemented).
-2. **Match + For loops** — extends loop/merge machinery; small scope.
+2. **Match + For loops** — done. `match` lowers to a chain of conditional
+   branches over the subject (with the subject dropped at the end); `for`
+   iterates fixed-size arrays (`array<T n>` + `[a b c]` literals landed to
+   support it) with `break`/`continue`. Also fixed a latent parser bug where
+   `array<i32 3>`/`hashmap<k v>` type args were dropped, and made `if`/`else`
+   (and match) merge blocks coerce branch values so mixed-width branches (I32
+   vs I64) type-check.
 3. **Strings, containers, builtins** — largest chunk, plus heap/runtime;
-   unblocks lists, arrays, and string ops.
+   unblocks lists, arrays, and string ops. Lists/hashmaps/array indexing remain.
 4. **Modules/`require` + std library** — orthogonal scaffolding; needs a loader
    and symbol table.
 5. **Memory model (borrows, regions, ownership)** — enforcement and heap

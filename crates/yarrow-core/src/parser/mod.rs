@@ -518,14 +518,14 @@ impl Parser {
         match path {
             "array" => Ok(TypeKind::Array {
                 element: Box::new(take(&mut args, 0, location)?),
-                size: take_size(&mut args, 1),
+                size: take_size(&mut args, 0),
             }),
             "list" => Ok(TypeKind::List {
                 element: Box::new(take(&mut args, 0, location)?),
             }),
             "hashmap" => Ok(TypeKind::Hashmap {
                 key: Box::new(take(&mut args, 0, location)?),
-                value: Box::new(take(&mut args, 1, location)?),
+                value: Box::new(take(&mut args, 0, location)?),
             }),
             "reference" => Ok(TypeKind::Reference {
                 inner: Box::new(take(&mut args, 0, location)?),
