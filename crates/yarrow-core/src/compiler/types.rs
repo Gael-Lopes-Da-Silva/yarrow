@@ -48,6 +48,20 @@ pub enum Ty {
     },
     /// A raw pointer (reserved for `pointer<T>`; currently unused).
     Ptr,
+    /// A heap string: an opaque handle to a `Str` header in the runtime.
+    String,
+    /// A heap list: an opaque handle to a runtime `List` header. The element
+    /// type is stored as a container code (see [`elem_code`]); `elem_size()`
+    /// must be at most pointer-sized.
+    List {
+        elem: u32,
+    },
+    /// A heap hashmap: an opaque handle to a runtime `Map` header. Keys and
+    /// values are stored as container codes (see [`elem_code`]).
+    Hashmap {
+        key: u32,
+        value: u32,
+    },
 }
 
 impl Ty {
@@ -102,7 +116,15 @@ impl Ty {
     }
 
     pub fn is_pointer(self) -> bool {
-        matches!(self, Ty::Ptr | Ty::Struct(_) | Ty::Array { .. })
+        matches!(
+            self,
+            Ty::Ptr
+                | Ty::Struct(_)
+                | Ty::Array { .. }
+                | Ty::String
+                | Ty::List { .. }
+                | Ty::Hashmap { .. }
+        )
     }
 
     pub fn bits(self) -> u32 {
@@ -110,7 +132,15 @@ impl Ty {
             Ty::Bool | Ty::I8 | Ty::U8 => 8,
             Ty::I16 | Ty::U16 | Ty::F16 => 16,
             Ty::I32 | Ty::U32 | Ty::Rune | Ty::F32 => 32,
-            Ty::I64 | Ty::U64 | Ty::F64 | Ty::Ptr | Ty::Struct(_) | Ty::Array { .. } => 64,
+            Ty::I64
+            | Ty::U64
+            | Ty::F64
+            | Ty::Ptr
+            | Ty::Struct(_)
+            | Ty::Array { .. }
+            | Ty::String
+            | Ty::List { .. }
+            | Ty::Hashmap { .. } => 64,
             Ty::I128 | Ty::U128 | Ty::F128 => 128,
             Ty::Void => 0,
         }
@@ -147,6 +177,9 @@ impl Ty {
             Ty::Ptr => ptr_type,
             Ty::Struct(_) => ptr_type,
             Ty::Array { .. } => ptr_type,
+            Ty::String => ptr_type,
+            Ty::List { .. } => ptr_type,
+            Ty::Hashmap { .. } => ptr_type,
         }
     }
 
@@ -178,6 +211,30 @@ pub fn scalar_ty(code: u8) -> Ty {
     }
 }
 
+/// A compact code for container element/key/value types. Covers scalars,
+/// strings, structs (encoded with their layout id) and any other pointer-like
+/// type (which degrades to a generic `Ty::Ptr`). Returns `None` for types that
+/// cannot be stored in a container (`Void`, 128-bit values).
+pub fn elem_code(ty: Ty) -> Option<u32> {
+    match ty {
+        Ty::String => Some(16),
+        Ty::Struct(id) => Some(0x100 | id),
+        Ty::Ptr | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x80),
+        other => other.scalar_code().map(u32::from),
+    }
+}
+
+/// Inverse of [`elem_code`].
+pub fn elem_ty(code: u32) -> Ty {
+    match code {
+        0..=15 => scalar_ty(code as u8),
+        16 => Ty::String,
+        0x80 => Ty::Ptr,
+        0x100.. => Ty::Struct(code - 0x100),
+        _ => Ty::Ptr,
+    }
+}
+
 fn primitive_ty(p: Primitive) -> Option<Ty> {
     Some(match p {
         Primitive::I8 => Ty::I8,
@@ -197,6 +254,7 @@ fn primitive_ty(p: Primitive) -> Option<Ty> {
         Primitive::Rune => Ty::Rune,
         Primitive::Bool => Ty::Bool,
         Primitive::Void => Ty::Void,
+        Primitive::String => Ty::String,
         _ => return None,
     })
 }
@@ -237,16 +295,18 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
             })
         }
         TypeKind::Reference { inner } => resolve(inner, struct_id),
-        TypeKind::List { .. } => Err(CompileError::unsupported(
-            "list types are not yet supported",
-            loc,
-            "E305",
-        )),
-        TypeKind::Hashmap { .. } => Err(CompileError::unsupported(
-            "hashmap types are not yet supported",
-            loc,
-            "E306",
-        )),
+        TypeKind::List { element } => {
+            let elem = resolve(element, struct_id)?;
+            let code = container_elem_code(elem, loc)?;
+            Ok(Ty::List { elem: code })
+        }
+        TypeKind::Hashmap { key, value } => {
+            let kt = resolve(key, struct_id)?;
+            let vt = resolve(value, struct_id)?;
+            let key = container_elem_code(kt, loc)?;
+            let value = container_elem_code(vt, loc)?;
+            Ok(Ty::Hashmap { key, value })
+        }
         TypeKind::Pointer { .. } => Err(CompileError::unsupported(
             "pointer types are not yet supported",
             loc,
@@ -258,6 +318,25 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
             "E308",
         )),
     }
+}
+
+/// Encode an element/key/value type for a container, rejecting values wider
+/// than a pointer (128-bit scalars).
+fn container_elem_code(elem: Ty, loc: Location) -> CResult<u32> {
+    if elem.elem_size() > 8 {
+        return Err(CompileError::unsupported(
+            format!("container element type {elem:?} is wider than 8 bytes"),
+            loc,
+            "E344",
+        ));
+    }
+    elem_code(elem).ok_or_else(|| {
+        CompileError::unsupported(
+            format!("container element type {elem:?} is not supported"),
+            loc,
+            "E344",
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +434,12 @@ pub fn coerce(
 
     let to_cl = to.clty(ptr_type);
 
+    // Any pointer value satisfies a generic `pointer<T>` target (used by
+    // containers whose element type degraded to `Ty::Ptr`).
+    if to == Ty::Ptr && from.is_pointer() {
+        return Ok(value);
+    }
+
     // bool -> int (as unsigned); bools are I8 0/1 so only widen when needed
     if from.is_bool() && to.is_int() && !to.is_bool() {
         if to.bits() > 8 {
@@ -376,6 +461,9 @@ pub fn coerce(
 
     // int -> int (widen / narrow)
     if from.is_int() && to.is_int() && !from.is_bool() && !to.is_bool() {
+        if to.bits() == from.bits() {
+            return Ok(value);
+        }
         if to.bits() > from.bits() {
             return Ok(if from.is_signed() {
                 builder.ins().sextend(to_cl, value)
@@ -404,8 +492,11 @@ pub fn coerce(
                 "E310",
             ));
         }
-        // widen to 64 bits first to keep conversions simple
-        let wide = if from.is_signed() {
+        // widen to 64 bits first to keep conversions simple (no-op when the
+        // value is already 64 bits)
+        let wide = if from.bits() >= 64 {
+            value
+        } else if from.is_signed() {
             builder.ins().sextend(irtypes::I64, value)
         } else {
             builder.ins().uextend(irtypes::I64, value)

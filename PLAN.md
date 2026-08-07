@@ -9,7 +9,7 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`)                                                                                                                                     |
 | Parser    | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse                                                |
-| Compiler  | Core numeric/control subset + structs/methods/`self` + `match` + `for` over fixed-size arrays lower to JIT; strings, lists/hashmaps, enums, unions, error handling, memory model are `E301`–`E308` "not yet supported" |
+| Compiler  | Core numeric/control subset + structs/methods/`self` + `match` + `for` over fixed-size arrays + strings/lists/hashmaps/`@sqrt` via a heap host runtime all lower to JIT; enums, unions, modules/`require`, error handling, and the ownership memory model are `E301`–`E308` "not yet supported" |
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -49,26 +49,41 @@ and the compiler reuses the same decoders.
   initializers (standalone or in var decls/struct fields), scalar element
   types, frame-slot storage; array sizes are inferred when omitted
   (`array<i32>`).
+- **Strings** — `"..."` literals lower through read-only data sections
+  (`declare_data` + `GlobalValue`) into `yarrow_str_new` handles; the `string`
+  type resolves; `@print`, `@string_len`, `@string_join` (left, right, sep),
+  string comparison (`== != > >= < <=` via `yarrow_str_cmp`), and `+`
+  concatenation (`yarrow_str_join`).
+- **Lists/hashmaps** — `(a b c)` and `{k v}` literals lower to host handles
+  (`yarrow_list_new`/`yarrow_map_new`); `list<i32>` / `hashmap<k v>` types
+  resolve; `@list_len`/`@list_get`/`@list_set`/`@list_push`,
+  `@map_len`/`@map_get`/`@map_set` (`@map_get` pushes `(value, found)`, value
+  then found flag); typed list/map var decls, struct fields of list/hashmap
+  type, int/string literal keys and values; `@list_get`/`@list_set`
+  bounds-check via `trapz`.
+- **Builtins & heap runtime** — `runtime.rs` implements `yarrow_alloc`/
+  `yarrow_free` plus the string/list/map/print ops, imported as typed
+  `extern "C"` symbols. `@borrow`/`@move` are pointer identity;
+  `@make_region`/`@free_region`/`@put_region` are no-ops; `@sqrt` coerces
+  ints/floats to `F64`. Memory intentionally leaks (no GC/ownership yet).
+- **`defer`/`handle`** — bodies compile inline (removed the `E301`).
 
 ## 2. Parsed but NOT compiled (currently `E301`)
 
-- **Strings** — `Expr::String`, the `string` type (`E303`), `@string_join`,
-  string comparison/indexing.
-- **Lists/hashmaps** — `(a b c)` list literals, `{k v}` map literals, the
-  `list<i32>` / `hashmap<k v>` types (`E305/306`), indexing, builtins such as
-  `@list_push`. (Fixed-size `array<T n>` *does* compile, but only for scalar
-  elements and with no `index`/`get`/`set` word yet.)
+- **Array indexing** — fixed-size `array<T n>` compiles for scalar elements,
+  but there is no `index`/`get`/`set` word yet (lists have `@list_get`/
+  `@list_set`).
 - **Enums** — `Color enum RED GREEN end` parses but members never become values.
 - **Unions** — `E308`.
 - **Modules** — `require` is silently ignored (no loader, no symbol resolution,
-  no std library: `sqrt`, `io.write_line`).
-- **All builtins** (`@list_push`, `@make_region`, `@free_region`, `@put_region`,
-  ...) — `Expr::Builtin`.
+  no std library beyond the builtin runtime functions).
 - **Error handling** — `error`/`Error` types unresolved (`E302/E303`),
-  `with value or Error` unions, `unwrap`, `handle`, `error.CustomError`.
-- **Defer** — `defer ... call end`.
+  `with value or Error` unions, `unwrap` (`E301`), `handle`,
+  `error.CustomError`.
+- **Unknown builtins** — builtins not handled by `emit_builtin` (I/O words,
+  list/map removals, etc.) fall through to `E301`.
 - **Memory model** — ownership, borrows, regions; structs/references/arrays are
-  plain pointers with no forcing.
+  plain pointers with no forcing; runtime memory leaks (no GC).
 
 ## 3. Compiles but diverges from the spec (semantic mismatches)
 
@@ -88,8 +103,9 @@ and the compiler reuses the same decoders.
 
 ## 4. Infrastructure gaps
 
-- No require/module resolver, no standard-library prelude, no runtime for
-  heap/regions/IO.
+- No require/module resolver or standard-library prelude; the heap host runtime
+  covers strings/lists/maps/print/`sqrt`, but there is no GC and
+  regions/ownership are not enforced.
 - Structs and arrays are real layouts backed by frame slots, but are only ever
   pointers: assigning them aliases (no copy semantics), and no ownership/borrow
   enforcement exists yet.
@@ -109,8 +125,12 @@ and the compiler reuses the same decoders.
    `array<i32 3>`/`hashmap<k v>` type args were dropped, and made `if`/`else`
    (and match) merge blocks coerce branch values so mixed-width branches (I32
    vs I64) type-check.
-3. **Strings, containers, builtins** — largest chunk, plus heap/runtime;
-   unblocks lists, arrays, and string ops. Lists/hashmaps/array indexing remain.
+3. **Strings, containers, builtins** — done. Strings, lists/hashmaps
+   (literals, types, `@list_*`/`@map_*` builtins), `@sqrt`, and
+   `@borrow`/`@move`/`@make_region`/`@free_region`/`@put_region` lower to a
+   heap host runtime in `runtime.rs` (`yarrow_alloc`, `yarrow_str_*`,
+   `yarrow_list_*`, `yarrow_map_*`, prints). `defer`/`handle` bodies compile
+   inline. Array indexing (a fixed-array `get`/`set` word) remains.
 4. **Modules/`require` + std library** — orthogonal scaffolding; needs a loader
    and symbol table.
 5. **Memory model (borrows, regions, ownership)** — enforcement and heap

@@ -1,5 +1,6 @@
 pub mod compiler;
 pub mod parser;
+pub mod runtime;
 pub mod tokenizer;
 
 pub use compiler::Compiler;

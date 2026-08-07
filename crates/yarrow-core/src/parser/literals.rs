@@ -75,3 +75,39 @@ pub fn decode_rune_literal(s: &str) -> Result<u32, String> {
     };
     Ok(cp)
 }
+
+/// Decode a string literal lexeme (`"hello"`, `"a\nb"`) into its UTF-8 bytes,
+/// resolving escape sequences.
+pub fn decode_string_literal(s: &str) -> Result<Vec<u8>, String> {
+    let inner = s
+        .strip_prefix('"')
+        .and_then(|x| x.strip_suffix('"'))
+        .ok_or_else(|| format!("invalid string literal '{s}'"))?;
+    let mut out = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let esc = chars
+            .next()
+            .ok_or_else(|| format!("incomplete escape sequence in string '{s}'"))?;
+        let b: u8 = match esc {
+            'n' => 0x0a,
+            'r' => 0x0d,
+            't' => 0x09,
+            'v' => 0x0b,
+            'b' => 0x08,
+            'a' => 0x07,
+            'f' => 0x0c,
+            '\\' => 0x5c,
+            '\'' => 0x27,
+            '"' => 0x22,
+            _ => return Err(format!("invalid escape sequence in string '{s}'")),
+        };
+        out.push(b);
+    }
+    Ok(out)
+}

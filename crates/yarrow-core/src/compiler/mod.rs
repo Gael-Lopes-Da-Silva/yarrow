@@ -12,21 +12,25 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, Block, BlockArg, FuncRef, InstBuilder as _, StackSlotData, StackSlotKind, TrapCode,
-    Type as CLType, Value, types as irtypes,
+    AbiParam, Block, BlockArg, FuncRef, GlobalValue, InstBuilder as _, StackSlotData,
+    StackSlotKind, TrapCode, Type as CLType, Value, types as irtypes,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
 use crate::parser::ast::{BinOp, Expr, Function, MatchCase, Program, StackOp, Stmt, UnOp};
-use crate::parser::literals::{decode_float_literal, decode_int_literal, decode_rune_literal};
+use crate::parser::literals::{
+    decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
+};
 use crate::tokenizer::token::Location;
 
 pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
-use types::{StructLayout, align_of, coerce, common_type, layout, resolve, scalar_ty};
+use types::{
+    StructLayout, align_of, coerce, common_type, elem_code, elem_ty, layout, resolve, scalar_ty,
+};
 
 /// A value on the compile-time operand stack: a Cranelift SSA value plus the
 /// physical `Ty` it carries.
@@ -42,6 +46,8 @@ struct FnState {
     loops: Vec<LoopCtx>,
     returns: Vec<Ty>,
     frefs: HashMap<String, FuncRef>,
+    /// Imported host runtime functions (see `crate::runtime`).
+    rt: HashMap<String, FuncRef>,
 }
 
 struct LoopCtx {
@@ -60,13 +66,20 @@ pub struct Compiler {
     sigs: HashMap<String, cranelift_codegen::ir::Signature>,
     sig_tys: HashMap<String, (Vec<Ty>, Vec<Ty>)>,
     func_ids: HashMap<String, FuncId>,
+    /// Imported host runtime functions (symbols installed by `runtime::install`).
+    runtime_ids: HashMap<String, FuncId>,
+    /// String literal bytes -> data object (declared/defined before functions).
+    string_ids: HashMap<String, DataId>,
+    /// Per-function global value for each string literal's data section.
+    fn_gvs: HashMap<String, GlobalValue>,
     finalized: bool,
 }
 
 impl Compiler {
     pub fn new() -> CResult<Self> {
-        let jb = JITBuilder::new(default_libcall_names())
+        let mut jb = JITBuilder::new(default_libcall_names())
             .map_err(|e| CompileError::new(e.to_string(), Location::default(), "E350"))?;
+        crate::runtime::install_runtime(&mut jb);
         let module = JITModule::new(jb);
         let ptr_type = module.isa().pointer_type();
         Ok(Self {
@@ -77,6 +90,9 @@ impl Compiler {
             sigs: HashMap::new(),
             sig_tys: HashMap::new(),
             func_ids: HashMap::new(),
+            runtime_ids: HashMap::new(),
+            string_ids: HashMap::new(),
+            fn_gvs: HashMap::new(),
             finalized: false,
         })
     }
@@ -126,6 +142,11 @@ impl Compiler {
             }
         }
 
+        // Pass C2: string literals become read-only data sections, and the
+        // host runtime functions are imported so compiled code can call them.
+        self.declare_string_data(program)?;
+        self.declare_runtime_imports()?;
+
         // Pass D: compile every function.
         for item in &program.items {
             match item {
@@ -139,6 +160,42 @@ impl Compiler {
             }
         }
 
+        Ok(())
+    }
+
+    /// Declare and define a read-only data object per unique string literal.
+    fn declare_string_data(&mut self, program: &Program) -> CResult<()> {
+        let mut seen: Vec<&str> = Vec::new();
+        collect_strings(&program.items, &mut seen);
+        for (i, s) in seen.into_iter().enumerate() {
+            let name = format!("yarrow.str.{i}");
+            let id = self
+                .module
+                .declare_data(&name, Linkage::Local, false, false)?;
+            let bytes = decode_string_literal(s)
+                .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
+            let mut desc = DataDescription::new();
+            desc.set_align(1);
+            desc.define(bytes.into_boxed_slice());
+            self.module.define_data(id, &desc)?;
+            self.string_ids.insert(s.to_string(), id);
+        }
+        Ok(())
+    }
+
+    /// Import every host runtime function so JIT code can `call` it.
+    fn declare_runtime_imports(&mut self) -> CResult<()> {
+        for (name, params, returns) in RUNTIME_SIGS {
+            let mut sig = self.module.make_signature();
+            for &p in *params {
+                sig.params.push(AbiParam::new(p));
+            }
+            for &r in *returns {
+                sig.returns.push(AbiParam::new(r));
+            }
+            let id = self.module.declare_function(name, Linkage::Import, &sig)?;
+            self.runtime_ids.insert(name.to_string(), id);
+        }
         Ok(())
     }
 
@@ -361,6 +418,31 @@ impl Compiler {
                 );
                 continue;
             }
+            // A list field `{scores (10 20)}` builds a list with the declared
+            // element type and stores its handle.
+            if let (Ty::List { elem }, Expr::List(elems)) = (field.ty, value_expr) {
+                let handle = self.emit_list_new(b, st, elem_ty(elem))?;
+                self.init_list_elements(b, st, stack, elem_ty(elem), handle, elems)?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    handle,
+                    ptr,
+                    field.offset,
+                );
+                continue;
+            }
+            // A hashmap field `{lookup {"a" 1}}` builds a map with the declared
+            // key/value types and stores its handle.
+            if let (Ty::Hashmap { .. }, Expr::Map(pairs)) = (field.ty, value_expr) {
+                let (handle, _, _) = self.emit_map_literal(b, st, stack, pairs, Some(field.ty))?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    handle,
+                    ptr,
+                    field.offset,
+                );
+                continue;
+            }
             self.compile_expr(b, st, stack, value_expr)?;
             let slot = self.pop_slot(stack, "struct field value")?;
             let val = coerce(b, slot.value, slot.ty, field.ty, self.ptr_type)?;
@@ -488,6 +570,7 @@ impl Compiler {
                 .map(|r| self.resolve_ty(r))
                 .collect::<CResult<_>>()?,
             frefs: HashMap::new(),
+            rt: HashMap::new(),
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -496,6 +579,16 @@ impl Compiler {
         for (callee, &fid) in &self.func_ids {
             let fr = self.module.declare_func_in_func(fid, &mut ctx.func);
             st.frefs.insert(callee.clone(), fr);
+        }
+        for (name, &fid) in &self.runtime_ids {
+            let fr = self.module.declare_func_in_func(fid, &mut ctx.func);
+            st.rt.insert(name.clone(), fr);
+        }
+        // Global values for string literals referenced inside this function.
+        self.fn_gvs.clear();
+        for (text, &did) in &self.string_ids {
+            let gv = self.module.declare_data_in_func(did, &mut ctx.func);
+            self.fn_gvs.insert(text.clone(), gv);
         }
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -544,7 +637,12 @@ impl Compiler {
 
         b.seal_all_blocks();
         b.finalize();
-        self.module.define_function(id, &mut ctx)?;
+        if std::env::var("YARROW_DBG_IR").is_ok() {
+            eprintln!("IR for {name}:\n{}", ctx.func.display());
+        }
+        if let Err(e) = self.module.define_function(id, &mut ctx) {
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -601,6 +699,26 @@ impl Compiler {
                         self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
                         (ptr, t)
                     }
+                    Some(Expr::Seq(elems)) if matches!(t, Ty::Struct(_)) => {
+                        // The parser merges every preceding stack op into the
+                        // initializer; only the trailing map is the struct
+                        // literal, the rest are side effects.
+                        if let Some(Expr::Map(pairs)) = elems.last() {
+                            for el in &elems[..elems.len() - 1] {
+                                self.compile_expr(b, st, stack, el)?;
+                            }
+                            let Ty::Struct(id) = t else { unreachable!() };
+                            let ptr = self.alloc_struct(b, id);
+                            self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                            (ptr, t)
+                        } else {
+                            for el in elems {
+                                self.compile_expr(b, st, stack, el)?;
+                            }
+                            let slot = self.pop_slot(stack, "value")?;
+                            (slot.value, slot.ty)
+                        }
+                    }
                     Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
                         let Ty::Array { elem, count } = t else {
                             unreachable!()
@@ -609,6 +727,16 @@ impl Compiler {
                         let ptr = self.alloc_array(b, elem, count);
                         self.init_array_elements(b, st, stack, elem, ptr, elems)?;
                         (ptr, t)
+                    }
+                    Some(Expr::List(elems)) if matches!(t, Ty::List { .. }) => {
+                        let Ty::List { elem } = t else { unreachable!() };
+                        let (handle, _) =
+                            self.emit_list_literal(b, st, stack, elems, Some(elem_ty(elem)))?;
+                        (handle, t)
+                    }
+                    Some(Expr::Map(pairs)) if matches!(t, Ty::Hashmap { .. }) => {
+                        let (handle, _, _) = self.emit_map_literal(b, st, stack, pairs, Some(t))?;
+                        (handle, t)
                     }
                     Some(e) => {
                         self.compile_expr(b, st, stack, e)?;
@@ -654,6 +782,19 @@ impl Compiler {
                             b.def_var(var, ptr);
                             return Ok(());
                         }
+                        Some(Expr::List(elems)) if matches!(t, Ty::List { .. }) => {
+                            let Ty::List { elem } = t else { unreachable!() };
+                            let (handle, _) =
+                                self.emit_list_literal(b, st, stack, elems, Some(elem_ty(elem)))?;
+                            b.def_var(var, handle);
+                            return Ok(());
+                        }
+                        Some(Expr::Map(pairs)) if matches!(t, Ty::Hashmap { .. }) => {
+                            let (handle, _, _) =
+                                self.emit_map_literal(b, st, stack, pairs, Some(t))?;
+                            b.def_var(var, handle);
+                            return Ok(());
+                        }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
                             let slot = self.pop_slot(stack, "value")?;
@@ -673,6 +814,19 @@ impl Compiler {
                     self.compile_expr(b, st, stack, base)?;
                     let ptr = self.pop_slot(stack, "field set target")?;
                     let (val, val_ty) = match value {
+                        Some(Expr::List(elems)) if matches!(field.ty, Ty::List { .. }) => {
+                            let Ty::List { elem } = field.ty else {
+                                unreachable!()
+                            };
+                            let (handle, _) =
+                                self.emit_list_literal(b, st, stack, elems, Some(elem_ty(elem)))?;
+                            (handle, field.ty)
+                        }
+                        Some(Expr::Map(pairs)) if matches!(field.ty, Ty::Hashmap { .. }) => {
+                            let (handle, _, _) =
+                                self.emit_map_literal(b, st, stack, pairs, Some(field.ty))?;
+                            (handle, field.ty)
+                        }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
                             let slot = self.pop_slot(stack, "value")?;
@@ -747,12 +901,12 @@ impl Compiler {
                 // Only meaningful at program level; no-op inside a body.
             }
 
-            Stmt::Defer { .. } | Stmt::Handle { .. } => {
-                return Err(CompileError::unsupported(
-                    "'defer'/'handle' are not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Stmt::Defer { body } | Stmt::Handle { body } => {
+                // With the heap runtime there is nothing to defer or unwind,
+                // so run the body inline at the current point.
+                for s in body {
+                    self.compile_stmt(b, st, stack, s)?;
+                }
             }
         }
         Ok(())
@@ -819,6 +973,34 @@ impl Compiler {
                 "E362",
             )
         })
+    }
+
+    /// Emit a call to an imported host runtime function.
+    fn rt_call(
+        &self,
+        b: &mut FunctionBuilder,
+        st: &FnState,
+        name: &str,
+        args: Vec<Value>,
+    ) -> CResult<Vec<Value>> {
+        let fref = st.rt.get(name).copied().ok_or_else(|| {
+            CompileError::new(
+                format!("missing runtime function '{name}'"),
+                Location::default(),
+                "E370",
+            )
+        })?;
+        let inst = b.ins().call(fref, &args);
+        Ok(b.inst_results(inst).to_vec())
+    }
+
+    /// Coerce `slot` to the 64-bit type runtime functions expect (pointers and
+    /// ≤ 8-byte scalars round-trip through the low bytes).
+    fn rt_arg(&self, b: &mut FunctionBuilder, slot: Slot) -> CResult<Value> {
+        if slot.ty.clty(self.ptr_type) == self.ptr_type {
+            return Ok(slot.value);
+        }
+        coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)
     }
 
     // ------------------------------------------------------------------
@@ -1230,13 +1412,7 @@ impl Compiler {
                     ty: Ty::Rune,
                 });
             }
-            Expr::String { .. } => {
-                return Err(CompileError::unsupported(
-                    "string values are not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
-            }
+            Expr::String { value } => self.emit_string(b, st, stack, value)?,
             Expr::Variable { name } => {
                 let (var, t) = st.vars.get(name).cloned().ok_or_else(|| {
                     CompileError::new(
@@ -1265,27 +1441,7 @@ impl Compiler {
                     ty: fty,
                 });
             }
-            Expr::Builtin { name } if matches!(name.as_str(), "borrow" | "move") => {
-                // A borrow/move of a struct is the same pointer; ownership is
-                // checked at compile time (not yet enforced), so both are
-                // identity at codegen time.
-                let s = self.pop_slot(stack, name)?;
-                if !s.ty.is_pointer() {
-                    return Err(CompileError::new(
-                        format!("'{name}' requires a reference or struct value"),
-                        Location::default(),
-                        "E341",
-                    ));
-                }
-                stack.push(s);
-            }
-            Expr::Builtin { name } => {
-                return Err(CompileError::unsupported(
-                    format!("builtin '{name}' is not yet supported"),
-                    Location::default(),
-                    "E301",
-                ));
-            }
+            Expr::Builtin { name } => self.emit_builtin(b, st, stack, name)?,
             Expr::Unwrap { .. } => {
                 return Err(CompileError::unsupported(
                     "'unwrap' is not yet supported",
@@ -1298,7 +1454,7 @@ impl Compiler {
                 self.compile_expr(b, st, stack, right)?;
                 let r = self.pop_slot(stack, "operator")?;
                 let l = self.pop_slot(stack, "operator")?;
-                self.emit_bin(b, stack, *op, l, r)?;
+                self.emit_bin(b, st, stack, *op, l, r)?;
             }
             Expr::Unary { op, operand } => {
                 self.compile_expr(b, st, stack, operand)?;
@@ -1309,7 +1465,7 @@ impl Compiler {
             Expr::ApplyBin(op) => {
                 let r = self.pop_slot(stack, "operator")?;
                 let l = self.pop_slot(stack, "operator")?;
-                self.emit_bin(b, stack, *op, l, r)?;
+                self.emit_bin(b, st, stack, *op, l, r)?;
             }
             Expr::ApplyUn(op) => {
                 let slot = self.pop_slot(stack, "unary operator")?;
@@ -1370,9 +1526,580 @@ impl Compiler {
                     },
                 });
             }
-            Expr::List(_) | Expr::Map(_) => {
+            Expr::List(elems) => {
+                let (handle, code) = self.emit_list_literal(b, st, stack, elems, None)?;
+                stack.push(Slot {
+                    value: handle,
+                    ty: Ty::List { elem: code },
+                });
+            }
+            Expr::Map(pairs) => {
+                // A standalone `{...}` with identifier keys is a struct
+                // literal (only meaningful inside a typed var decl); with
+                // literal keys it is a hashmap literal.
+                let all_idents = pairs
+                    .iter()
+                    .all(|(k, _)| matches!(k, Expr::Variable { .. }));
+                if all_idents {
+                    return Err(CompileError::new(
+                        "struct literal requires a declared struct type",
+                        Location::default(),
+                        "E340",
+                    ));
+                }
+                let (handle, kcode, vcode) = self.emit_map_literal(b, st, stack, pairs, None)?;
+                stack.push(Slot {
+                    value: handle,
+                    ty: Ty::Hashmap {
+                        key: kcode,
+                        value: vcode,
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower a string literal: reference its read-only data section and copy
+    /// it into a runtime string handle.
+    fn emit_string(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        value: &str,
+    ) -> CResult<()> {
+        let gv = self.fn_gvs.get(value).copied().ok_or_else(|| {
+            CompileError::new(
+                "string literal has no data section",
+                Location::default(),
+                "E371",
+            )
+        })?;
+        let addr = b.ins().global_value(self.ptr_type, gv);
+        // The lexeme carries the surrounding quotes, so the byte length must
+        // come from the decoded literal (matching the data section contents).
+        let len = decode_string_literal(value)
+            .map_err(|m| CompileError::new(m, Location::default(), "E363"))?
+            .len() as i64;
+        let len = b.ins().iconst(irtypes::I64, len);
+        let out = self.rt_call(b, st, "yarrow_str_new", vec![addr, len])?;
+        stack.push(Slot {
+            value: out[0],
+            ty: Ty::String,
+        });
+        Ok(())
+    }
+
+    /// Lower a `(a b c)` list literal. When `declared` carries the list type
+    /// its element type wins; otherwise it is inferred from the elements.
+    /// Returns the list handle and the element code.
+    fn emit_list_literal(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        elems: &[Expr],
+        declared: Option<Ty>,
+    ) -> CResult<(Value, u32)> {
+        let elem = if let Some(declared) = declared {
+            declared
+        } else {
+            let mut t: Option<Ty> = None;
+            for el in elems {
+                self.compile_expr(b, st, stack, el)?;
+                let slot = self.pop_slot(stack, "list element")?;
+                t = Some(match t {
+                    None => slot.ty,
+                    Some(prev) => common_type(prev, slot.ty).ok_or_else(|| {
+                        CompileError::new(
+                            format!(
+                                "list literal elements have incompatible types {prev:?} and {:?}",
+                                slot.ty
+                            ),
+                            Location::default(),
+                            "E345",
+                        )
+                    })?,
+                });
+            }
+            t.ok_or_else(|| {
+                CompileError::new(
+                    "empty list literal needs a type annotation",
+                    Location::default(),
+                    "E345",
+                )
+            })?
+        };
+        let code = elem_code(elem).ok_or_else(|| {
+            CompileError::new(
+                format!("list element type {elem:?} is not supported"),
+                Location::default(),
+                "E345",
+            )
+        })?;
+        let handle = self.emit_list_new(b, st, elem)?;
+        self.init_list_elements(b, st, stack, elem, handle, elems)?;
+        Ok((handle, code))
+    }
+
+    /// Allocate an empty list via the runtime.
+    fn emit_list_new(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        elem: Ty,
+    ) -> CResult<Value> {
+        let size = b.ins().iconst(irtypes::I64, elem.elem_size() as i64);
+        let out = self.rt_call(b, st, "yarrow_list_new", vec![size])?;
+        Ok(out[0])
+    }
+
+    /// Push every element of a list literal into `handle`.
+    fn init_list_elements(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        elem: Ty,
+        handle: Value,
+        elems: &[Expr],
+    ) -> CResult<()> {
+        for el in elems {
+            self.compile_expr(b, st, stack, el)?;
+            let slot = self.pop_slot(stack, "list element")?;
+            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type)?;
+            let arg = self.rt_arg(
+                b,
+                Slot {
+                    value: val,
+                    ty: elem,
+                },
+            )?;
+            self.rt_call(b, st, "yarrow_list_push", vec![handle, arg])?;
+        }
+        Ok(())
+    }
+
+    /// Lower a `{k v ...}` hashmap literal. When `declared` carries the map
+    /// type, its key/value types win; otherwise they are inferred. Returns the
+    /// map handle and the key/value codes.
+    fn emit_map_literal(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        pairs: &[(Expr, Expr)],
+        declared: Option<Ty>,
+    ) -> CResult<(Value, u32, u32)> {
+        let (kt, vt) = match declared {
+            Some(Ty::Hashmap { key, value }) => (elem_ty(key), elem_ty(value)),
+            Some(_) => {
+                return Err(CompileError::new(
+                    "map literal requires a hashmap type",
+                    Location::default(),
+                    "E306",
+                ));
+            }
+            None => {
+                let mut kt: Option<Ty> = None;
+                let mut vt: Option<Ty> = None;
+                for (k, v) in pairs {
+                    self.compile_expr(b, st, stack, k)?;
+                    let ks = self.pop_slot(stack, "map key")?;
+                    kt = Some(merge_type(kt, ks.ty)?);
+                    self.compile_expr(b, st, stack, v)?;
+                    let vs = self.pop_slot(stack, "map value")?;
+                    vt = Some(merge_type(vt, vs.ty)?);
+                }
+                let kt = kt.ok_or_else(|| {
+                    CompileError::new(
+                        "empty map literal needs a type annotation",
+                        Location::default(),
+                        "E306",
+                    )
+                })?;
+                let vt = vt.ok_or_else(|| {
+                    CompileError::new(
+                        "empty map literal needs a type annotation",
+                        Location::default(),
+                        "E306",
+                    )
+                })?;
+                (kt, vt)
+            }
+        };
+        let kcode = elem_code(kt).ok_or_else(|| {
+            CompileError::new(
+                format!("map key type {kt:?} is not supported"),
+                Location::default(),
+                "E306",
+            )
+        })?;
+        let vcode = elem_code(vt).ok_or_else(|| {
+            CompileError::new(
+                format!("map value type {vt:?} is not supported"),
+                Location::default(),
+                "E306",
+            )
+        })?;
+        let keys_string = b
+            .ins()
+            .iconst(irtypes::I64, if kt == Ty::String { 1 } else { 0 });
+        let out = self.rt_call(b, st, "yarrow_map_new", vec![keys_string])?;
+        let handle = out[0];
+        for (k, v) in pairs {
+            self.compile_expr(b, st, stack, k)?;
+            let ks = self.pop_slot(stack, "map key")?;
+            let karg = coerce(b, ks.value, ks.ty, kt, self.ptr_type)?;
+            let karg = self.rt_arg(
+                b,
+                Slot {
+                    value: karg,
+                    ty: kt,
+                },
+            )?;
+            self.compile_expr(b, st, stack, v)?;
+            let vs = self.pop_slot(stack, "map value")?;
+            let varg = coerce(b, vs.value, vs.ty, vt, self.ptr_type)?;
+            let varg = self.rt_arg(
+                b,
+                Slot {
+                    value: varg,
+                    ty: vt,
+                },
+            )?;
+            self.rt_call(b, st, "yarrow_map_insert", vec![handle, karg, varg])?;
+        }
+        Ok((handle, kcode, vcode))
+    }
+
+    /// Lower a `@name` builtin. Borrows/moves are pointer identity; regions are
+    /// no-ops; strings/lists/maps delegate to the host runtime.
+    fn emit_builtin(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        name: &str,
+    ) -> CResult<()> {
+        match name {
+            "borrow" | "move" => {
+                let s = self.pop_slot(stack, name)?;
+                if !s.ty.is_pointer() {
+                    return Err(CompileError::new(
+                        format!(
+                            "'{name}' requires a reference, struct, array, string or container"
+                        ),
+                        Location::default(),
+                        "E341",
+                    ));
+                }
+                stack.push(s);
+            }
+
+            "make_region" => {
+                // Regions are a no-op placeholder until the memory model lands.
+                let v = b.ins().iconst(irtypes::I64, 0);
+                stack.push(Slot {
+                    value: v,
+                    ty: Ty::I64,
+                });
+            }
+            "free_region" => {
+                let _ = self.pop_slot(stack, "'@free_region'")?;
+            }
+            "put_region" => {
+                let _region = self.pop_slot(stack, "'@put_region'")?;
+                let value = self.pop_slot(stack, "'@put_region'")?;
+                stack.push(value);
+            }
+
+            "string_join" => {
+                let sep = self.pop_slot(stack, "'@string_join'")?;
+                let right = self.pop_slot(stack, "'@string_join'")?;
+                let left = self.pop_slot(stack, "'@string_join'")?;
+                for s in [&left, &right, &sep] {
+                    if s.ty != Ty::String {
+                        return Err(CompileError::new(
+                            format!("'@string_join' requires string operands, got {:?}", s.ty),
+                            Location::default(),
+                            "E372",
+                        ));
+                    }
+                }
+                let joined = self.rt_call(b, st, "yarrow_str_join", vec![left.value, sep.value])?;
+                let joined =
+                    self.rt_call(b, st, "yarrow_str_join", vec![joined[0], right.value])?;
+                stack.push(Slot {
+                    value: joined[0],
+                    ty: Ty::String,
+                });
+            }
+            "string_len" => {
+                let s = self.pop_slot(stack, "'@string_len'")?;
+                if s.ty != Ty::String {
+                    return Err(CompileError::new(
+                        format!("'@string_len' requires a string, got {:?}", s.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let out = self.rt_call(b, st, "yarrow_str_len", vec![s.value])?;
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::I64,
+                });
+            }
+
+            "list_push" => {
+                let value = self.pop_slot(stack, "'@list_push'")?;
+                let list = self.pop_slot(stack, "'@list_push'")?;
+                let Ty::List { elem } = list.ty else {
+                    return Err(CompileError::new(
+                        format!("'@list_push' requires a list, got {:?}", list.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                };
+                let elem_ty = elem_ty(elem);
+                let val = coerce(b, value.value, value.ty, elem_ty, self.ptr_type)?;
+                let arg = self.rt_arg(
+                    b,
+                    Slot {
+                        value: val,
+                        ty: elem_ty,
+                    },
+                )?;
+                self.rt_call(b, st, "yarrow_list_push", vec![list.value, arg])?;
+                stack.push(list);
+            }
+            "list_len" => {
+                let list = self.pop_slot(stack, "'@list_len'")?;
+                if !matches!(list.ty, Ty::List { .. }) {
+                    return Err(CompileError::new(
+                        format!("'@list_len' requires a list, got {:?}", list.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let out = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::I64,
+                });
+            }
+            "list_get" => {
+                let idx = self.pop_slot(stack, "'@list_get'")?;
+                let list = self.pop_slot(stack, "'@list_get'")?;
+                let Ty::List { elem } = list.ty else {
+                    return Err(CompileError::new(
+                        format!("'@list_get' requires a list, got {:?}", list.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                };
+                let elem_ty = elem_ty(elem);
+                let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
+                let len = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
+                b.ins().trapz(inb, TrapCode::unwrap_user(1));
+                let base = b.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    list.value,
+                    LIST_DATA_OFFSET,
+                );
+                let off = b.ins().imul_imm(idx, elem_ty.elem_size() as i64);
+                let addr = b.ins().iadd(base, off);
+                let val = b.ins().load(
+                    elem_ty.clty(self.ptr_type),
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    addr,
+                    0,
+                );
+                stack.push(Slot {
+                    value: val,
+                    ty: elem_ty,
+                });
+            }
+            "list_set" => {
+                let value = self.pop_slot(stack, "'@list_set'")?;
+                let idx = self.pop_slot(stack, "'@list_set'")?;
+                let list = self.pop_slot(stack, "'@list_set'")?;
+                let Ty::List { elem } = list.ty else {
+                    return Err(CompileError::new(
+                        format!("'@list_set' requires a list, got {:?}", list.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                };
+                let elem_ty = elem_ty(elem);
+                let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
+                let len = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
+                b.ins().trapz(inb, TrapCode::unwrap_user(1));
+                let base = b.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    list.value,
+                    LIST_DATA_OFFSET,
+                );
+                let off = b.ins().imul_imm(idx, elem_ty.elem_size() as i64);
+                let addr = b.ins().iadd(base, off);
+                let val = coerce(b, value.value, value.ty, elem_ty, self.ptr_type)?;
+                b.ins()
+                    .store(cranelift_codegen::ir::MemFlagsData::trusted(), val, addr, 0);
+                stack.push(list);
+            }
+
+            "map_get" => {
+                let key = self.pop_slot(stack, "'@map_get'")?;
+                let map = self.pop_slot(stack, "'@map_get'")?;
+                let Ty::Hashmap {
+                    key: kcode,
+                    value: vcode,
+                } = map.ty
+                else {
+                    return Err(CompileError::new(
+                        format!("'@map_get' requires a hashmap, got {:?}", map.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                };
+                let kt = elem_ty(kcode);
+                let vt = elem_ty(vcode);
+                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type)?;
+                let karg = self.rt_arg(
+                    b,
+                    Slot {
+                        value: karg,
+                        ty: kt,
+                    },
+                )?;
+                let slot = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    1,
+                    0,
+                ));
+                let found_ptr = b.ins().stack_addr(self.ptr_type, slot, 0);
+                let out =
+                    self.rt_call(b, st, "yarrow_map_get", vec![map.value, karg, found_ptr])?;
+                let val = out[0];
+                let found = b.ins().load(
+                    irtypes::I8,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    found_ptr,
+                    0,
+                );
+                let val = if vt.clty(self.ptr_type) == self.ptr_type {
+                    val
+                } else {
+                    coerce(b, val, Ty::I64, vt, self.ptr_type)?
+                };
+                stack.push(Slot { value: val, ty: vt });
+                stack.push(Slot {
+                    value: found,
+                    ty: Ty::Bool,
+                });
+            }
+            "map_set" => {
+                let value = self.pop_slot(stack, "'@map_set'")?;
+                let key = self.pop_slot(stack, "'@map_set'")?;
+                let map = self.pop_slot(stack, "'@map_set'")?;
+                let Ty::Hashmap {
+                    key: kcode,
+                    value: vcode,
+                } = map.ty
+                else {
+                    return Err(CompileError::new(
+                        format!("'@map_set' requires a hashmap, got {:?}", map.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                };
+                let kt = elem_ty(kcode);
+                let vt = elem_ty(vcode);
+                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type)?;
+                let karg = self.rt_arg(
+                    b,
+                    Slot {
+                        value: karg,
+                        ty: kt,
+                    },
+                )?;
+                let varg = coerce(b, value.value, value.ty, vt, self.ptr_type)?;
+                let varg = self.rt_arg(
+                    b,
+                    Slot {
+                        value: varg,
+                        ty: vt,
+                    },
+                )?;
+                self.rt_call(b, st, "yarrow_map_insert", vec![map.value, karg, varg])?;
+                stack.push(map);
+            }
+            "map_len" => {
+                let map = self.pop_slot(stack, "'@map_len'")?;
+                if !matches!(map.ty, Ty::Hashmap { .. }) {
+                    return Err(CompileError::new(
+                        format!("'@map_len' requires a hashmap, got {:?}", map.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let out = self.rt_call(b, st, "yarrow_map_len", vec![map.value])?;
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::I64,
+                });
+            }
+
+            "print" => {
+                let s = self.pop_slot(stack, "'@print'")?;
+                if s.ty != Ty::String {
+                    return Err(CompileError::new(
+                        format!("'@print' requires a string, got {:?}", s.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                self.rt_call(b, st, "yarrow_print_str", vec![s.value])?;
+            }
+            "print_int" => {
+                let v = self.pop_slot(stack, "'@print_int'")?;
+                let arg = coerce(b, v.value, v.ty, Ty::I64, self.ptr_type)?;
+                self.rt_call(b, st, "yarrow_print_int", vec![arg])?;
+            }
+            "print_float" => {
+                let v = self.pop_slot(stack, "'@print_float'")?;
+                let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
+                self.rt_call(b, st, "yarrow_print_float", vec![arg])?;
+            }
+            "print_newline" => {
+                self.rt_call(b, st, "yarrow_print_newline", Vec::new())?;
+            }
+
+            "sqrt" => {
+                let v = self.pop_slot(stack, "'@sqrt'")?;
+                if !v.ty.is_float() && !v.ty.is_int() {
+                    return Err(CompileError::new(
+                        format!("'@sqrt' requires a number, got {:?}", v.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
+                let out = self.rt_call(b, st, "yarrow_sqrt", vec![arg])?;
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::F64,
+                });
+            }
+
+            _ => {
                 return Err(CompileError::unsupported(
-                    "list/map literals are not yet supported here",
+                    format!("builtin '{name}' is not yet supported"),
                     Location::default(),
                     "E301",
                 ));
@@ -1526,6 +2253,7 @@ impl Compiler {
     fn emit_bin(
         &mut self,
         b: &mut FunctionBuilder,
+        st: &mut FnState,
         stack: &mut Vec<Slot>,
         op: BinOp,
         l: Slot,
@@ -1544,6 +2272,13 @@ impl Compiler {
         })?;
 
         match op {
+            Plus if common == Ty::String => {
+                let out = self.rt_call(b, st, "yarrow_str_join", vec![l.value, r.value])?;
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::String,
+                });
+            }
             Plus | Minus | Mul | Mod | Pow => {
                 if common.is_float() {
                     let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
@@ -1635,7 +2370,25 @@ impl Compiler {
             }
 
             Eq | Ne | Gt | Gte | Lt | Lte => {
-                if common.is_float() {
+                if common == Ty::String {
+                    let out = self.rt_call(b, st, "yarrow_str_cmp", vec![l.value, r.value])?;
+                    let cmp = out[0];
+                    let zero = b.ins().iconst(irtypes::I64, 0);
+                    let cc = match op {
+                        Eq => IntCC::Equal,
+                        Ne => IntCC::NotEqual,
+                        Gt => IntCC::SignedGreaterThan,
+                        Gte => IntCC::SignedGreaterThanOrEqual,
+                        Lt => IntCC::SignedLessThan,
+                        Lte => IntCC::SignedLessThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    let res = b.ins().icmp(cc, cmp, zero);
+                    stack.push(Slot {
+                        value: res,
+                        ty: Ty::Bool,
+                    });
+                } else if common.is_float() {
                     let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
                     let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
                     let fcc = match op {
@@ -1758,5 +2511,150 @@ impl Compiler {
 
         b.switch_to_block(end);
         Ok(b.use_var(res_v))
+    }
+}
+
+/// Byte offset of the `data` field inside the runtime `List` header.
+const LIST_DATA_OFFSET: i32 = 24;
+
+/// Host runtime functions imported by compiled code: (symbol, params, returns).
+/// Pointers, integers and floats are passed by value in a single register.
+const RUNTIME_SIGS: &[(&str, &[CLType], &[CLType])] = &[
+    ("yarrow_alloc", &[irtypes::I64], &[irtypes::I64]),
+    ("yarrow_free", &[irtypes::I64], &[]),
+    (
+        "yarrow_str_new",
+        &[irtypes::I64, irtypes::I64],
+        &[irtypes::I64],
+    ),
+    ("yarrow_str_len", &[irtypes::I64], &[irtypes::I64]),
+    (
+        "yarrow_str_join",
+        &[irtypes::I64, irtypes::I64],
+        &[irtypes::I64],
+    ),
+    (
+        "yarrow_str_cmp",
+        &[irtypes::I64, irtypes::I64],
+        &[irtypes::I64],
+    ),
+    ("yarrow_list_new", &[irtypes::I64], &[irtypes::I64]),
+    ("yarrow_list_len", &[irtypes::I64], &[irtypes::I64]),
+    ("yarrow_list_push", &[irtypes::I64, irtypes::I64], &[]),
+    ("yarrow_list_free", &[irtypes::I64], &[]),
+    ("yarrow_map_new", &[irtypes::I64], &[irtypes::I64]),
+    (
+        "yarrow_map_insert",
+        &[irtypes::I64, irtypes::I64, irtypes::I64],
+        &[],
+    ),
+    (
+        "yarrow_map_get",
+        &[irtypes::I64, irtypes::I64, irtypes::I64],
+        &[irtypes::I64],
+    ),
+    ("yarrow_map_len", &[irtypes::I64], &[irtypes::I64]),
+    ("yarrow_print_str", &[irtypes::I64], &[]),
+    ("yarrow_print_int", &[irtypes::I64], &[]),
+    ("yarrow_print_float", &[irtypes::F64], &[]),
+    ("yarrow_print_newline", &[], &[]),
+    ("yarrow_sqrt", &[irtypes::F64], &[irtypes::F64]),
+];
+
+/// Collect every distinct string literal appearing in a statement list.
+fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
+    fn push<'a>(s: &'a str, out: &mut Vec<&'a str>) {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    fn walk_expr<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
+        match e {
+            Expr::String { value } => push(value, out),
+            Expr::Array(es) | Expr::List(es) | Expr::Seq(es) => {
+                for el in es {
+                    walk_expr(el, out);
+                }
+            }
+            Expr::Map(pairs) => {
+                for (k, v) in pairs {
+                    walk_expr(k, out);
+                    walk_expr(v, out);
+                }
+            }
+            Expr::Member { base, .. }
+            | Expr::Call { target: base }
+            | Expr::Unwrap { inner: base } => walk_expr(base, out),
+            Expr::Unary { operand, .. } => walk_expr(operand, out),
+            Expr::Binary { left, right, .. } => {
+                walk_expr(left, out);
+                walk_expr(right, out);
+            }
+            _ => {}
+        }
+    }
+    for s in stmts {
+        match s {
+            Stmt::Expr(e) => walk_expr(e, out),
+            Stmt::VarDecl { value, .. } | Stmt::Set { value, .. } => {
+                if let Some(v) = value {
+                    walk_expr(v, out);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                walk_expr(condition, out);
+                collect_strings(then_branch, out);
+                collect_strings(else_branch, out);
+            }
+            Stmt::While { condition, body }
+            | Stmt::For {
+                iterable: condition,
+                body,
+                ..
+            } => {
+                walk_expr(condition, out);
+                collect_strings(body, out);
+            }
+            Stmt::Match {
+                value,
+                cases,
+                else_branch,
+            } => {
+                walk_expr(value, out);
+                for c in cases {
+                    walk_expr(&c.condition, out);
+                    collect_strings(&c.body, out);
+                }
+                collect_strings(else_branch, out);
+            }
+            Stmt::Return { value: Some(v) } => walk_expr(v, out),
+            Stmt::Return { value: None } => {}
+            Stmt::Defer { body } | Stmt::Handle { body } => collect_strings(body, out),
+            Stmt::Function(f) => collect_strings(&f.body, out),
+            Stmt::Implement(imp) => {
+                for f in &imp.functions {
+                    collect_strings(&f.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Fold a running inferred container element type with a new candidate.
+fn merge_type(prev: Option<Ty>, next: Ty) -> CResult<Ty> {
+    match prev {
+        None => Ok(next),
+        Some(prev) => common_type(prev, next).ok_or_else(|| {
+            CompileError::new(
+                format!("incompatible element types {prev:?} and {next:?}"),
+                Location::default(),
+                "E345",
+            )
+        }),
     }
 }

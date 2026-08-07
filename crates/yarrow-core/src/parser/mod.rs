@@ -671,11 +671,10 @@ impl Parser {
             }
             TokenKind::Pop => {
                 self.advance();
-                if !ops.is_empty() {
-                    ops.pop();
-                } else {
-                    ops.push(Expr::StackOp(StackOp::Pop));
-                }
+                // A runtime pop, not a parse-time removal: the top `ops` entry
+                // may be a call/builtin that produces its value during
+                // compilation, so it cannot be discarded here.
+                ops.push(Expr::StackOp(StackOp::Pop));
             }
             TokenKind::Drop => {
                 self.advance();
