@@ -339,7 +339,13 @@ impl Parser {
             ParseError::new("'require' expects a module path string", location, "E207")
         })?;
         let path = match path_expr {
-            Expr::String { value } => value,
+            Expr::String { value } => {
+                let bytes = literals::decode_string_literal(&value)
+                    .map_err(|m| ParseError::new(m, location, "E207"))?;
+                String::from_utf8(bytes).map_err(|_| {
+                    ParseError::new("module path must be valid UTF-8", location, "E207")
+                })?
+            }
             _ => {
                 return Err(ParseError::new(
                     "'require' expects a string module path",
@@ -349,7 +355,18 @@ impl Parser {
             }
         };
 
-        let alias = if self.peek_kind() == TokenKind::Identifier {
+        let alias = if self.match_kind(TokenKind::As) {
+            Some(
+                self.expect(TokenKind::Identifier, "expected alias after 'as'")?
+                    .lexeme
+                    .clone(),
+            )
+        } else if self.peek_kind() == TokenKind::Identifier && !self.peek_after_is_structural() {
+            // With no newline tokens the parser cannot tell an inline alias
+            // from the next statement, so `require io` binds `io` unless the
+            // identifier starts a declaration/statement (`main function`,
+            // `myVar mutable`, ...). An explicit `as alias` is always
+            // unambiguous.
             Some(self.advance().lexeme.clone())
         } else {
             None
@@ -832,6 +849,39 @@ impl Parser {
 
     fn peek_kind(&self) -> TokenKind {
         self.tokens[self.current].kind
+    }
+
+    /// Whether the token after the next one is a declaration/statement keyword
+    /// (used to tell an inline `require` alias from the next statement).
+    fn peek_after_is_structural(&self) -> bool {
+        let Some(tok) = self.tokens.get(self.current + 1) else {
+            return false;
+        };
+        matches!(
+            tok.kind,
+            TokenKind::Function
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Union
+                | TokenKind::Implement
+                | TokenKind::Mutable
+                | TokenKind::Const
+                | TokenKind::Static
+                | TokenKind::Set
+                | TokenKind::If
+                | TokenKind::While
+                | TokenKind::For
+                | TokenKind::Match
+                | TokenKind::Defer
+                | TokenKind::Handle
+                | TokenKind::Return
+                | TokenKind::Break
+                | TokenKind::Continue
+                | TokenKind::End
+                | TokenKind::Else
+                | TokenKind::Case
+                | TokenKind::Require
+        )
     }
 
     fn peek_location(&self) -> Location {

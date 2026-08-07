@@ -6,6 +6,7 @@
 //! popping operands off that same stack.
 
 mod errors;
+mod modules;
 mod types;
 
 use std::collections::HashMap;
@@ -23,7 +24,11 @@ use crate::parser::ast::{BinOp, Expr, Function, MatchCase, Program, StackOp, Stm
 use crate::parser::literals::{
     decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
 };
+use crate::parser::parse;
+use crate::tokenizer::Tokenizer;
 use crate::tokenizer::token::Location;
+
+use modules::{ModuleLoader, RequiredModule};
 
 pub use errors::CompileError;
 use types::CResult;
@@ -48,6 +53,9 @@ struct FnState {
     frefs: HashMap<String, FuncRef>,
     /// Imported host runtime functions (see `crate::runtime`).
     rt: HashMap<String, FuncRef>,
+    /// Module path prefix of the function being compiled (e.g. `"std.io"`),
+    /// or `None` for top-level functions. Used to resolve intra-module calls.
+    module: Option<String>,
 }
 
 struct LoopCtx {
@@ -72,6 +80,17 @@ pub struct Compiler {
     string_ids: HashMap<String, DataId>,
     /// Per-function global value for each string literal's data section.
     fn_gvs: HashMap<String, GlobalValue>,
+    /// Module loader used to resolve `require` paths.
+    loader: ModuleLoader,
+    /// Modules loaded by `require`, in dependency order (dependencies first).
+    modules: Vec<RequiredModule>,
+    /// Module alias -> module path (e.g. `io` -> `std.io`).
+    aliases: HashMap<String, String>,
+    /// Plain function name -> fully-qualified name for alias-less requires
+    /// (e.g. `sqrt` -> `std.math.sqrt::sqrt`).
+    plain_funcs: HashMap<String, String>,
+    /// Module paths already loaded, so a `require` is processed once.
+    loaded: std::collections::HashSet<String>,
     finalized: bool,
 }
 
@@ -93,73 +112,256 @@ impl Compiler {
             runtime_ids: HashMap::new(),
             string_ids: HashMap::new(),
             fn_gvs: HashMap::new(),
+            loader: ModuleLoader::new(),
+            modules: Vec::new(),
+            aliases: HashMap::new(),
+            plain_funcs: HashMap::new(),
+            loaded: std::collections::HashSet::new(),
             finalized: false,
         })
     }
 
+    /// Add a directory searched for user modules (`"a.b"` -> `a/b.yar`).
+    pub fn add_module_search_path(&mut self, path: impl Into<std::path::PathBuf>) {
+        self.loader.add_search_path(path);
+    }
+
     /// Two-pass compilation: first register structs and declare every function
-    /// (so whole-program calls resolve), then compile each body.
+    /// (so whole-program calls resolve), then compile each body. Functions in
+    /// modules loaded by `require` are declared and compiled alongside the
+    /// main program's.
     pub fn compile(&mut self, program: &Program) -> CResult<()> {
+        self.modules.clear();
+        self.aliases.clear();
+        self.plain_funcs.clear();
+        self.loaded.clear();
+        let mut loaded = Vec::new();
+        self.load_requires(program, &mut loaded)?;
+        self.modules = loaded;
+
+        // Every unit to compile: `(module path, program)`. The main program
+        // has no path; module functions get a fully-qualified name.
+        let mut units: Vec<(Option<String>, Program)> = Vec::new();
+        units.push((None, program.clone()));
+        for m in &self.modules {
+            units.push((Some(m.path.clone()), m.program.clone()));
+        }
+
         // Pass A: register every struct name.
-        for item in &program.items {
-            if let Stmt::Struct(d) = item {
-                self.struct_ids
-                    .entry(d.name.clone())
-                    .or_insert(self.struct_layouts.len() as u32);
-                self.struct_layouts.push(StructLayout {
-                    name: d.name.clone(),
-                    fields: Vec::new(),
-                    size: 0,
-                    align: 1,
-                });
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Struct(d) = item {
+                    self.struct_ids
+                        .entry(d.name.clone())
+                        .or_insert(self.struct_layouts.len() as u32);
+                    self.struct_layouts.push(StructLayout {
+                        name: d.name.clone(),
+                        fields: Vec::new(),
+                        size: 0,
+                        align: 1,
+                    });
+                }
             }
         }
 
         // Pass B: resolve each struct's field types into a layout. Must happen
         // before function signatures are declared, since those may use structs.
-        for item in &program.items {
-            if let Stmt::Struct(d) = item {
-                let mut fields = Vec::with_capacity(d.fields.len());
-                for f in &d.fields {
-                    let ty = self.resolve_ty(&f.ty)?;
-                    fields.push((f.name.clone(), ty));
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Struct(d) = item {
+                    let mut fields = Vec::with_capacity(d.fields.len());
+                    for f in &d.fields {
+                        let ty = self.resolve_ty(&f.ty)?;
+                        fields.push((f.name.clone(), ty));
+                    }
+                    let id = self.struct_ids[&d.name];
+                    self.struct_layouts[id as usize] = layout(&d.name, fields);
                 }
-                let id = self.struct_ids[&d.name];
-                self.struct_layouts[id as usize] = layout(&d.name, fields);
             }
         }
 
-        // Pass C: declare every function.
-        for item in &program.items {
-            match item {
-                Stmt::Function(f) => self.declare_function(f, &f.name)?,
-                Stmt::Implement(imp) => {
-                    for f in &imp.functions {
-                        self.declare_function(f, &format!("{}::{}", imp.target, f.name))?;
+        // Pass C: declare every function, then register module name bindings.
+        for (path, prog) in &units {
+            for item in &prog.items {
+                match item {
+                    Stmt::Function(f) => {
+                        self.declare_function(f, &self.item_name(path.as_deref(), &f.name))?;
                     }
+                    Stmt::Implement(imp) => {
+                        for f in &imp.functions {
+                            let name = self
+                                .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
+                            self.declare_function(f, &name)?;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+        self.register_module_bindings()?;
 
         // Pass C2: string literals become read-only data sections, and the
         // host runtime functions are imported so compiled code can call them.
-        self.declare_string_data(program)?;
+        for (_, prog) in &units {
+            self.declare_string_data(prog)?;
+        }
         self.declare_runtime_imports()?;
 
         // Pass D: compile every function.
+        for (path, prog) in &units {
+            for item in &prog.items {
+                match item {
+                    Stmt::Function(f) => {
+                        let name = self.item_name(path.as_deref(), &f.name);
+                        self.compile_function(f, &name, path.as_deref(), false)?;
+                    }
+                    Stmt::Implement(imp) => {
+                        for f in &imp.functions {
+                            let name = self
+                                .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
+                            self.compile_function(f, &name, path.as_deref(), true)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The symbol name for `name` in a unit: the module path prefixes it.
+    fn item_name(&self, module: Option<&str>, name: &str) -> String {
+        match module {
+            Some(path) => format!("{path}::{name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// Depth-first load of every module referenced by `program.items`,
+    /// including `require` statements nested inside function bodies.
+    fn load_requires(&mut self, program: &Program, out: &mut Vec<RequiredModule>) -> CResult<()> {
         for item in &program.items {
             match item {
-                Stmt::Function(f) => self.compile_function(f, &f.name)?,
+                Stmt::Require { path, alias } => self.load_one(path, alias, out)?,
+                Stmt::Function(f) => self.load_requires_stmts(&f.body, out)?,
                 Stmt::Implement(imp) => {
                     for f in &imp.functions {
-                        self.compile_function(f, &format!("{}::{}", imp.target, f.name))?;
+                        self.load_requires_stmts(&f.body, out)?;
                     }
                 }
                 _ => {}
             }
         }
+        Ok(())
+    }
 
+    fn load_requires_stmts(
+        &mut self,
+        stmts: &[Stmt],
+        out: &mut Vec<RequiredModule>,
+    ) -> CResult<()> {
+        for s in stmts {
+            match s {
+                Stmt::Require { path, alias } => self.load_one(path, alias, out)?,
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    self.load_requires_stmts(then_branch, out)?;
+                    self.load_requires_stmts(else_branch, out)?;
+                }
+                Stmt::While { body, .. } | Stmt::Defer { body } | Stmt::Handle { body } => {
+                    self.load_requires_stmts(body, out)?
+                }
+                Stmt::For { body, .. } => self.load_requires_stmts(body, out)?,
+                Stmt::Match {
+                    cases, else_branch, ..
+                } => {
+                    for c in cases {
+                        self.load_requires_stmts(&c.body, out)?;
+                    }
+                    self.load_requires_stmts(else_branch, out)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn load_one(
+        &mut self,
+        path: &str,
+        alias: &Option<String>,
+        out: &mut Vec<RequiredModule>,
+    ) -> CResult<()> {
+        if self.loaded.contains(path) {
+            return Ok(());
+        }
+        self.loaded.insert(path.to_string());
+        let source = self.loader.load(path)?;
+        let tokens = Tokenizer::new(source).tokenize()?;
+        let sub = parse(tokens)?;
+        self.load_requires(&sub, out)?;
+        out.push(RequiredModule {
+            path: path.to_string(),
+            alias: alias.clone(),
+            program: sub,
+        });
+        Ok(())
+    }
+
+    /// Expose a loaded module's functions under their alias or plain names.
+    ///
+    /// With an alias (`"std.io" require io`), `io.func` resolves to the
+    /// module's `func`. Without an alias, every function is callable by its
+    /// plain name (`"std.math.sqrt" require` makes `sqrt call` work).
+    fn register_module_bindings(&mut self) -> CResult<()> {
+        for m in &self.modules {
+            if let Some(alias) = &m.alias {
+                if let Some(existing) = self.aliases.get(alias) {
+                    if existing != &m.path {
+                        return Err(CompileError::new(
+                            format!("module alias '{alias}' already bound to '{existing}'"),
+                            Location::default(),
+                            "E380",
+                        ));
+                    }
+                } else {
+                    self.aliases.insert(alias.clone(), m.path.clone());
+                }
+            } else {
+                for item in &m.program.items {
+                    if let Stmt::Function(f) = item {
+                        if self.func_ids.contains_key(&f.name) {
+                            return Err(CompileError::new(
+                                format!(
+                                    "function '{}' from module '{}' conflicts with a function of the same name",
+                                    f.name, m.path
+                                ),
+                                Location::default(),
+                                "E380",
+                            ));
+                        }
+                        let fq = format!("{}::{}", m.path, f.name);
+                        if let Some(prev) = self.plain_funcs.get(&f.name)
+                            && prev != &fq
+                        {
+                            return Err(CompileError::new(
+                                format!(
+                                    "function '{}' is exported by both '{}' and '{fq}'",
+                                    f.name, prev
+                                ),
+                                Location::default(),
+                                "E380",
+                            ));
+                        }
+                        self.plain_funcs.insert(f.name.clone(), fq);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -554,7 +756,13 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_function(&mut self, f: &Function, name: &str) -> CResult<()> {
+    fn compile_function(
+        &mut self,
+        f: &Function,
+        name: &str,
+        module: Option<&str>,
+        is_method: bool,
+    ) -> CResult<()> {
         let sig = self.sigs.get(name).cloned().unwrap();
         let id = *self.func_ids.get(name).unwrap();
 
@@ -571,6 +779,7 @@ impl Compiler {
                 .collect::<CResult<_>>()?,
             frefs: HashMap::new(),
             rt: HashMap::new(),
+            module: module.map(str::to_string),
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -615,9 +824,7 @@ impl Compiler {
         // In a method body, the receiver is param 0. Bind `self` to it so a
         // `self const reference<Point>` declaration resolves without relying
         // on stack position.
-        if name.contains("::")
-            && let Some((t, v)) = params_ty.first().zip(param_vals.first())
-        {
+        if is_method && let Some((t, v)) = params_ty.first().zip(param_vals.first()) {
             let var = b.declare_var(t.clty(self.ptr_type));
             b.def_var(var, *v);
             st.vars.insert("self".to_string(), (var, *t));
@@ -2116,19 +2323,40 @@ impl Compiler {
         target: &Expr,
     ) -> CResult<()> {
         let name = match target {
-            Expr::Variable { name } => name.clone(),
-            Expr::Member { base, member } => {
-                let sid = self.base_struct(st, base)?;
-                let sname = self.struct_layout(sid).name.clone();
-                let method = format!("{sname}::{member}");
-                if !self.func_ids.contains_key(&method) {
-                    return Err(CompileError::new(
-                        format!("struct '{sname}' has no method '{member}'"),
-                        Location::default(),
-                        "E342",
-                    ));
+            Expr::Variable { name } => {
+                if let Some(mod_path) = &st.module {
+                    let fq = format!("{mod_path}::{name}");
+                    if self.func_ids.contains_key(&fq) {
+                        fq
+                    } else if let Some(plain) = self.plain_funcs.get(name) {
+                        plain.clone()
+                    } else {
+                        name.clone()
+                    }
+                } else if let Some(plain) = self.plain_funcs.get(name) {
+                    plain.clone()
+                } else {
+                    name.clone()
                 }
-                method
+            }
+            Expr::Member { base, member } => {
+                if let Expr::Variable { name } = base.as_ref() {
+                    if let Some(path) = self.aliases.get(name) {
+                        let fq = format!("{path}::{member}");
+                        if !self.func_ids.contains_key(&fq) {
+                            return Err(CompileError::new(
+                                format!("module '{path}' has no function '{member}'"),
+                                Location::default(),
+                                "E330",
+                            ));
+                        }
+                        fq
+                    } else {
+                        self.method_name(st, base, member)?
+                    }
+                } else {
+                    self.method_name(st, base, member)?
+                }
             }
             Expr::Builtin { name: _ } => {
                 // `@borrow call` / `@move call` apply the builtin itself.
@@ -2177,6 +2405,21 @@ impl Compiler {
             stack.push(Slot { value: v, ty: *t });
         }
         Ok(())
+    }
+
+    /// Resolve a `base.member` call as a struct method `Struct::member`.
+    fn method_name(&self, st: &FnState, base: &Expr, member: &str) -> CResult<String> {
+        let sid = self.base_struct(st, base)?;
+        let sname = self.struct_layout(sid).name.clone();
+        let method = format!("{sname}::{member}");
+        if !self.func_ids.contains_key(&method) {
+            return Err(CompileError::new(
+                format!("struct '{sname}' has no method '{member}'"),
+                Location::default(),
+                "E342",
+            ));
+        }
+        Ok(method)
     }
 
     fn emit_stackop(&mut self, stack: &mut Vec<Slot>, op: StackOp) -> CResult<()> {

@@ -5,11 +5,11 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 
 ## Pipeline status
 
-| Stage     | State                                                                                                                                                                                              |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`)                                                                                                                                     |
-| Parser    | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse                                                |
-| Compiler  | Core numeric/control subset + structs/methods/`self` + `match` + `for` over fixed-size arrays + strings/lists/hashmaps/`@sqrt` via a heap host runtime all lower to JIT; enums, unions, modules/`require`, error handling, and the ownership memory model are `E301`–`E308` "not yet supported" |
+| Stage     | State                                                                                                                                                                                                                                                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tokenizer | Complete — all spec tokens present (`tokenizer/token_kind.rs`)                                                                                                                                                                                                                                                                |
+| Parser    | Parses the whole spec into AST; containers, `for`, `match`, `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions all parse                                                                                                                                                                           |
+| Compiler  | Core numeric/control subset + structs/methods/`self` + `match` + `for` over fixed-size arrays + strings/lists/hashmaps/`@sqrt` via a heap host runtime + modules/`require` with an embedded std library all lower to JIT; enums, unions, error handling, and the ownership memory model are `E301`–`E308` "not yet supported" |
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -75,8 +75,6 @@ and the compiler reuses the same decoders.
   `@list_set`).
 - **Enums** — `Color enum RED GREEN end` parses but members never become values.
 - **Unions** — `E308`.
-- **Modules** — `require` is silently ignored (no loader, no symbol resolution,
-  no std library beyond the builtin runtime functions).
 - **Error handling** — `error`/`Error` types unresolved (`E302/E303`),
   `with value or Error` unions, `unwrap` (`E301`), `handle`,
   `error.CustomError`.
@@ -103,7 +101,7 @@ and the compiler reuses the same decoders.
 
 ## 4. Infrastructure gaps
 
-- No require/module resolver or standard-library prelude; the heap host runtime
+- No garbage collector; the heap host runtime
   covers strings/lists/maps/print/`sqrt`, but there is no GC and
   regions/ownership are not enforced.
 - Structs and arrays are real layouts backed by frame slots, but are only ever
@@ -131,8 +129,14 @@ and the compiler reuses the same decoders.
    heap host runtime in `runtime.rs` (`yarrow_alloc`, `yarrow_str_*`,
    `yarrow_list_*`, `yarrow_map_*`, prints). `defer`/`handle` bodies compile
    inline. Array indexing (a fixed-array `get`/`set` word) remains.
-4. **Modules/`require` + std library** — orthogonal scaffolding; needs a loader
-   and symbol table.
+4. **Modules/`require` + std library** — done. `ModuleLoader` resolves dotted
+   paths to embedded std modules (`std.io`, `std.math.sqrt`, `std.string`,
+   `std.list`, `std.map`) or `path/to/module.yar` on the search path; requires
+   load depth-first and compile into the same JIT module. Functions are
+   fully-qualified as `{module}::{func}`, alias-less requires expose plain
+   names, `alias.func` calls resolve via the alias, and the CLI adds the source
+   file's directory to the search path. Inline `require` alias binding only
+   applies when the next token is not a declaration/statement keyword.
 5. **Memory model (borrows, regions, ownership)** — enforcement and heap
    management; depends on references/containers landing first.
 

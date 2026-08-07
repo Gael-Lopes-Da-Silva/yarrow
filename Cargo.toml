@@ -3,6 +3,9 @@ name = "yarrow"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+yarrow_core = { path = "crates/yarrow-core" }
+
 [workspace]
 resolver = "3"
 members = ["crates/yarrow-cli","crates/yarrow-core"]

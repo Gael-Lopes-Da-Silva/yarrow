@@ -42,6 +42,18 @@ impl std::fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+impl From<crate::parser::ParseError> for CompileError {
+    fn from(e: crate::parser::ParseError) -> Self {
+        CompileError::new(e.message, e.location, e.code)
+    }
+}
+
+impl From<crate::tokenizer::token::TokenizeError> for CompileError {
+    fn from(e: crate::tokenizer::token::TokenizeError) -> Self {
+        CompileError::new(e.message, e.location, e.code)
+    }
+}
+
 impl From<cranelift_module::ModuleError> for CompileError {
     fn from(e: cranelift_module::ModuleError) -> Self {
         CompileError::new(
