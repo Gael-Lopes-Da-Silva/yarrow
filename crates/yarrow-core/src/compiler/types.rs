@@ -213,13 +213,18 @@ pub fn scalar_ty(code: u8) -> Ty {
 
 /// A compact code for container element/key/value types. Covers scalars,
 /// strings, structs (encoded with their layout id) and any other pointer-like
-/// type (which degrades to a generic `Ty::Ptr`). Returns `None` for types that
+/// type (which degrades to a generic pointer). Returns `None` for types that
 /// cannot be stored in a container (`Void`, 128-bit values).
+///
+/// The encoding mirrors the runtime kind codes so a container's element code
+/// can drive `yarrow_free_value` recursion directly: scalars `0..=15`, a
+/// string `16`, a struct `0x40 | (id << 8)` and anything else a `0x50`
+/// (generic pointer, cannot recurse).
 pub fn elem_code(ty: Ty) -> Option<u32> {
     match ty {
         Ty::String => Some(16),
-        Ty::Struct(id) => Some(0x100 | id),
-        Ty::Ptr | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x80),
+        Ty::Struct(id) => Some(0x40 | (id << 8)),
+        Ty::Ptr | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x50),
         other => other.scalar_code().map(u32::from),
     }
 }
@@ -229,9 +234,30 @@ pub fn elem_ty(code: u32) -> Ty {
     match code {
         0..=15 => scalar_ty(code as u8),
         16 => Ty::String,
-        0x80 => Ty::Ptr,
-        0x100.. => Ty::Struct(code - 0x100),
+        0x50 => Ty::Ptr,
+        0x40.. => Ty::Struct(code >> 8),
         _ => Ty::Ptr,
+    }
+}
+
+/// Encode a physical type as the runtime kind code passed to
+/// `yarrow_free_value` / `yarrow_region_register`. The encoding must stay in
+/// sync with `crate::runtime::KIND_*`:
+///
+/// * scalars map to their `scalar_code` (`0..=15`, nothing to free),
+/// * a string is `16`,
+/// * a list is `0x20 | (element code << 8)`,
+/// * a hashmap is `0x30 | (key code << 8) | (value code << 40)`,
+/// * a struct is `0x40 | (layout id << 8)`,
+/// * anything else (generic pointers, frames) is `0x50`.
+pub fn kind_code(ty: Ty) -> u64 {
+    match ty {
+        Ty::String => 16,
+        Ty::List { elem } => 0x20 | ((elem as u64) << 8),
+        Ty::Hashmap { key, value } => 0x30 | ((key as u64) << 8) | ((value as u64) << 40),
+        Ty::Struct(id) => 0x40 | ((id as u64) << 8),
+        Ty::Array { elem, count } => 0x60 | ((elem as u64) << 8) | ((count as u64) << 40),
+        other => other.scalar_code().map(u64::from).unwrap_or(0x50),
     }
 }
 
@@ -440,6 +466,12 @@ pub fn coerce(
         return Ok(value);
     }
 
+    // Any integer satisfies a pointer target. This is the "null" coercion that
+    // lets `0 myList const list<i32>` declare a null container handle.
+    if to.is_pointer() && from.is_int() {
+        return Ok(value);
+    }
+
     // bool -> int (as unsigned); bools are I8 0/1 so only widen when needed
     if from.is_bool() && to.is_int() && !to.is_bool() {
         if to.bits() > 8 {
@@ -518,7 +550,14 @@ pub fn coerce(
     }
 
     Err(CompileError::unsupported(
-        format!("cannot convert value from {from:?} to {to:?}"),
+        format!(
+            "cannot convert value from {from:?} to {to:?} (coerce called from {})",
+            std::backtrace::Backtrace::force_capture()
+                .to_string()
+                .lines()
+                .nth(2)
+                .unwrap_or("?")
+        ),
         Location::default(),
         "E309",
     ))

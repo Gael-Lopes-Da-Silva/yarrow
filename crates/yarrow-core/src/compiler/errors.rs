@@ -57,7 +57,7 @@ impl From<crate::tokenizer::token::TokenizeError> for CompileError {
 impl From<cranelift_module::ModuleError> for CompileError {
     fn from(e: cranelift_module::ModuleError) -> Self {
         CompileError::new(
-            format!("cranelift module error: {e}"),
+            format!("cranelift module error: {e:?}"),
             Location::default(),
             "E399",
         )

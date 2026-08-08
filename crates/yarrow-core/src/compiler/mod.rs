@@ -34,15 +34,39 @@ pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
 use types::{
-    StructLayout, align_of, coerce, common_type, elem_code, elem_ty, layout, resolve, scalar_ty,
+    StructLayout, coerce, common_type, elem_code, elem_ty, kind_code, layout, resolve, scalar_ty,
 };
 
+/// Compile-time ownership of a value on the operand stack (or in a variable).
+///
+/// Yarrow owns heap values (strings, lists, hashmaps) on the stack or in a
+/// variable; popping, overwriting or leaving scope drops them. Borrows are
+/// tracked so a value cannot be dropped while a reference to it is live, and
+/// moved values cannot be used again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Own {
+    /// Owns its heap storage; dropping emits `yarrow_free_value`.
+    Owned,
+    /// A borrow/reference into something else; dropping releases the borrow.
+    Borrow,
+    /// Scalars, struct/array frame pointers, regions and other non-owning
+    /// values: dropping is a no-op.
+    Trivial,
+}
+
+impl Own {
+    fn is_owned(self) -> bool {
+        matches!(self, Own::Owned)
+    }
+}
+
 /// A value on the compile-time operand stack: a Cranelift SSA value plus the
-/// physical `Ty` it carries.
+/// physical `Ty` it carries and its ownership state.
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     value: Value,
     ty: Ty,
+    own: Own,
 }
 
 /// Per-function lowering state.
@@ -56,6 +80,18 @@ struct FnState {
     /// Module path prefix of the function being compiled (e.g. `"std.io"`),
     /// or `None` for top-level functions. Used to resolve intra-module calls.
     module: Option<String>,
+    /// Handles currently owned by this function, keyed by SSA value. Only heap
+    /// values (strings/lists/hashmaps) ever appear here.
+    owns: std::collections::HashSet<Value>,
+    /// Values with an active borrow (from `@borrow` or a heap-value `dup`).
+    borrowed: std::collections::HashSet<Value>,
+    /// Values moved away with `@move`; using or moving them again is an error.
+    moved: std::collections::HashSet<Value>,
+    /// `defer` bodies, run in reverse order at scope exit.
+    deferred: Vec<Vec<Stmt>>,
+    /// Struct layout ids whose field descriptors were already registered in
+    /// the runtime this function.
+    registered_descs: std::collections::HashSet<u32>,
 }
 
 struct LoopCtx {
@@ -80,6 +116,10 @@ pub struct Compiler {
     string_ids: HashMap<String, DataId>,
     /// Per-function global value for each string literal's data section.
     fn_gvs: HashMap<String, GlobalValue>,
+    /// Struct layout id -> data object holding its `FieldDesc` table.
+    struct_desc_ids: HashMap<u32, DataId>,
+    /// Per-function global value for each struct's `FieldDesc` table.
+    struct_desc_gvs: HashMap<u32, GlobalValue>,
     /// Module loader used to resolve `require` paths.
     loader: ModuleLoader,
     /// Modules loaded by `require`, in dependency order (dependencies first).
@@ -112,6 +152,8 @@ impl Compiler {
             runtime_ids: HashMap::new(),
             string_ids: HashMap::new(),
             fn_gvs: HashMap::new(),
+            struct_desc_ids: HashMap::new(),
+            struct_desc_gvs: HashMap::new(),
             loader: ModuleLoader::new(),
             modules: Vec::new(),
             aliases: HashMap::new(),
@@ -200,11 +242,13 @@ impl Compiler {
         }
         self.register_module_bindings()?;
 
-        // Pass C2: string literals become read-only data sections, and the
-        // host runtime functions are imported so compiled code can call them.
+        // Pass C2: string literals become read-only data sections, struct
+        // field descriptors become data tables, and the host runtime functions
+        // are imported so compiled code can call them.
         for (_, prog) in &units {
             self.declare_string_data(prog)?;
         }
+        self.declare_struct_desc_data()?;
         self.declare_runtime_imports()?;
 
         // Pass D: compile every function.
@@ -385,6 +429,32 @@ impl Compiler {
         Ok(())
     }
 
+    /// Declare a read-only data object per struct holding its `FieldDesc`
+    /// table (16 bytes per field: `u32 offset, u32 pad, u64 kind`), matching
+    /// the runtime's `FieldDesc` layout. The table lets `yarrow_free_value`
+    /// free a struct's heap fields.
+    fn declare_struct_desc_data(&mut self) -> CResult<()> {
+        for id in 0..self.struct_layouts.len() as u32 {
+            let lay = self.struct_layout(id);
+            let mut bytes: Vec<u8> = Vec::with_capacity(lay.fields.len() * 16);
+            for f in &lay.fields {
+                bytes.extend_from_slice(&(f.offset as u32).to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&kind_code(f.ty).to_le_bytes());
+            }
+            let name = format!("yarrow.structdesc.{id}");
+            let data_id = self
+                .module
+                .declare_data(&name, Linkage::Local, false, false)?;
+            let mut desc = DataDescription::new();
+            desc.set_align(8);
+            desc.define(bytes.into_boxed_slice());
+            self.module.define_data(data_id, &desc)?;
+            self.struct_desc_ids.insert(id, data_id);
+        }
+        Ok(())
+    }
+
     /// Import every host runtime function so JIT code can `call` it.
     fn declare_runtime_imports(&mut self) -> CResult<()> {
         for (name, params, returns) in RUNTIME_SIGS {
@@ -540,15 +610,16 @@ impl Compiler {
     }
 
     /// Allocate a fresh frame slot for a struct and return a pointer to it.
-    fn alloc_struct(&mut self, b: &mut FunctionBuilder, id: u32) -> Value {
+    fn alloc_struct(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        id: u32,
+    ) -> CResult<Value> {
         let lay = self.struct_layout(id);
-        let data = StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            lay.size,
-            lay.align.trailing_zeros() as u8,
-        );
-        let slot = b.create_sized_stack_slot(data);
-        b.ins().stack_addr(self.ptr_type, slot, 0)
+        let size = b.ins().iconst(irtypes::I64, lay.size as i64);
+        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        Ok(out[0])
     }
 
     /// Initialize `ptr` from a `{name value ...}` literal. Each key must be an
@@ -563,6 +634,9 @@ impl Compiler {
         ptr: Value,
         pairs: &[(Expr, Expr)],
     ) -> CResult<()> {
+        // Make sure the runtime knows this struct's field kinds so it can free
+        // owned heap fields if a struct value is ever dropped.
+        self.emit_register_struct(b, st, id)?;
         let fields = self.struct_layout(id).fields.clone();
         for (key, value_expr) in pairs {
             let field_name = match key {
@@ -592,7 +666,7 @@ impl Compiler {
             // A nested struct literal `{inner {v 9}}` allocates a fresh slot
             // for the inner struct and stores a pointer to it in the field.
             if let (Ty::Struct(inner_id), Expr::Map(inner_pairs)) = (field.ty, value_expr) {
-                let inner_ptr = self.alloc_struct(b, inner_id);
+                let inner_ptr = self.alloc_struct(b, st, inner_id)?;
                 self.init_struct_fields(b, st, stack, inner_id, inner_ptr, inner_pairs)?;
                 b.ins().store(
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -610,7 +684,7 @@ impl Compiler {
                 let Ty::Array { elem, count } = field_ty else {
                     unreachable!()
                 };
-                let arr_ptr = self.alloc_array(b, scalar_ty(elem), count);
+                let arr_ptr = self.alloc_array(b, st, scalar_ty(elem), count)?;
                 self.init_array_elements(b, st, stack, scalar_ty(elem), arr_ptr, elems)?;
                 b.ins().store(
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -672,17 +746,21 @@ impl Compiler {
         Ok(())
     }
 
-    /// Allocate a fresh frame slot for a fixed-size array of `count` elements
-    /// of type `elem` and return a pointer to it.
-    fn alloc_array(&mut self, b: &mut FunctionBuilder, elem: Ty, count: u32) -> Value {
-        let size = ((elem.elem_size() as u64) * (count as u64)).max(1) as u32;
-        let data = StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            size,
-            align_of(elem).trailing_zeros() as u8,
-        );
-        let slot = b.create_sized_stack_slot(data);
-        b.ins().stack_addr(self.ptr_type, slot, 0)
+    /// Allocate a fresh heap block for a fixed-size array of `count` elements
+    /// of type `elem` and return a pointer to it. Heap (rather than frame)
+    /// storage keeps the address valid while the array escapes into variables,
+    /// regions or callees.
+    fn alloc_array(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        elem: Ty,
+        count: u32,
+    ) -> CResult<Value> {
+        let size = ((elem.elem_size() as u64) * (count as u64)).max(1) as i64;
+        let size = b.ins().iconst(irtypes::I64, size);
+        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        Ok(out[0])
     }
 
     /// Store every element of an `[a b c]` literal into `ptr`, coercing each
@@ -780,6 +858,11 @@ impl Compiler {
             frefs: HashMap::new(),
             rt: HashMap::new(),
             module: module.map(str::to_string),
+            owns: std::collections::HashSet::new(),
+            borrowed: std::collections::HashSet::new(),
+            moved: std::collections::HashSet::new(),
+            deferred: Vec::new(),
+            registered_descs: std::collections::HashSet::new(),
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -799,6 +882,12 @@ impl Compiler {
             let gv = self.module.declare_data_in_func(did, &mut ctx.func);
             self.fn_gvs.insert(text.clone(), gv);
         }
+        // Global values for each struct's FieldDesc table.
+        self.struct_desc_gvs.clear();
+        for (&id, &did) in &self.struct_desc_ids {
+            let gv = self.module.declare_data_in_func(did, &mut ctx.func);
+            self.struct_desc_gvs.insert(id, gv);
+        }
 
         let mut fbctx = FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -815,9 +904,17 @@ impl Compiler {
         let param_vals: Vec<Value> = b.block_params(entry).to_vec();
         let mut stack: Vec<Slot> = Vec::new();
         for (i, t) in params_ty.iter().enumerate() {
+            // Heap-typed params are borrowed from the caller; the callee must
+            // not free them.
+            let own = if self.is_heap(*t) {
+                Own::Borrow
+            } else {
+                Own::Trivial
+            };
             stack.push(Slot {
                 value: param_vals[i],
                 ty: *t,
+                own,
             });
         }
 
@@ -834,9 +931,11 @@ impl Compiler {
 
         // Implicit termination for a function falling off the end.
         if st.returns.is_empty() {
+            self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&[]);
         } else if stack.len() >= st.returns.len() {
-            let vals = self.pop_return_values(&mut b, &st, &mut stack)?;
+            let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
+            self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&vals);
         } else {
             b.ins().trap(TrapCode::unwrap_user(1));
@@ -897,14 +996,22 @@ impl Compiler {
                 if let (Ty::Array { .. }, Some(Expr::Array(elems))) = (t, value) {
                     t = Compiler::infer_array_count(t, elems)?;
                 }
-                let (val, val_ty) = match value {
+                let (_slot, val, val_ty) = match value {
                     Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
                         // Struct literal `{x 5 y 20}`: allocate a slot and
                         // store each field by name.
                         let Ty::Struct(id) = t else { unreachable!() };
-                        let ptr = self.alloc_struct(b, id);
+                        let ptr = self.alloc_struct(b, st, id)?;
                         self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
-                        (ptr, t)
+                        (
+                            Slot {
+                                value: ptr,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            ptr,
+                            t,
+                        )
                     }
                     Some(Expr::Seq(elems)) if matches!(t, Ty::Struct(_)) => {
                         // The parser merges every preceding stack op into the
@@ -915,15 +1022,23 @@ impl Compiler {
                                 self.compile_expr(b, st, stack, el)?;
                             }
                             let Ty::Struct(id) = t else { unreachable!() };
-                            let ptr = self.alloc_struct(b, id);
+                            let ptr = self.alloc_struct(b, st, id)?;
                             self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
-                            (ptr, t)
+                            (
+                                Slot {
+                                    value: ptr,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                ptr,
+                                t,
+                            )
                         } else {
                             for el in elems {
                                 self.compile_expr(b, st, stack, el)?;
                             }
                             let slot = self.pop_slot(stack, "value")?;
-                            (slot.value, slot.ty)
+                            (slot, slot.value, slot.ty)
                         }
                     }
                     Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
@@ -931,31 +1046,56 @@ impl Compiler {
                             unreachable!()
                         };
                         let elem = scalar_ty(elem);
-                        let ptr = self.alloc_array(b, elem, count);
+                        let ptr = self.alloc_array(b, st, elem, count)?;
                         self.init_array_elements(b, st, stack, elem, ptr, elems)?;
-                        (ptr, t)
+                        (
+                            Slot {
+                                value: ptr,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            ptr,
+                            t,
+                        )
                     }
                     Some(Expr::List(elems)) if matches!(t, Ty::List { .. }) => {
                         let Ty::List { elem } = t else { unreachable!() };
                         let (handle, _) =
                             self.emit_list_literal(b, st, stack, elems, Some(elem_ty(elem)))?;
-                        (handle, t)
+                        (
+                            Slot {
+                                value: handle,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            handle,
+                            t,
+                        )
                     }
                     Some(Expr::Map(pairs)) if matches!(t, Ty::Hashmap { .. }) => {
                         let (handle, _, _) = self.emit_map_literal(b, st, stack, pairs, Some(t))?;
-                        (handle, t)
+                        (
+                            Slot {
+                                value: handle,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            handle,
+                            t,
+                        )
                     }
                     Some(e) => {
                         self.compile_expr(b, st, stack, e)?;
                         let slot = self.pop_slot(stack, "value")?;
-                        (slot.value, slot.ty)
+                        (slot, slot.value, slot.ty)
                     }
                     None => {
                         let slot = self.pop_slot(stack, "value")?;
-                        (slot.value, slot.ty)
+                        (slot, slot.value, slot.ty)
                     }
                 };
                 let val = coerce(b, val, val_ty, t, self.ptr_type)?;
+                self.claim(st, val, t);
                 let var = b.declare_var(t.clty(self.ptr_type));
                 b.def_var(var, val);
                 let _ = mutability;
@@ -971,12 +1111,67 @@ impl Compiler {
                             "E320",
                         )
                     })?;
-                    let (val, val_ty) = match value {
+                    // A struct literal set re-initializes the existing
+                    // storage in place, so the old value must NOT be freed
+                    // first (the pointer is reused).
+                    let trailing_map = match value {
+                        Some(Expr::Map(_)) => true,
+                        Some(Expr::Seq(elems)) => matches!(elems.last(), Some(Expr::Map(_))),
+                        _ => false,
+                    };
+                    let reuses_ptr = trailing_map && matches!(t, Ty::Struct(_));
+                    // Drop the value the variable currently owns (the runtime
+                    // guards against double frees).
+                    if self.is_heap(t) && !reuses_ptr {
+                        let old = Slot {
+                            value: b.use_var(var),
+                            ty: t,
+                            own: Own::Owned,
+                        };
+                        self.emit_drop(b, st, old)?;
+                    }
+                    let (_slot, val, val_ty) = match value {
                         Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
                             let Ty::Struct(id) = t else { unreachable!() };
                             let ptr = b.use_var(var);
                             self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
-                            return Ok(());
+                            (
+                                Slot {
+                                    value: ptr,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                ptr,
+                                t,
+                            )
+                        }
+                        Some(Expr::Seq(elems)) if matches!(t, Ty::Struct(_)) => {
+                            // The parser merges every preceding stack op into
+                            // the initializer; only the trailing map is the
+                            // struct literal, the rest are side effects.
+                            if let Some(Expr::Map(pairs)) = elems.last() {
+                                for el in &elems[..elems.len() - 1] {
+                                    self.compile_expr(b, st, stack, el)?;
+                                }
+                                let Ty::Struct(id) = t else { unreachable!() };
+                                let ptr = b.use_var(var);
+                                self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                                (
+                                    Slot {
+                                        value: ptr,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    ptr,
+                                    t,
+                                )
+                            } else {
+                                for el in elems {
+                                    self.compile_expr(b, st, stack, el)?;
+                                }
+                                let slot = self.pop_slot(stack, "value")?;
+                                (slot, slot.value, slot.ty)
+                            }
                         }
                         Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
                             let t = Compiler::infer_array_count(t, elems)?;
@@ -984,35 +1179,57 @@ impl Compiler {
                                 unreachable!()
                             };
                             let elem = scalar_ty(elem);
-                            let ptr = self.alloc_array(b, elem, count);
+                            let ptr = self.alloc_array(b, st, elem, count)?;
                             self.init_array_elements(b, st, stack, elem, ptr, elems)?;
-                            b.def_var(var, ptr);
-                            return Ok(());
+                            (
+                                Slot {
+                                    value: ptr,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                ptr,
+                                t,
+                            )
                         }
                         Some(Expr::List(elems)) if matches!(t, Ty::List { .. }) => {
                             let Ty::List { elem } = t else { unreachable!() };
                             let (handle, _) =
                                 self.emit_list_literal(b, st, stack, elems, Some(elem_ty(elem)))?;
-                            b.def_var(var, handle);
-                            return Ok(());
+                            (
+                                Slot {
+                                    value: handle,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                handle,
+                                t,
+                            )
                         }
                         Some(Expr::Map(pairs)) if matches!(t, Ty::Hashmap { .. }) => {
                             let (handle, _, _) =
                                 self.emit_map_literal(b, st, stack, pairs, Some(t))?;
-                            b.def_var(var, handle);
-                            return Ok(());
+                            (
+                                Slot {
+                                    value: handle,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                handle,
+                                t,
+                            )
                         }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
                             let slot = self.pop_slot(stack, "value")?;
-                            (slot.value, slot.ty)
+                            (slot, slot.value, slot.ty)
                         }
                         None => {
                             let slot = self.pop_slot(stack, "value")?;
-                            (slot.value, slot.ty)
+                            (slot, slot.value, slot.ty)
                         }
                     };
                     let val = coerce(b, val, val_ty, t, self.ptr_type)?;
+                    self.claim(st, val, t);
                     b.def_var(var, val);
                 }
                 Expr::Member { base, member } => {
@@ -1108,9 +1325,16 @@ impl Compiler {
                 // Only meaningful at program level; no-op inside a body.
             }
 
-            Stmt::Defer { body } | Stmt::Handle { body } => {
-                // With the heap runtime there is nothing to defer or unwind,
-                // so run the body inline at the current point.
+            Stmt::Defer { body } => {
+                // Schedule the body to run in reverse order at scope exit,
+                // so a `myRegion @free_region call` runs after the region's
+                // values have been dropped.
+                st.deferred.push(body.clone());
+            }
+
+            Stmt::Handle { body } => {
+                // Error handlers: no control-flow support yet, so the body
+                // runs inline at the current point.
                 for s in body {
                     self.compile_stmt(b, st, stack, s)?;
                 }
@@ -1122,27 +1346,27 @@ impl Compiler {
     fn emit_return(
         &mut self,
         b: &mut FunctionBuilder,
-        st: &FnState,
+        st: &mut FnState,
         stack: &mut Vec<Slot>,
     ) -> CResult<()> {
-        if st.returns.is_empty() {
-            b.ins().return_(&[]);
+        let vals = if st.returns.is_empty() {
+            Vec::new()
         } else {
-            let vals = self.pop_return_values(b, st, stack)?;
-            b.ins().return_(&vals);
-        }
+            self.pop_return_values(b, st, stack)?
+        };
+        self.emit_scope_exit(b, st, stack)?;
+        b.ins().return_(&vals);
         // The rest of the function is unreachable; the compile-time stack is
         // dead, so clear it to stop the implicit fallthrough return from
         // picking up leftovers (e.g. a method receiver).
-        stack.clear();
         self.dead_block(b);
         Ok(())
     }
 
     fn pop_return_values(
-        &self,
+        &mut self,
         b: &mut FunctionBuilder,
-        st: &FnState,
+        st: &mut FnState,
         stack: &mut Vec<Slot>,
     ) -> CResult<Vec<Value>> {
         let n = st.returns.len();
@@ -1159,6 +1383,12 @@ impl Compiler {
         let tail = stack.split_off(stack.len() - n);
         let mut out = Vec::with_capacity(n);
         for (slot, want) in tail.iter().zip(&st.returns) {
+            // Heap-typed return values transfer ownership to the caller, so
+            // the callee must not free them at scope exit (this also covers a
+            // `myStr return` that borrows the value out of a variable).
+            if self.is_heap(slot.ty) {
+                st.moved.insert(slot.value);
+            }
             out.push(coerce(b, slot.value, slot.ty, *want, self.ptr_type)?);
         }
         Ok(out)
@@ -1208,6 +1438,109 @@ impl Compiler {
             return Ok(slot.value);
         }
         coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)
+    }
+
+    /// Whether `ty` owns heap storage (strings, lists, hashmaps, structs,
+    /// arrays). Struct and array instances are heap-allocated by the compiler
+    /// so their addresses stay valid across calls; dropping them emits
+    /// `yarrow_free_value`.
+    fn is_heap(&self, ty: Ty) -> bool {
+        matches!(
+            ty,
+            Ty::String | Ty::List { .. } | Ty::Hashmap { .. } | Ty::Struct(_) | Ty::Array { .. }
+        )
+    }
+
+    /// Register a freshly-created heap handle as owned by the function.
+    fn claim(&mut self, st: &mut FnState, value: Value, ty: Ty) {
+        if self.is_heap(ty) {
+            st.owns.insert(value);
+        }
+    }
+
+    /// Emit `yarrow_free_value(handle, kind)` for an owned slot and forget its
+    /// ownership. Moved values are skipped (their new owner handles the free).
+    /// `set`/scope-exit drops are safe because the runtime guards double frees.
+    fn emit_drop(&mut self, b: &mut FunctionBuilder, st: &mut FnState, slot: Slot) -> CResult<()> {
+        if !slot.own.is_owned() || !self.is_heap(slot.ty) || st.moved.contains(&slot.value) {
+            return Ok(());
+        }
+        let kind = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
+        self.rt_call(b, st, "yarrow_free_value", vec![slot.value, kind])?;
+        st.owns.remove(&slot.value);
+        Ok(())
+    }
+
+    /// Consume a slot from the stack: release its borrow (if any) and drop it
+    /// if it owns storage. Used wherever a popped value does not flow through.
+    fn consume(&mut self, b: &mut FunctionBuilder, st: &mut FnState, slot: Slot) -> CResult<()> {
+        if slot.own == Own::Borrow {
+            st.borrowed.remove(&slot.value);
+        }
+        self.emit_drop(b, st, slot)
+    }
+
+    /// Emit `yarrow_register_struct_descs(id, table, count)` once per struct
+    /// per function, so `yarrow_free_value` can free a struct's heap fields.
+    fn emit_register_struct(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        id: u32,
+    ) -> CResult<()> {
+        if !st.registered_descs.insert(id) {
+            return Ok(());
+        }
+        let gv = self.struct_desc_gvs.get(&id).copied().ok_or_else(|| {
+            CompileError::new(
+                format!("no field descriptors for struct #{id}"),
+                Location::default(),
+                "E371",
+            )
+        })?;
+        let addr = b.ins().global_value(self.ptr_type, gv);
+        let idv = b.ins().iconst(irtypes::I64, id as i64);
+        let count = b
+            .ins()
+            .iconst(irtypes::I64, self.struct_layout(id).fields.len() as i64);
+        self.rt_call(
+            b,
+            st,
+            "yarrow_register_struct_descs",
+            vec![idv, addr, count],
+        )?;
+        Ok(())
+    }
+
+    /// Function-scope exit: run deferred bodies in reverse, then drop every
+    /// owned value left on the stack and owned variables.
+    fn emit_scope_exit(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+    ) -> CResult<()> {
+        while let Some(body) = st.deferred.pop() {
+            self.compile_body(b, st, stack, &body)?;
+        }
+        for slot in stack.drain(..) {
+            self.emit_drop(b, st, slot)?;
+        }
+        let mut var_slots: Vec<Slot> = Vec::new();
+        for (var, ty) in st.vars.values() {
+            if self.is_heap(*ty) {
+                let v = b.use_var(*var);
+                var_slots.push(Slot {
+                    value: v,
+                    ty: *ty,
+                    own: Own::Owned,
+                });
+            }
+        }
+        for slot in var_slots {
+            self.emit_drop(b, st, slot)?;
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1303,6 +1636,7 @@ impl Compiler {
             stack.push(Slot {
                 value: params[i],
                 ty: s.ty,
+                own: Own::Trivial,
             });
         }
         Ok(())
@@ -1428,7 +1762,11 @@ impl Compiler {
         *stack = pre;
         for (i, t) in results_ty.iter().flatten().enumerate() {
             let p = b.block_params(merge)[i];
-            stack.push(Slot { value: p, ty: *t });
+            stack.push(Slot {
+                value: p,
+                ty: *t,
+                own: Own::Trivial,
+            });
         }
         Ok(())
     }
@@ -1592,6 +1930,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
             Expr::Float { value } => {
@@ -1601,6 +1940,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: Ty::F64,
+                    own: Own::Trivial,
                 });
             }
             Expr::Bool { value } => {
@@ -1608,6 +1948,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: Ty::Bool,
+                    own: Own::Trivial,
                 });
             }
             Expr::Rune { value } => {
@@ -1617,6 +1958,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: Ty::Rune,
+                    own: Own::Trivial,
                 });
             }
             Expr::String { value } => self.emit_string(b, st, stack, value)?,
@@ -1629,7 +1971,11 @@ impl Compiler {
                     )
                 })?;
                 let v = b.use_var(var);
-                stack.push(Slot { value: v, ty: t });
+                stack.push(Slot {
+                    value: v,
+                    ty: t,
+                    own: Own::Trivial,
+                });
             }
             Expr::Member { base, member } => {
                 let sid = self.base_struct(st, base)?;
@@ -1646,6 +1992,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: val,
                     ty: fty,
+                    own: Own::Trivial,
                 });
             }
             Expr::Builtin { name } => self.emit_builtin(b, st, stack, name)?,
@@ -1678,7 +2025,7 @@ impl Compiler {
                 let slot = self.pop_slot(stack, "unary operator")?;
                 self.emit_not(b, stack, *op, slot)?;
             }
-            Expr::StackOp(op) => self.emit_stackop(stack, *op)?,
+            Expr::StackOp(op) => self.emit_stackop(b, st, stack, *op)?,
             Expr::Seq(elems) => {
                 for el in elems {
                     self.compile_expr(b, st, stack, el)?;
@@ -1714,7 +2061,7 @@ impl Compiler {
                         "E345",
                     )
                 })?;
-                let ptr = self.alloc_array(b, elem_ty, elems.len() as u32);
+                let ptr = self.alloc_array(b, st, elem_ty, elems.len() as u32)?;
                 let elem_size = elem_ty.elem_size() as i32;
                 for (i, slot) in vals.iter().enumerate() {
                     let val = coerce(b, slot.value, slot.ty, elem_ty, self.ptr_type)?;
@@ -1725,19 +2072,25 @@ impl Compiler {
                         i as i32 * elem_size,
                     );
                 }
+                let aty = Ty::Array {
+                    elem: elem_ty.scalar_code().unwrap(),
+                    count: elems.len() as u32,
+                };
+                self.claim(st, ptr, aty);
                 stack.push(Slot {
                     value: ptr,
-                    ty: Ty::Array {
-                        elem: elem_ty.scalar_code().unwrap(),
-                        count: elems.len() as u32,
-                    },
+                    ty: aty,
+                    own: Own::Owned,
                 });
             }
             Expr::List(elems) => {
                 let (handle, code) = self.emit_list_literal(b, st, stack, elems, None)?;
+                let ty = Ty::List { elem: code };
+                self.claim(st, handle, ty);
                 stack.push(Slot {
                     value: handle,
-                    ty: Ty::List { elem: code },
+                    ty,
+                    own: Own::Owned,
                 });
             }
             Expr::Map(pairs) => {
@@ -1755,12 +2108,21 @@ impl Compiler {
                     ));
                 }
                 let (handle, kcode, vcode) = self.emit_map_literal(b, st, stack, pairs, None)?;
+                self.claim(
+                    st,
+                    handle,
+                    Ty::Hashmap {
+                        key: kcode,
+                        value: vcode,
+                    },
+                );
                 stack.push(Slot {
                     value: handle,
                     ty: Ty::Hashmap {
                         key: kcode,
                         value: vcode,
                     },
+                    own: Own::Owned,
                 });
             }
         }
@@ -1791,9 +2153,11 @@ impl Compiler {
             .len() as i64;
         let len = b.ins().iconst(irtypes::I64, len);
         let out = self.rt_call(b, st, "yarrow_str_new", vec![addr, len])?;
+        self.claim(st, out[0], Ty::String);
         stack.push(Slot {
             value: out[0],
             ty: Ty::String,
+            own: Own::Owned,
         });
         Ok(())
     }
@@ -1881,9 +2245,18 @@ impl Compiler {
                 Slot {
                     value: val,
                     ty: elem,
+                    own: Own::Trivial,
                 },
             )?;
             self.rt_call(b, st, "yarrow_list_push", vec![handle, arg])?;
+            if self.is_heap(elem) {
+                // The list stores the element's handle and now owns it; the
+                // temporary must not free it.
+                st.moved.insert(slot.value);
+            } else {
+                // Scalar element: the list copied the value, drop the temp.
+                self.consume(b, st, slot)?;
+            }
         }
         Ok(())
     }
@@ -1964,6 +2337,7 @@ impl Compiler {
                 Slot {
                     value: karg,
                     ty: kt,
+                    own: Own::Trivial,
                 },
             )?;
             self.compile_expr(b, st, stack, v)?;
@@ -1974,9 +2348,18 @@ impl Compiler {
                 Slot {
                     value: varg,
                     ty: vt,
+                    own: Own::Trivial,
                 },
             )?;
             self.rt_call(b, st, "yarrow_map_insert", vec![handle, karg, varg])?;
+            // The map stores the key/value handles directly and owns any heap
+            // storage they point to; the temporaries must not free them.
+            if self.is_heap(kt) {
+                st.moved.insert(ks.value);
+            }
+            if self.is_heap(vt) {
+                st.moved.insert(vs.value);
+            }
         }
         Ok((handle, kcode, vcode))
     }
@@ -1991,7 +2374,7 @@ impl Compiler {
         name: &str,
     ) -> CResult<()> {
         match name {
-            "borrow" | "move" => {
+            "borrow" => {
                 let s = self.pop_slot(stack, name)?;
                 if !s.ty.is_pointer() {
                     return Err(CompileError::new(
@@ -2002,24 +2385,97 @@ impl Compiler {
                         "E341",
                     ));
                 }
-                stack.push(s);
+                // A borrow is a non-owning reference: the stack no longer owns
+                // the value (its original owner still does), so any drop here
+                // is skipped via `moved`.
+                if s.own.is_owned() {
+                    st.moved.insert(s.value);
+                }
+                st.borrowed.insert(s.value);
+                stack.push(Slot {
+                    value: s.value,
+                    ty: s.ty,
+                    own: Own::Borrow,
+                });
+            }
+
+            "move" => {
+                // `source destination @move` rebinds `destination` to
+                // `source`'s storage and marks the source as moved.
+                let dest = self.pop_slot(stack, name)?;
+                let src = self.pop_slot(stack, name)?;
+                if !src.ty.is_pointer() || !dest.ty.is_pointer() {
+                    return Err(CompileError::new(
+                        "'@move' requires a reference, struct, array, string or container"
+                            .to_string(),
+                        Location::default(),
+                        "E341",
+                    ));
+                }
+                st.moved.insert(src.value);
+                let mut target = None;
+                for (var, ty) in st.vars.values() {
+                    if b.use_var(*var) == dest.value {
+                        target = Some((*var, *ty));
+                        break;
+                    }
+                }
+                match target {
+                    Some((var, ty)) => {
+                        self.claim(st, src.value, ty);
+                        b.def_var(var, src.value);
+                    }
+                    None => {
+                        // No matching variable (e.g. a fresh owned value on the
+                        // stack): leave the moved value on the stack instead.
+                        stack.push(Slot {
+                            value: src.value,
+                            ty: src.ty,
+                            own: Own::Borrow,
+                        });
+                    }
+                }
             }
 
             "make_region" => {
-                // Regions are a no-op placeholder until the memory model lands.
-                let v = b.ins().iconst(irtypes::I64, 0);
+                let out = self.rt_call(b, st, "yarrow_region_new", vec![])?;
                 stack.push(Slot {
-                    value: v,
+                    value: out[0],
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
             "free_region" => {
-                let _ = self.pop_slot(stack, "'@free_region'")?;
+                let region = self.pop_slot(stack, "'@free_region'")?;
+                self.rt_call(b, st, "yarrow_region_free", vec![region.value])?;
             }
             "put_region" => {
-                let _region = self.pop_slot(stack, "'@put_region'")?;
+                let region = self.pop_slot(stack, "'@put_region'")?;
                 let value = self.pop_slot(stack, "'@put_region'")?;
-                stack.push(value);
+                if !value.ty.is_pointer() {
+                    return Err(CompileError::new(
+                        format!(
+                            "'@put_region' requires a reference, struct, array, string or container, got {:?}",
+                            value.ty
+                        ),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let kind = b.ins().iconst(irtypes::I64, kind_code(value.ty) as i64);
+                self.rt_call(
+                    b,
+                    st,
+                    "yarrow_region_register",
+                    vec![value.value, kind, region.value],
+                )?;
+                // The region now owns the value; the stack must not free it.
+                st.moved.insert(value.value);
+                stack.push(Slot {
+                    value: value.value,
+                    ty: value.ty,
+                    own: Own::Borrow,
+                });
             }
 
             "string_join" => {
@@ -2038,9 +2494,14 @@ impl Compiler {
                 let joined = self.rt_call(b, st, "yarrow_str_join", vec![left.value, sep.value])?;
                 let joined =
                     self.rt_call(b, st, "yarrow_str_join", vec![joined[0], right.value])?;
+                self.consume(b, st, left)?;
+                self.consume(b, st, sep)?;
+                self.consume(b, st, right)?;
+                self.claim(st, joined[0], Ty::String);
                 stack.push(Slot {
                     value: joined[0],
                     ty: Ty::String,
+                    own: Own::Owned,
                 });
             }
             "string_len" => {
@@ -2056,6 +2517,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
 
@@ -2076,6 +2538,7 @@ impl Compiler {
                     Slot {
                         value: val,
                         ty: elem_ty,
+                        own: Own::Trivial,
                     },
                 )?;
                 self.rt_call(b, st, "yarrow_list_push", vec![list.value, arg])?;
@@ -2094,6 +2557,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
             "list_get" => {
@@ -2128,6 +2592,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: val,
                     ty: elem_ty,
+                    own: Own::Trivial,
                 });
             }
             "list_set" => {
@@ -2182,6 +2647,7 @@ impl Compiler {
                     Slot {
                         value: karg,
                         ty: kt,
+                        own: Own::Trivial,
                     },
                 )?;
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
@@ -2204,10 +2670,15 @@ impl Compiler {
                 } else {
                     coerce(b, val, Ty::I64, vt, self.ptr_type)?
                 };
-                stack.push(Slot { value: val, ty: vt });
+                stack.push(Slot {
+                    value: val,
+                    ty: vt,
+                    own: Own::Trivial,
+                });
                 stack.push(Slot {
                     value: found,
                     ty: Ty::Bool,
+                    own: Own::Trivial,
                 });
             }
             "map_set" => {
@@ -2233,6 +2704,7 @@ impl Compiler {
                     Slot {
                         value: karg,
                         ty: kt,
+                        own: Own::Trivial,
                     },
                 )?;
                 let varg = coerce(b, value.value, value.ty, vt, self.ptr_type)?;
@@ -2241,6 +2713,7 @@ impl Compiler {
                     Slot {
                         value: varg,
                         ty: vt,
+                        own: Own::Trivial,
                     },
                 )?;
                 self.rt_call(b, st, "yarrow_map_insert", vec![map.value, karg, varg])?;
@@ -2259,6 +2732,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
 
@@ -2301,6 +2775,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::F64,
+                    own: Own::Trivial,
                 });
             }
 
@@ -2388,7 +2863,16 @@ impl Compiler {
         }
         let tail = stack.split_off(stack.len() - n);
         let mut args: Vec<Value> = Vec::with_capacity(n);
+        let mut owned_temps: Vec<Slot> = Vec::new();
         for (i, slot) in tail.iter().enumerate() {
+            // An owned value passed by value to a callee is borrowed by the
+            // callee (never freed there). The caller drops it once the call
+            // returns; this frees immediately (in the current block) so the
+            // drop stays dominance-correct inside loops. Variable values are
+            // Trivial here — the variable drop at scope exit handles them.
+            if slot.own.is_owned() && self.is_heap(slot.ty) {
+                owned_temps.push(*slot);
+            }
             args.push(coerce(b, slot.value, slot.ty, param_tys[i], self.ptr_type)?);
         }
 
@@ -2402,7 +2886,16 @@ impl Compiler {
         let call_inst = b.ins().call(fref, &args);
         let results: Vec<Value> = b.inst_results(call_inst).to_vec();
         for (v, t) in results.into_iter().zip(&return_tys) {
-            stack.push(Slot { value: v, ty: *t });
+            // Heap-typed return values transfer ownership to the caller.
+            self.claim(st, v, *t);
+            stack.push(Slot {
+                value: v,
+                ty: *t,
+                own: Own::Owned,
+            });
+        }
+        for slot in owned_temps {
+            self.emit_drop(b, st, slot)?;
         }
         Ok(())
     }
@@ -2422,12 +2915,34 @@ impl Compiler {
         Ok(method)
     }
 
-    fn emit_stackop(&mut self, stack: &mut Vec<Slot>, op: StackOp) -> CResult<()> {
+    fn emit_stackop(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        op: StackOp,
+    ) -> CResult<()> {
         match op {
             StackOp::Dup => {
                 let s = self.pop_slot(stack, "dup")?;
-                stack.push(s);
-                stack.push(s);
+                // A duplicate is a second live reference to the same storage;
+                // demote the owner to a borrow so only one side drops it.
+                let own = if s.own.is_owned() {
+                    st.moved.insert(s.value);
+                    Own::Borrow
+                } else {
+                    s.own
+                };
+                stack.push(Slot {
+                    value: s.value,
+                    ty: s.ty,
+                    own,
+                });
+                stack.push(Slot {
+                    value: s.value,
+                    ty: s.ty,
+                    own,
+                });
             }
             StackOp::Over => {
                 let top = self.pop_slot(stack, "over")?;
@@ -2451,7 +2966,8 @@ impl Compiler {
                 stack.push(a);
             }
             StackOp::Pop | StackOp::Drop => {
-                let _ = self.pop_slot(stack, "pop/drop")?;
+                let slot = self.pop_slot(stack, "pop/drop")?;
+                self.consume(b, st, slot)?;
             }
         }
         Ok(())
@@ -2485,6 +3001,7 @@ impl Compiler {
         stack.push(Slot {
             value: v,
             ty: slot.ty,
+            own: Own::Trivial,
         });
         Ok(())
     }
@@ -2520,6 +3037,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::String,
+                    own: Own::Trivial,
                 });
             }
             Plus | Minus | Mul | Mod | Pow => {
@@ -2541,6 +3059,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: v,
                         ty: common,
+                        own: Own::Trivial,
                     });
                 } else {
                     let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
@@ -2566,6 +3085,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: v,
                         ty: common,
+                        own: Own::Trivial,
                     });
                 }
             }
@@ -2578,6 +3098,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: v,
                         ty: common,
+                        own: Own::Trivial,
                     });
                 } else {
                     // `10 4 /` yields 2.5: promote integers to f64.
@@ -2587,6 +3108,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: v,
                         ty: Ty::F64,
+                        own: Own::Trivial,
                     });
                 }
             }
@@ -2609,6 +3131,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: common,
+                    own: Own::Trivial,
                 });
             }
 
@@ -2630,6 +3153,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: res,
                         ty: Ty::Bool,
+                        own: Own::Trivial,
                     });
                 } else if common.is_float() {
                     let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
@@ -2647,6 +3171,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: res,
                         ty: Ty::Bool,
+                        own: Own::Trivial,
                     });
                 } else {
                     let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
@@ -2668,6 +3193,7 @@ impl Compiler {
                     stack.push(Slot {
                         value: res,
                         ty: Ty::Bool,
+                        own: Own::Trivial,
                     });
                 }
             }
@@ -2691,6 +3217,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: common,
+                    own: Own::Trivial,
                 });
             }
 
@@ -2712,6 +3239,7 @@ impl Compiler {
                 stack.push(Slot {
                     value: v,
                     ty: Ty::I64,
+                    own: Own::Trivial,
                 });
             }
         }
@@ -2802,6 +3330,19 @@ const RUNTIME_SIGS: &[(&str, &[CLType], &[CLType])] = &[
     ("yarrow_print_float", &[irtypes::F64], &[]),
     ("yarrow_print_newline", &[], &[]),
     ("yarrow_sqrt", &[irtypes::F64], &[irtypes::F64]),
+    ("yarrow_free_value", &[irtypes::I64, irtypes::I64], &[]),
+    (
+        "yarrow_register_struct_descs",
+        &[irtypes::I64, irtypes::I64, irtypes::I64],
+        &[],
+    ),
+    ("yarrow_region_new", &[], &[irtypes::I64]),
+    (
+        "yarrow_region_register",
+        &[irtypes::I64, irtypes::I64, irtypes::I64],
+        &[],
+    ),
+    ("yarrow_region_free", &[irtypes::I64], &[]),
 ];
 
 /// Collect every distinct string literal appearing in a statement list.
