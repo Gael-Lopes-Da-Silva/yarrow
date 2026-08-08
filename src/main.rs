@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use yarrow_core::{Compiler, Parser, Tokenizer};
+use yarrow_core::{Compiler, Parser, RunResult, Tokenizer};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -56,8 +56,14 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     match compiler.run_main() {
-        Ok(code) => {
-            println!("{code}");
+        Ok(result) => {
+            match result {
+                RunResult::Void => {}
+                RunResult::Int(v) => println!("{v}"),
+                RunResult::Bool(b) => println!("{b}"),
+                RunResult::Float(f) => println!("{f}"),
+                RunResult::Str(s) => println!("{s}"),
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

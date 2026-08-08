@@ -197,6 +197,18 @@ pub extern "C" fn yarrow_str_len(s: u64) -> u64 {
     unsafe { (*(s as *const Str)).len as u64 }
 }
 
+/// Copy a string handle's bytes into a Rust `Vec<u8>` (used by `run_main` to
+/// surface a `string` result to the driver). Returns `None` for a null handle.
+pub fn string_bytes(s: u64) -> Option<Vec<u8>> {
+    if s == 0 {
+        return None;
+    }
+    unsafe {
+        let str = &*(s as *const Str);
+        Some(std::slice::from_raw_parts(str.ptr, str.len).to_vec())
+    }
+}
+
 pub extern "C" fn yarrow_str_join(a: u64, b: u64) -> u64 {
     unsafe {
         let sa = &*(a as *const Str);

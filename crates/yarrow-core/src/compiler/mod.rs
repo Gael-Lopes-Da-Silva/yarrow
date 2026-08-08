@@ -38,6 +38,21 @@ use types::{
     resolve, scalar_ty,
 };
 
+/// The result of running a program's `main`, in a driver-displayable form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunResult {
+    /// `main` returns nothing (no `with` clause).
+    Void,
+    /// An integer (or rune) result.
+    Int(i64),
+    /// A boolean result.
+    Bool(bool),
+    /// A float result.
+    Float(f64),
+    /// A string result, decoded from its heap handle.
+    Str(String),
+}
+
 /// Compile-time ownership of a value on the operand stack (or in a variable).
 ///
 /// Yarrow owns heap values (strings, lists, hashmaps) on the stack or in a
@@ -103,6 +118,14 @@ struct LoopCtx {
     continue_to: Block,
 }
 
+/// A program-wide enum declaration: each member name bound to its value
+/// (an implicit ordinal or an explicit one).
+#[derive(Debug, Clone)]
+struct EnumInfo {
+    name: String,
+    members: Vec<(String, i64)>,
+}
+
 /// JIT compiler that turns a whole `Program` into a single linked module.
 pub struct Compiler {
     module: JITModule,
@@ -111,6 +134,12 @@ pub struct Compiler {
     struct_ids: HashMap<String, u32>,
     /// Layouts for every struct, indexed by `Ty::Struct(id).0`.
     struct_layouts: Vec<StructLayout>,
+    /// Enum name -> index into `enums`.
+    enum_ids: HashMap<String, u32>,
+    /// Every enum, indexed by `Ty::Enum(id).0`.
+    enums: Vec<EnumInfo>,
+    /// Bare enum member name -> (enum id, value), so `RED` resolves anywhere.
+    enum_consts: HashMap<String, (u32, i64)>,
     sigs: HashMap<String, cranelift_codegen::ir::Signature>,
     sig_tys: HashMap<String, (Vec<Ty>, Vec<Ty>)>,
     func_ids: HashMap<String, FuncId>,
@@ -154,6 +183,9 @@ impl Compiler {
             ptr_type,
             struct_ids: HashMap::new(),
             struct_layouts: Vec::new(),
+            enum_ids: HashMap::new(),
+            enums: Vec::new(),
+            enum_consts: HashMap::new(),
             sigs: HashMap::new(),
             sig_tys: HashMap::new(),
             func_ids: HashMap::new(),
@@ -186,6 +218,9 @@ impl Compiler {
         self.aliases.clear();
         self.plain_funcs.clear();
         self.loaded.clear();
+        self.enum_ids.clear();
+        self.enums.clear();
+        self.enum_consts.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
@@ -210,6 +245,46 @@ impl Compiler {
                         fields: Vec::new(),
                         size: 0,
                         align: 1,
+                    });
+                }
+            }
+        }
+
+        // Pass A2: register every enum. Members get implicit ordinals starting
+        // at 0 unless an explicit value is given; both names are bound.
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Enum(d) = item {
+                    let id = self.enums.len() as u32;
+                    self.enum_ids.insert(d.name.clone(), id);
+                    let mut members = Vec::with_capacity(d.members.len());
+                    let mut next = 0i64;
+                    for m in &d.members {
+                        let v = if let Some(raw) = &m.value {
+                            let n = decode_int_literal(raw).map_err(|msg| {
+                                CompileError::new(msg, Location::default(), "E363")
+                            })?;
+                            if n < i64::MIN as i128 || n > i64::MAX as i128 {
+                                return Err(CompileError::new(
+                                    format!(
+                                        "enum member '{}' value '{raw}' is out of range",
+                                        m.name
+                                    ),
+                                    Location::default(),
+                                    "E364",
+                                ));
+                            }
+                            n as i64
+                        } else {
+                            next
+                        };
+                        next = v.saturating_add(1);
+                        self.enum_consts.insert(m.name.clone(), (id, v));
+                        members.push((m.name.clone(), v));
+                    }
+                    self.enums.push(EnumInfo {
+                        name: d.name.clone(),
+                        members,
                     });
                 }
             }
@@ -480,8 +555,10 @@ impl Compiler {
         Ok(())
     }
 
-    /// Run the compiled `main` function and return its single integer result.
-    pub fn run_main(&mut self) -> CResult<i64> {
+    /// Run the compiled `main` function and return its result (if any) in a
+    /// driver-displayable form. Supports void `main` and integer, float, bool
+    /// and string results; other result types are rejected with `E360`.
+    pub fn run_main(&mut self) -> CResult<RunResult> {
         self.finalize()?;
         let id = *self.func_ids.get("main").ok_or_else(|| {
             CompileError::new(
@@ -490,34 +567,81 @@ impl Compiler {
                 "E360",
             )
         })?;
+        let (_, return_tys) = self.sig_tys.get("main").cloned().ok_or_else(|| {
+            CompileError::new("missing signature for 'main'", Location::default(), "E360")
+        })?;
         let sig = self.sigs.get("main").cloned().ok_or_else(|| {
             CompileError::new("missing signature for 'main'", Location::default(), "E360")
         })?;
-        if sig.returns.len() != 1 {
+        // A `with T or Error` main returns an envelope we cannot surface yet.
+        if error_return(&return_tys)?.is_some() {
             return Err(CompileError::new(
-                "'main' must return exactly one value to be runnable",
+                "'main' may not return an error yet",
                 Location::default(),
                 "E360",
             ));
         }
-        let ret = sig.returns[0].value_type;
         let ptr = self.module.get_finalized_function(id);
         unsafe {
-            if ret == irtypes::I64 {
-                let f: extern "C" fn() -> i64 = std::mem::transmute(ptr);
-                Ok(f())
-            } else if ret == irtypes::I32 {
-                let f: extern "C" fn() -> i32 = std::mem::transmute(ptr);
-                Ok(f() as i64)
-            } else if ret == irtypes::I8 {
-                let f: extern "C" fn() -> i8 = std::mem::transmute(ptr);
-                Ok(f() as i64)
-            } else {
-                Err(CompileError::new(
+            match return_tys.as_slice() {
+                [] => {
+                    let f: extern "C" fn() = std::mem::transmute(ptr);
+                    f();
+                    Ok(RunResult::Void)
+                }
+                [ty] => self.read_main_result(sig.returns[0].value_type, *ty, ptr as usize),
+                _ => Err(CompileError::new(
+                    "'main' must return at most one value to be runnable",
+                    Location::default(),
+                    "E360",
+                )),
+            }
+        }
+    }
+
+    /// Reinterpret `main`'s single return value from its Cranelift slot.
+    fn read_main_result(&self, clty: CLType, ty: Ty, ptr: usize) -> CResult<RunResult> {
+        let _ = clty;
+        unsafe {
+            match ty {
+                Ty::Bool => {
+                    let f: extern "C" fn() -> i8 = std::mem::transmute(ptr);
+                    Ok(RunResult::Bool(f() != 0))
+                }
+                Ty::I8 | Ty::U8 => {
+                    let f: extern "C" fn() -> i8 = std::mem::transmute(ptr);
+                    Ok(RunResult::Int(f() as i64))
+                }
+                Ty::I16 | Ty::U16 => {
+                    let f: extern "C" fn() -> i16 = std::mem::transmute(ptr);
+                    Ok(RunResult::Int(f() as i64))
+                }
+                Ty::I32 | Ty::U32 | Ty::Rune => {
+                    let f: extern "C" fn() -> i32 = std::mem::transmute(ptr);
+                    Ok(RunResult::Int(f() as i64))
+                }
+                Ty::I64 | Ty::U64 | Ty::Enum(_) => {
+                    let f: extern "C" fn() -> i64 = std::mem::transmute(ptr);
+                    Ok(RunResult::Int(f()))
+                }
+                Ty::F32 => {
+                    let f: extern "C" fn() -> f32 = std::mem::transmute(ptr);
+                    Ok(RunResult::Float(f() as f64))
+                }
+                Ty::F64 => {
+                    let f: extern "C" fn() -> f64 = std::mem::transmute(ptr);
+                    Ok(RunResult::Float(f()))
+                }
+                Ty::String => {
+                    let f: extern "C" fn() -> u64 = std::mem::transmute(ptr);
+                    let bytes = crate::runtime::string_bytes(f()).unwrap_or_default();
+                    Ok(RunResult::Str(String::from_utf8_lossy(&bytes).into_owned()))
+                }
+                _ => Err(CompileError::new(
                     "unsupported 'main' return type for run_main",
                     Location::default(),
                     "E360",
-                ))
+                )),
             }
         }
     }
@@ -544,7 +668,12 @@ impl Compiler {
     }
 
     fn resolve_ty(&self, t: &crate::parser::ast::Type) -> CResult<Ty> {
-        resolve(t, &|n| self.struct_ids.get(n).copied())
+        resolve(t, &|n| {
+            if let Some(id) = self.struct_ids.get(n) {
+                return Some(Ty::Struct(*id));
+            }
+            self.enum_ids.get(n).map(|id| Ty::Enum(*id))
+        })
     }
 
     /// Intern an error kind name (`error.CustomError`) to a program-unique
@@ -840,6 +969,11 @@ impl Compiler {
         }
         for r in &f.returns {
             let ty = self.resolve_ty(r)?;
+            if ty == Ty::Void {
+                // `void` means "no value"; it contributes no return slot
+                // (error envelopes already filter it via `error_return`).
+                continue;
+            }
             sig.returns.push(AbiParam::new(ty.clty(self.ptr_type)));
             return_tys.push(ty);
         }
@@ -2222,19 +2356,29 @@ impl Compiler {
             }
             Expr::String { value } => self.emit_string(b, st, stack, value)?,
             Expr::Variable { name } => {
-                let (var, t) = st.vars.get(name).cloned().ok_or_else(|| {
-                    CompileError::new(
+                if let Some((var, t)) = st.vars.get(name).cloned() {
+                    let v = b.use_var(var);
+                    stack.push(Slot {
+                        value: v,
+                        ty: t,
+                        own: Own::Trivial,
+                    });
+                } else if let Some((id, v)) = self.enum_consts.get(name) {
+                    // A bare enum member name (`RED`) is a program-wide
+                    // named constant; resolve it to its value.
+                    let c = b.ins().iconst(irtypes::I64, *v);
+                    stack.push(Slot {
+                        value: c,
+                        ty: Ty::Enum(*id),
+                        own: Own::Trivial,
+                    });
+                } else {
+                    return Err(CompileError::new(
                         format!("unknown variable '{name}'"),
                         Location::default(),
                         "E320",
-                    )
-                })?;
-                let v = b.use_var(var);
-                stack.push(Slot {
-                    value: v,
-                    ty: t,
-                    own: Own::Trivial,
-                });
+                    ));
+                }
             }
             Expr::Member { base, member } => {
                 // `error.CustomError` creates a tagged error value.
@@ -2246,6 +2390,30 @@ impl Compiler {
                     stack.push(Slot {
                         value: v,
                         ty: Ty::Error,
+                        own: Own::Trivial,
+                    });
+                    return Ok(());
+                }
+                // `Color.RED` resolves an enum member through its enum type.
+                if let Expr::Variable { name } = base.as_ref()
+                    && let Some(id) = self.enum_ids.get(name)
+                {
+                    let info = &self.enums[*id as usize];
+                    let (_, v) =
+                        info.members
+                            .iter()
+                            .find(|(n, _)| n == member)
+                            .ok_or_else(|| {
+                                CompileError::new(
+                                    format!("enum '{}' has no member '{member}'", info.name),
+                                    Location::default(),
+                                    "E320",
+                                )
+                            })?;
+                    let c = b.ins().iconst(irtypes::I64, *v);
+                    stack.push(Slot {
+                        value: c,
+                        ty: Ty::Enum(*id),
                         own: Own::Trivial,
                     });
                     return Ok(());

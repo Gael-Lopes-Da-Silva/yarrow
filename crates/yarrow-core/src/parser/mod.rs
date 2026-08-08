@@ -430,11 +430,21 @@ impl Parser {
 
         let mut members = Vec::new();
         while self.peek_kind() != TokenKind::End {
-            members.push(
-                self.expect(TokenKind::Identifier, "expected enum member")?
-                    .lexeme
-                    .clone(),
-            );
+            let member_name = self
+                .expect(TokenKind::Identifier, "expected enum member")?
+                .lexeme
+                .clone();
+            // An explicit value, e.g. `RED 10` (juxtaposed, like other words);
+            // `-5` lexes as a single Integer token so negatives work too.
+            let value = if self.peek_kind() == TokenKind::Integer {
+                Some(self.advance().lexeme.clone())
+            } else {
+                None
+            };
+            members.push(EnumMember {
+                name: member_name,
+                value,
+            });
         }
         self.expect(TokenKind::End, "expected 'end' to close enum")?;
 

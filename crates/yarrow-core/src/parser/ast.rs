@@ -239,10 +239,19 @@ pub struct Implement {
     pub functions: Vec<Function>,
 }
 
+/// A single enum member: its name and optional explicit value (the raw integer
+/// lexeme, kept lossless like other literals). Without a value, the member gets
+/// the next implicit ordinal starting at 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMember {
+    pub name: String,
+    pub value: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     pub name: String,
-    pub members: Vec<String>,
+    pub members: Vec<EnumMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

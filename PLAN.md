@@ -12,11 +12,12 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
   - done: numeric/control core, structs/methods/`self`, `match`, `for` over
     fixed-size arrays, strings/lists/hashmaps/`@sqrt` via a heap host runtime,
     modules/`require` with an embedded std library, error handling as values
-    (`error`/`Error` types, `error.X`, `unwrap`, `handle`), and the ownership
-    model (`@move`, `@borrow`, reverse-order `defer`, heap regions, struct/array
+    (`error`/`Error` types, `error.X`, `unwrap`, `handle`), flexible
+    `run_main` (void/int/float/bool/string results), and the ownership model
+    (`@move`, `@borrow`, reverse-order `defer`, heap regions, struct/array
     drop/free).
-  - remaining: enums, unions, fixed-array indexing, and the spec-divergence
-    items in section 3 (milestones 7–15).
+  - remaining: unions, fixed-array indexing, and the spec-divergence
+    items in section 3 (milestones 9–15).
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -78,11 +79,17 @@ and the compiler reuses the same decoders.
   `handle ... end` catches the error envelope from a `with T or Error` call —
   its body runs on error with the error value on the stack (typically matched
   with `error.X == case`), otherwise the success payload is kept, and a `handle
-v end` fallback pushes `v` on error.
+ v end` fallback pushes `v` on error.
+- **Enums** — `Color enum RED GREEN end` (members on their own line, `#` ordinal
+  comments allowed) lowers to program-wide named constants: `RED` and
+  `Color.RED` both push the member's value, and `Color` resolves as a real type
+  for `val`/params/returns/struct fields. Members get implicit ordinals from 0
+  or an explicit value (`RED 10 GREEN 20`, negatives like `BAD -1` allowed);
+  enum values are physically I64, compare like ints, and can live in
+  lists/maps/arrays (as I64 scalars).
 
 ## 2. Parsed but NOT compiled
 
-- **Enums** — `Color enum RED GREEN end` parses but members never become values.
 - **Unions** — `Value union i32 string end` parses but is unresolved (`E308`).
 - **Array indexing** — fixed-size `array<T n>` compiles for scalar elements,
   but there is no `index`/`get`/`set` word yet (lists have `@list_get`/
@@ -97,8 +104,9 @@ v end` fallback pushes `v` on error.
 - **Literal typing** — spec: `42 -> u8`, `-900 -> i16`, `3.14 -> f16` (smallest
   fitting type); the compiler pins all int literals to I64 and floats to F64,
   with no smallest-fit inference.
-- **Void `main`** — `run_main()` requires exactly one return value (`E360`), so
-  a void `main` (spec line 65) cannot run.
+- **`run_main` result coverage** — struct/container/pointer results and
+  `with T or Error` mains are rejected (`E360`); 128-bit and `F16` results are
+  unsupported.
 - **128-bit** — `i128/u128/f128` map to Cranelift types but 128->float
   conversions are rejected (`E310`) and 128-bit arithmetic is untested.
 - **Float mod/pow** — `%`/`^` on floats are unsupported (`E334`).
@@ -163,11 +171,18 @@ end` fallback form pushes `v` on error. A `with T or Error` function has the
    propagation agree. The spec's example program (`docs/syntax.yar` lines
    225–284) still needs its `implement`/method dispatch and the `std.io`
    module.
-7. **Void/flexible `run_main`** — a `main` with no `with` clause (spec line 65)
-   currently fails `E360`; `run_main()` accepts exactly one I64/I32/I8 return,
-   so void mains and non-numeric returns (strings, floats) cannot run.
-8. **Enums** — `Color enum RED GREEN end` lowers to named constant values with
-   the member names bound (implicit ordinals, explicit values if specified).
+7. **Void/flexible `run_main`** — done. `run_main()` now returns a
+   `RunResult` (`Void`/`Int`/`Bool`/`Float`/`Str`) instead of requiring exactly
+   one I64/I32/I8 return: void `main` (no `with` clause, or `with void`) runs,
+   and integer, rune, bool, float (`F32`/`F64`) and string results are decoded
+   and printed by the driver. Still rejected (`E360`): struct/container/pointer
+   results, `with T or Error` mains, and 128-bit/`F16` results.
+8. **Enums** — done. `Color enum RED GREEN end` lowers to named constant values
+   with the member names bound (implicit ordinals, explicit values if
+   specified). Bare members (`RED`) and `Color.RED` push the value; `Color`
+   resolves as a real type (`Ty::Enum`) usable in `val`/params/returns/struct
+   fields, stored as an I64 so enums compare like ints and fit in
+   lists/maps/arrays.
 9. **Unions** — `Value union i32 string end` becomes a tagged one-of type;
    `val` declarations hold one member at a time, `set` switches the active
    member and drops the old one, and reads must be matched/tagged.
@@ -193,6 +208,6 @@ end` fallback form pushes `v` on error. A `with T or Error` function has the
 ## Definition of done
 
 The compiler is feature-complete when the remaining `E301`/`E303`–`E308`/"not
-yet supported" branches (milestones 7–15) are replaced with real codegen, the
+yet supported" branches (milestones 9–15) are replaced with real codegen, the
 spec-divergence items above match `docs/syntax.yar`, and the spec's full
 example program (`docs/syntax.yar` lines 225–284) compiles and runs.

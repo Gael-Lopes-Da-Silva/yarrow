@@ -39,6 +39,10 @@ pub enum Ty {
     /// A pointer to a struct instance (frame slot) or a `reference<T>`. The
     /// payload is the struct's index into the compiler's layout table.
     Struct(u32),
+    /// An enum value: an index into the compiler's enum table. The physical
+    /// representation is an I64 holding the member's value (an implicit ordinal
+    /// or an explicit one).
+    Enum(u32),
     /// A pointer to a fixed-size array stored in a frame slot: the element
     /// type (as a scalar code, see [`scalar_code`]) and element count.
     /// `count == 0` means "size not yet inferred".
@@ -86,6 +90,7 @@ impl Ty {
                 | Ty::U128
                 | Ty::Rune
                 | Ty::Error
+                | Ty::Enum(_)
         )
     }
 
@@ -98,7 +103,9 @@ impl Ty {
     }
 
     /// A compact scalar code for `self`, used by `Ty::Array { elem, .. }`.
-    /// Returns `None` for non-scalar types.
+    /// Returns `None` for non-scalar types. Enums are physically I64, so they
+    /// share the I64 scalar code: containers/arrays store them as plain 64-bit
+    /// values and the runtime frees them as scalars (a no-op).
     pub fn scalar_code(self) -> Option<u8> {
         Some(match self {
             Ty::Bool => 0,
@@ -117,6 +124,7 @@ impl Ty {
             Ty::F32 => 13,
             Ty::F64 => 14,
             Ty::F128 => 15,
+            Ty::Enum(_) => 4,
             _ => return None,
         })
     }
@@ -143,6 +151,7 @@ impl Ty {
             | Ty::F64
             | Ty::Ptr
             | Ty::Struct(_)
+            | Ty::Enum(_)
             | Ty::Array { .. }
             | Ty::String
             | Ty::List { .. }
@@ -183,6 +192,7 @@ impl Ty {
             Ty::Void => irtypes::I8,
             Ty::Ptr => ptr_type,
             Ty::Struct(_) => ptr_type,
+            Ty::Enum(_) => irtypes::I64,
             Ty::Array { .. } => ptr_type,
             Ty::String => ptr_type,
             Ty::List { .. } => ptr_type,
@@ -295,8 +305,10 @@ fn primitive_ty(p: Primitive) -> Option<Ty> {
 }
 
 /// Resolve a Yarrow type to a physical `Ty`. Struct names resolve to
-/// `Ty::Struct(id)` where `id` is the index into the compiler's layout table.
-pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty> {
+/// `Ty::Struct(id)`, enum names to `Ty::Enum(id)`, where `id` indexes the
+/// compiler's layout/enum tables. The `named` closure maps any other named
+/// type to a resolved `Ty` (or `None` for unknown names).
+pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
     let loc = ty.location;
     match &ty.kind {
         TypeKind::Primitive(p) => match primitive_ty(*p) {
@@ -313,8 +325,8 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
             if name == "Error" || name == "error" {
                 return Ok(Ty::Error);
             }
-            match struct_id(name) {
-                Some(id) => Ok(Ty::Struct(id)),
+            match named(name) {
+                Some(t) => Ok(t),
                 None => Err(CompileError::unsupported(
                     format!("unknown or unsupported type '{name}'"),
                     loc,
@@ -323,7 +335,7 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
             }
         }
         TypeKind::Array { element, size } => {
-            let elem = resolve(element, struct_id)?;
+            let elem = resolve(element, named)?;
             let code = elem.scalar_code().ok_or_else(|| {
                 CompileError::unsupported(
                     format!("array element type {elem:?} is not yet supported"),
@@ -336,15 +348,15 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
                 count: size.unwrap_or(0) as u32,
             })
         }
-        TypeKind::Reference { inner } => resolve(inner, struct_id),
+        TypeKind::Reference { inner } => resolve(inner, named),
         TypeKind::List { element } => {
-            let elem = resolve(element, struct_id)?;
+            let elem = resolve(element, named)?;
             let code = container_elem_code(elem, loc)?;
             Ok(Ty::List { elem: code })
         }
         TypeKind::Hashmap { key, value } => {
-            let kt = resolve(key, struct_id)?;
-            let vt = resolve(value, struct_id)?;
+            let kt = resolve(key, named)?;
+            let vt = resolve(value, named)?;
             let key = container_elem_code(kt, loc)?;
             let value = container_elem_code(vt, loc)?;
             Ok(Ty::Hashmap { key, value })
