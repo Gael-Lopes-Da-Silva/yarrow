@@ -34,7 +34,8 @@ pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
 use types::{
-    StructLayout, coerce, common_type, elem_code, elem_ty, kind_code, layout, resolve, scalar_ty,
+    StructLayout, coerce, common_type, elem_code, elem_ty, error_return, kind_code, layout,
+    resolve, scalar_ty,
 };
 
 /// Compile-time ownership of a value on the operand stack (or in a variable).
@@ -92,6 +93,9 @@ struct FnState {
     /// Struct layout ids whose field descriptors were already registered in
     /// the runtime this function.
     registered_descs: std::collections::HashSet<u32>,
+    /// Payload type of this function's `with T or Error` return envelope, if
+    /// it returns an error. `None` means the function cannot error.
+    error_value: Option<Ty>,
 }
 
 struct LoopCtx {
@@ -131,6 +135,10 @@ pub struct Compiler {
     plain_funcs: HashMap<String, String>,
     /// Module paths already loaded, so a `require` is processed once.
     loaded: std::collections::HashSet<String>,
+    /// Error kind name (`CustomError`, `OutOfMemory`, ...) -> program-unique
+    /// tag. Tags are interned once per program so `error.X ==` comparisons
+    /// and `with T or Error` propagation agree across functions.
+    error_ids: HashMap<String, u32>,
     finalized: bool,
 }
 
@@ -159,6 +167,7 @@ impl Compiler {
             aliases: HashMap::new(),
             plain_funcs: HashMap::new(),
             loaded: std::collections::HashSet::new(),
+            error_ids: HashMap::new(),
             finalized: false,
         })
     }
@@ -538,6 +547,14 @@ impl Compiler {
         resolve(t, &|n| self.struct_ids.get(n).copied())
     }
 
+    /// Intern an error kind name (`error.CustomError`) to a program-unique
+    /// tag, so comparisons and envelope propagation agree across functions.
+    /// Tags start at 1: `env == 0` is reserved for success.
+    fn error_tag(&mut self, name: &str) -> CResult<u32> {
+        let next = self.error_ids.len() as u32 + 1;
+        Ok(*self.error_ids.entry(name.to_string()).or_insert(next))
+    }
+
     fn struct_layout(&self, id: u32) -> &StructLayout {
         &self.struct_layouts[id as usize]
     }
@@ -826,6 +843,14 @@ impl Compiler {
             sig.returns.push(AbiParam::new(ty.clty(self.ptr_type)));
             return_tys.push(ty);
         }
+        // A `with T or Error` function returns an envelope `(i64 env, i64
+        // payload)`: env is 0 on success or the error tag on failure, and
+        // payload carries the success value (or 0).
+        if error_return(&return_tys)?.is_some() {
+            sig.returns.clear();
+            sig.returns.push(AbiParam::new(irtypes::I64));
+            sig.returns.push(AbiParam::new(irtypes::I64));
+        }
         let id = self.module.declare_function(name, Linkage::Export, &sig)?;
         self.sigs.insert(name.to_string(), sig);
         self.sig_tys
@@ -847,14 +872,17 @@ impl Compiler {
         let mut ctx = self.module.make_context();
         ctx.func.signature = sig;
 
+        let returns = f
+            .returns
+            .iter()
+            .map(|r| self.resolve_ty(r))
+            .collect::<CResult<Vec<_>>>()?;
+        let error_value = error_return(&returns)?;
         let mut st = FnState {
             vars: HashMap::new(),
             loops: Vec::new(),
-            returns: f
-                .returns
-                .iter()
-                .map(|r| self.resolve_ty(r))
-                .collect::<CResult<_>>()?,
+            returns,
+            error_value,
             frefs: HashMap::new(),
             rt: HashMap::new(),
             module: module.map(str::to_string),
@@ -930,7 +958,11 @@ impl Compiler {
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
 
         // Implicit termination for a function falling off the end.
-        if st.returns.is_empty() {
+        if st.error_value.is_some() {
+            let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
+            self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
+            b.ins().return_(&vals);
+        } else if st.returns.is_empty() {
             self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&[]);
         } else if stack.len() >= st.returns.len() {
@@ -1332,13 +1364,7 @@ impl Compiler {
                 st.deferred.push(body.clone());
             }
 
-            Stmt::Handle { body } => {
-                // Error handlers: no control-flow support yet, so the body
-                // runs inline at the current point.
-                for s in body {
-                    self.compile_stmt(b, st, stack, s)?;
-                }
-            }
+            Stmt::Handle { body } => self.emit_handle(b, st, stack, body)?,
         }
         Ok(())
     }
@@ -1369,6 +1395,27 @@ impl Compiler {
         st: &mut FnState,
         stack: &mut Vec<Slot>,
     ) -> CResult<Vec<Value>> {
+        if let Some(payload_ty) = st.error_value {
+            // `with T or Error`: the body leaves either the success value or
+            // an error value on the stack.
+            let zero = b.ins().iconst(irtypes::I64, 0);
+            if matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
+                let err = stack.pop().unwrap();
+                return Ok(vec![err.value, zero]);
+            }
+            let payload = if payload_ty == Ty::Void {
+                zero
+            } else {
+                let slot = self.pop_slot(stack, "return value")?;
+                // The callee owns heap values it returns; the caller claims
+                // them from the envelope, so the callee must not free them.
+                if self.is_heap(slot.ty) {
+                    st.moved.insert(slot.value);
+                }
+                coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)?
+            };
+            return Ok(vec![zero, payload]);
+        }
         let n = st.returns.len();
         if stack.len() < n {
             return Err(CompileError::new(
@@ -1392,6 +1439,185 @@ impl Compiler {
             out.push(coerce(b, slot.value, slot.ty, *want, self.ptr_type)?);
         }
         Ok(out)
+    }
+
+    /// `value unwrap`: if the top of the stack is an error envelope from a
+    /// `with T or Error` call, keep the success payload or propagate the error
+    /// (return it when this function itself returns an error, otherwise trap).
+    /// Applied to anything that cannot fail, `unwrap` is an identity.
+    fn emit_unwrap(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+    ) -> CResult<()> {
+        // Only error envelopes sit on the stack as `Ty::Error`.
+        if !matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
+            return Ok(());
+        }
+        let env = stack.pop().unwrap();
+        let payload = stack.pop().unwrap();
+
+        let zero = b.ins().iconst(irtypes::I64, 0);
+        let ok = b.ins().icmp(IntCC::Equal, env.value, zero);
+        let ok_blk = b.create_block();
+        let err_blk = b.create_block();
+        let void = payload.ty == Ty::Void;
+        let payload_param = if void {
+            None
+        } else {
+            Some(b.append_block_param(ok_blk, payload.ty.clty(self.ptr_type)))
+        };
+        let err_env_param = b.append_block_param(err_blk, irtypes::I64);
+        // The envelope payload is only meaningful on success (the callee
+        // returns 0 on error), so drop it from the ownership set before
+        // branching; the success path re-claims its merge value.
+        if !void {
+            st.owns.remove(&payload.value);
+        }
+        let ok_args: Vec<BlockArg> = if void {
+            vec![]
+        } else {
+            vec![BlockArg::Value(payload.value)]
+        };
+        b.ins()
+            .brif(ok, ok_blk, &ok_args, err_blk, &[BlockArg::Value(env.value)]);
+
+        // Error: propagate as this function's error return, or trap. Filling
+        // this block first lets the success block below remain the live
+        // continuation for the rest of the function.
+        b.switch_to_block(err_blk);
+        if st.error_value.is_some() {
+            stack.push(Slot {
+                value: err_env_param,
+                ty: Ty::Error,
+                own: Own::Trivial,
+            });
+            self.emit_return(b, st, stack)?;
+        } else {
+            b.ins().trap(TrapCode::unwrap_user(1));
+        }
+        self.dead_block(b);
+
+        // Success: the payload flows out of the merge with its declared type.
+        b.switch_to_block(ok_blk);
+        if !void {
+            self.claim(st, payload_param.unwrap(), payload.ty);
+            stack.push(Slot {
+                value: payload_param.unwrap(),
+                ty: payload.ty,
+                own: if self.is_heap(payload.ty) {
+                    Own::Owned
+                } else {
+                    Own::Trivial
+                },
+            });
+        }
+        Ok(())
+    }
+
+    /// `expr handle <body> end`: if `expr` left an error envelope, run `<body>`
+    /// with the error value on the stack; otherwise keep the payload and skip
+    /// the body. The body's own result (`handle v end` fallback or a match
+    /// consuming the error) is the result of the whole handle, merged with the
+    /// success payload.
+    fn emit_handle(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        body: &[Stmt],
+    ) -> CResult<()> {
+        if !matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
+            return Ok(());
+        }
+        let env = stack.pop().unwrap();
+        let payload = stack.pop().unwrap();
+        let pre = stack.clone();
+
+        let zero = b.ins().iconst(irtypes::I64, 0);
+        let is_err = b.ins().icmp(IntCC::NotEqual, env.value, zero);
+        let body_blk = b.create_block();
+        let end = b.create_block();
+
+        let void = payload.ty == Ty::Void;
+        let success_tys: Vec<Ty> = if void { vec![] } else { vec![payload.ty] };
+        for t in &success_tys {
+            b.append_block_param(end, t.clty(self.ptr_type));
+        }
+        if !void {
+            b.append_block_param(body_blk, payload.ty.clty(self.ptr_type));
+        }
+        b.append_block_param(body_blk, irtypes::I64);
+        if !void {
+            st.owns.remove(&payload.value);
+        }
+        let ok_args: Vec<BlockArg> = if void {
+            vec![]
+        } else {
+            vec![BlockArg::Value(payload.value)]
+        };
+        let mut body_args: Vec<BlockArg> = if void {
+            vec![]
+        } else {
+            vec![BlockArg::Value(payload.value)]
+        };
+        body_args.push(BlockArg::Value(env.value));
+        b.ins().brif(is_err, body_blk, &body_args, end, &ok_args);
+
+        // Error path: the payload is meaningless (0 from the callee), so it is
+        // just dead; push the error value and run the body.
+        b.switch_to_block(body_blk);
+        let err = b.block_params(body_blk)[if void { 0 } else { 1 }];
+        *stack = pre.clone();
+        stack.push(Slot {
+            value: err,
+            ty: Ty::Error,
+            own: Own::Trivial,
+        });
+        let err_idx = stack.len() - 1;
+        self.compile_body(b, st, stack, body)?;
+        // Drop the error slot if the body did not consume it.
+        if stack.len() > err_idx && stack[err_idx].ty == Ty::Error && stack[err_idx].value == err {
+            stack.remove(err_idx);
+        }
+        // The handle's result is what the body left beyond `pre`, merged with
+        // the success payload.
+        let results = stack.split_off(pre.len());
+        if results.len() != success_tys.len() {
+            return Err(CompileError::new(
+                format!(
+                    "'handle' body must leave {} value(s) to match the success value, left {}",
+                    success_tys.len(),
+                    results.len()
+                ),
+                Location::default(),
+                "E328",
+            ));
+        }
+        let mut args: Vec<BlockArg> = Vec::with_capacity(results.len());
+        for (s, want) in results.iter().zip(&success_tys) {
+            let v = coerce(b, s.value, s.ty, *want, self.ptr_type)?;
+            args.push(BlockArg::Value(v));
+        }
+        b.ins().jump(end, &args);
+
+        b.switch_to_block(end);
+        *stack = pre;
+        for (i, t) in success_tys.iter().enumerate() {
+            let v = b.block_params(end)[i];
+            self.claim(st, v, *t);
+            stack.push(Slot {
+                value: v,
+                ty: *t,
+                own: if self.is_heap(*t) {
+                    Own::Owned
+                } else {
+                    Own::Trivial
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Create a fresh block we can throw away dead code into. The previous
@@ -1575,6 +1801,36 @@ impl Compiler {
         }
     }
 
+    /// Like [`Self::eval_cond`], but for `match` case conditions: these may
+    /// consume stack values (e.g. `error.X ==` compares against the match
+    /// subject), so only the top result is required to be a boolean or integer.
+    /// The stack balance relative to the subject is checked by the caller.
+    fn eval_match_cond(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        e: &Expr,
+    ) -> CResult<Value> {
+        self.compile_expr(b, st, stack, e)?;
+        let slot = stack.pop().ok_or_else(|| {
+            CompileError::new(
+                "condition must evaluate to a single value",
+                Location::default(),
+                "E324",
+            )
+        })?;
+        if slot.ty.is_int() || slot.ty.is_bool() {
+            Ok(slot.value)
+        } else {
+            Err(CompileError::new(
+                "condition must be a boolean or integer",
+                Location::default(),
+                "E324",
+            ))
+        }
+    }
+
     fn emit_if(
         &mut self,
         b: &mut FunctionBuilder,
@@ -1730,8 +1986,11 @@ impl Compiler {
                 b.switch_to_block(cond_blks[i - 1]);
             }
             *stack = sub_stack.clone();
-            let cond = self.eval_cond(b, st, stack, &case.condition)?;
-            if stack.len() != sub_stack.len() {
+            let cond = self.eval_match_cond(b, st, stack, &case.condition)?;
+            // The condition may keep the subject on the stack (`dup X ==`) or
+            // consume stack values (`error.X ==` compares against the subject),
+            // so it may leave at most the pre-condition stack height.
+            if stack.len() > sub_stack.len() {
                 return Err(CompileError::new(
                     "a 'match' case condition must leave the stack balanced",
                     Location::default(),
@@ -1978,6 +2237,19 @@ impl Compiler {
                 });
             }
             Expr::Member { base, member } => {
+                // `error.CustomError` creates a tagged error value.
+                if let Expr::Variable { name } = base.as_ref()
+                    && name == "error"
+                {
+                    let tag = self.error_tag(member)?;
+                    let v = b.ins().iconst(irtypes::I64, i64::from(tag));
+                    stack.push(Slot {
+                        value: v,
+                        ty: Ty::Error,
+                        own: Own::Trivial,
+                    });
+                    return Ok(());
+                }
                 let sid = self.base_struct(st, base)?;
                 let field = self.find_field(sid, member)?;
                 let fty = field.ty;
@@ -1996,12 +2268,9 @@ impl Compiler {
                 });
             }
             Expr::Builtin { name } => self.emit_builtin(b, st, stack, name)?,
-            Expr::Unwrap { .. } => {
-                return Err(CompileError::unsupported(
-                    "'unwrap' is not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Expr::Unwrap { inner } => {
+                self.compile_expr(b, st, stack, inner)?;
+                self.emit_unwrap(b, st, stack)?;
             }
             Expr::Binary { op, left, right } => {
                 self.compile_expr(b, st, stack, left)?;
@@ -2885,14 +3154,41 @@ impl Compiler {
         })?;
         let call_inst = b.ins().call(fref, &args);
         let results: Vec<Value> = b.inst_results(call_inst).to_vec();
-        for (v, t) in results.into_iter().zip(&return_tys) {
-            // Heap-typed return values transfer ownership to the caller.
-            self.claim(st, v, *t);
+        if let Some(payload_ty) = error_return(&return_tys)? {
+            // `with T or Error` callee: results are `(env, payload)`. Push the
+            // payload (as its declared type) followed by the envelope tag so
+            // `unwrap`/`handle` pop the tag first.
+            let env = results[0];
+            let payload = if payload_ty == Ty::Void {
+                results[1]
+            } else {
+                coerce(b, results[1], Ty::I64, payload_ty, self.ptr_type)?
+            };
+            self.claim(st, payload, payload_ty);
             stack.push(Slot {
-                value: v,
-                ty: *t,
-                own: Own::Owned,
+                value: payload,
+                ty: payload_ty,
+                own: if self.is_heap(payload_ty) {
+                    Own::Owned
+                } else {
+                    Own::Trivial
+                },
             });
+            stack.push(Slot {
+                value: env,
+                ty: Ty::Error,
+                own: Own::Trivial,
+            });
+        } else {
+            for (v, t) in results.into_iter().zip(&return_tys) {
+                // Heap-typed return values transfer ownership to the caller.
+                self.claim(st, v, *t);
+                stack.push(Slot {
+                    value: v,
+                    ty: *t,
+                    own: Own::Owned,
+                });
+            }
         }
         for slot in owned_temps {
             self.emit_drop(b, st, slot)?;

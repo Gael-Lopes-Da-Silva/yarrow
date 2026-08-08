@@ -62,6 +62,11 @@ pub enum Ty {
         key: u32,
         value: u32,
     },
+    /// An error value: a program-unique tag (u32) identifying the error kind
+    /// (`error.CustomError`, `error.OutOfMemory`, ...). Also the runtime
+    /// envelope discriminator of `with T or Error` calls: 0 means success,
+    /// any other value is the propagated error tag.
+    Error,
 }
 
 impl Ty {
@@ -80,6 +85,7 @@ impl Ty {
                 | Ty::U64
                 | Ty::U128
                 | Ty::Rune
+                | Ty::Error
         )
     }
 
@@ -140,7 +146,8 @@ impl Ty {
             | Ty::Array { .. }
             | Ty::String
             | Ty::List { .. }
-            | Ty::Hashmap { .. } => 64,
+            | Ty::Hashmap { .. }
+            | Ty::Error => 64,
             Ty::I128 | Ty::U128 | Ty::F128 => 128,
             Ty::Void => 0,
         }
@@ -180,6 +187,7 @@ impl Ty {
             Ty::String => ptr_type,
             Ty::List { .. } => ptr_type,
             Ty::Hashmap { .. } => ptr_type,
+            Ty::Error => irtypes::I64,
         }
     }
 
@@ -281,6 +289,7 @@ fn primitive_ty(p: Primitive) -> Option<Ty> {
         Primitive::Bool => Ty::Bool,
         Primitive::Void => Ty::Void,
         Primitive::String => Ty::String,
+        Primitive::Error => Ty::Error,
         _ => return None,
     })
 }
@@ -298,14 +307,21 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
                 "E303",
             )),
         },
-        TypeKind::Named(name) => match struct_id(name) {
-            Some(id) => Ok(Ty::Struct(id)),
-            None => Err(CompileError::unsupported(
-                format!("unknown or unsupported type '{name}'"),
-                loc,
-                "E302",
-            )),
-        },
+        TypeKind::Named(name) => {
+            // `Error` (capitalized, as in `with T or Error`) is the error
+            // type; `error` lowercase parses as `Primitive::Error`.
+            if name == "Error" || name == "error" {
+                return Ok(Ty::Error);
+            }
+            match struct_id(name) {
+                Some(id) => Ok(Ty::Struct(id)),
+                None => Err(CompileError::unsupported(
+                    format!("unknown or unsupported type '{name}'"),
+                    loc,
+                    "E302",
+                )),
+            }
+        }
         TypeKind::Array { element, size } => {
             let elem = resolve(element, struct_id)?;
             let code = elem.scalar_code().ok_or_else(|| {
@@ -344,6 +360,29 @@ pub fn resolve(ty: &Type, struct_id: &dyn Fn(&str) -> Option<u32>) -> CResult<Ty
             "E308",
         )),
     }
+}
+
+/// Classify a function's return types for the error envelope. Returns
+/// `Ok(None)` when the function cannot error; `Ok(Some(payload))` when it
+/// returns `with T or Error` — `Ty::Void` means no value on success, `Some(t)`
+/// means the single success value's type.
+pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
+    if !returns.contains(&Ty::Error) {
+        return Ok(None);
+    }
+    let mut vals: Vec<Ty> = returns
+        .iter()
+        .copied()
+        .filter(|t| *t != Ty::Error && *t != Ty::Void)
+        .collect();
+    if vals.len() > 1 {
+        return Err(CompileError::new(
+            "a 'with T or Error' return may carry at most one value",
+            Location::default(),
+            "E308",
+        ));
+    }
+    Ok(Some(vals.pop().unwrap_or(Ty::Void)))
 }
 
 /// Encode an element/key/value type for a container, rejecting values wider
@@ -469,6 +508,12 @@ pub fn coerce(
     // Any integer satisfies a pointer target. This is the "null" coercion that
     // lets `0 myList const list<i32>` declare a null container handle.
     if to.is_pointer() && from.is_int() {
+        return Ok(value);
+    }
+
+    // Any pointer satisfies an I64 target (the error envelope's payload slot is
+    // pointer-sized, so string/container/struct handles round-trip unchanged).
+    if from.is_pointer() && to == Ty::I64 {
         return Ok(value);
     }
 

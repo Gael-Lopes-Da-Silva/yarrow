@@ -11,12 +11,12 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 - **Compiler** — everything in section 1 lowers to JIT:
   - done: numeric/control core, structs/methods/`self`, `match`, `for` over
     fixed-size arrays, strings/lists/hashmaps/`@sqrt` via a heap host runtime,
-    modules/`require` with an embedded std library, and the ownership model
-    (`@move`, `@borrow`, reverse-order `defer`, heap regions, struct/array
+    modules/`require` with an embedded std library, error handling as values
+    (`error`/`Error` types, `error.X`, `unwrap`, `handle`), and the ownership
+    model (`@move`, `@borrow`, reverse-order `defer`, heap regions, struct/array
     drop/free).
-  - remaining: enums, unions, error handling (`unwrap`/`handle`/`error`),
-    fixed-array indexing, and the spec-divergence items in section 3
-    (milestones 6–15).
+  - remaining: enums, unions, fixed-array indexing, and the spec-divergence
+    items in section 3 (milestones 7–15).
 
 Most remaining work is in the **compiler**, not the front-end.
 
@@ -74,19 +74,19 @@ and the compiler reuses the same decoders.
   `@make_region`/`@free_region`/`@put_region` implement heap regions; `@sqrt`
   coerces ints/floats to `F64`. Heap values are dropped when popped,
   overwritten, or at scope exit.
-- **`defer`/`handle`** — `defer` bodies compile in reverse order at scope exit
-  (removed the `E301`); `handle` still requires error handling (milestone 6).
+- **`defer`/`handle`** — `defer` bodies compile in reverse order at scope exit;
+  `handle ... end` catches the error envelope from a `with T or Error` call —
+  its body runs on error with the error value on the stack (typically matched
+  with `error.X == case`), otherwise the success payload is kept, and a `handle
+v end` fallback pushes `v` on error.
 
 ## 2. Parsed but NOT compiled
 
+- **Enums** — `Color enum RED GREEN end` parses but members never become values.
+- **Unions** — `Value union i32 string end` parses but is unresolved (`E308`).
 - **Array indexing** — fixed-size `array<T n>` compiles for scalar elements,
   but there is no `index`/`get`/`set` word yet (lists have `@list_get`/
   `@list_set`).
-- **Enums** — `Color enum RED GREEN end` parses but members never become values.
-- **Unions** — `Value union i32 string end` parses but is unresolved (`E308`).
-- **Error handling** — `error`/`Error` types unresolved (`E302/E303`),
-  `with value or Error` unions, `unwrap` (`E301`), `handle` (its body runs
-  inline with no error-catching), `error.CustomError`.
 - **Unknown builtins** — builtins not handled by `emit_builtin` (I/O words,
   list/map removals, etc.) fall through to `E301`.
 
@@ -152,13 +152,17 @@ and the compiler reuses the same decoders.
    values and free them on `@region_free`/exit; structs and arrays are
    `yarrow_alloc` blocks whose fields (strings/lists/maps/structs/arrays) are
    freed recursively.
-6. **Error handling as values** — the `error`/`Error` types and
+6. **Error handling as values** — done. The `error`/`Error` types and
    `with T or Error` return unions resolve; `error.CustomError` creates a
-   tagged error value; `unwrap` pushes the value or propagates the error;
+   tagged error value; `unwrap` keeps the success value or propagates the
+   error (returning it when the function itself can error, otherwise trapping);
    `handle ... end` catches it (`error.X == case`, `else`) and its `handle v
-end` fallback form pushes `v` on error. This is what the spec's example
-   program (`docs/syntax.yar` lines 225–284) still needs: `unwrap`, `handle`,
-   and `with ... or Error` returns.
+end` fallback form pushes `v` on error. A `with T or Error` function has the
+   Cranelift signature `() -> (env: I64, payload: I64)` with `env == 0` on
+   success; error kind names are interned per program so comparisons and
+   propagation agree. The spec's example program (`docs/syntax.yar` lines
+   225–284) still needs its `implement`/method dispatch and the `std.io`
+   module.
 7. **Void/flexible `run_main`** — a `main` with no `with` clause (spec line 65)
    currently fails `E360`; `run_main()` accepts exactly one I64/I32/I8 return,
    so void mains and non-numeric returns (strings, floats) cannot run.
@@ -189,6 +193,6 @@ end` fallback form pushes `v` on error. This is what the spec's example
 ## Definition of done
 
 The compiler is feature-complete when the remaining `E301`/`E303`–`E308`/"not
-yet supported" branches (milestones 6–15) are replaced with real codegen, the
+yet supported" branches (milestones 7–15) are replaced with real codegen, the
 spec-divergence items above match `docs/syntax.yar`, and the spec's full
 example program (`docs/syntax.yar` lines 225–284) compiles and runs.
