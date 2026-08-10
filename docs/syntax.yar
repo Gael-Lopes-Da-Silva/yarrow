@@ -3,9 +3,9 @@
 # Let's dive in with examples! Everything is evaluated on a stack.
 
 # Modules: Import with require
-"std.math.sqrt" require  # Import a function into the main scope
-"std.io" require io      # Import everything from io into a scope named io
-# "std.io" require # Would import everything from io into main scope
+"std.io" require io        # Import everything from io into a scope named io
+# "std.math.sqrt" require  # Import a function into the main scope
+# "std.math" require       # Would import everything from math into main scope
 
 my_function function do
     # Arithmetic Operators: Stack-based, operands popped in reverse order
@@ -222,16 +222,56 @@ enum_function function do
     end
 end
 
+# Unions: Hold one type at a time
+MyUnion union
+    i32
+    string
+end
+
+union_function function do
+    42 val mutable MyUnion  # Can be initialized either with a string or an i32
+    "Myself" val set        # String is a valid type of the union
+
+    val typeof
+    # Current stack: [MyUnion]
+    drop
+
+    # On a union subject, match dispatches on the active member's type: cases are `Type case`.
+    # Each branch receives the member as a reference<Type> that auto-derefs on read, so it
+    # behaves like a plain value for read operations (arithmetic, comparison, concatenation...).
+    # The borrow is released at the end of the match, leaving the union untouched.
+    # Member types must be distinct, and a case type must be one of them.
+    val match
+        i32 case
+            # Current stack: [reference<i32>]
+            dup * # Auto-deref: 42 * 42, the reference reads as its value
+            # Current stack: [1764]
+            drop
+        end
+
+        string case
+            # Current stack: [reference<string>]
+            greeting const reference<string> # Bind the member as a reference
+            greeting " says hello!" +        # Auto-deref: concatenation reads through it
+            # Current stack: ["Myself says hello!"]
+            drop
+        end
+
+        else # Optional if all types are covered
+        end
+    end
+end
+
 # Defer: Run at scope exit
 defer_function function do
-    "std.fs" require # Import only for this function scope
+    "std.fs" require fs # Import only for this function scope
 
-    "myfile.txt" 'r' open_file call unwrap
-    file const File
+    "myfile.txt" 'r' fs.open_file call unwrap # Will return a reference to the file
+    file const reference<File>
     # file.read_line call # To get a list of lines
     defer # Defer body is executed in reverse
         # Would be last to execute
-        file close_file call
+        file fs.close_file call
         # Would be first to execute
     end
 end
@@ -240,8 +280,8 @@ end
 # Yarrow manages memory using stack ownership, explicit variable ownership,
 # borrowing, region-based heap management, and compile-time checks.
 memory_function function do
-    "std.list" require    # Import functions like list_push
-    "std.region" require  # Import functions like make_region, put_region or free_region
+    "std.list" require list      # Import functions like list_push
+    "std.region" require region  # Import functions like make_region, put_region or free_region
 
     # Stack Ownership: Stack owns temporary values, dropped when popped
     "temp"  # Pushes string, owned by stack
@@ -258,21 +298,21 @@ memory_function function do
     myList borrow # Pushes reference<list<i32>>
     # Use the reference<list<i32>>
     pop # Ends borrow by popping the reference from the stack
-    myList 4 list_push call unwrap # Allowed after release
+    myList 4 list.list_push call unwrap # Allowed after release
     () myList2 const list<i32>
     myList myList2 move        # Transfer the ownership of the data from myList to myList2
     # myList 4 list_push call  # Compile time error because does not own the value anymore
-    myList2 4 list_push call unwrap # Allowed after move
+    myList2 4 list.list_push call unwrap # Allowed after move
 
     # Compile-Time Checks: Prevent use-after-pop, use-after-free
     # myList2 borrow
     # myList2 pop # Error: Cannot pop while borrowed, need to pop reference before to release borrow
 
     # Regions: Heap data allocated in regions, freed as a unit
-    myRegion make_region call
+    myRegion region.make_region call
     (1 2 3) myListRegion mutable list<i32>
-    myListRegion myRegion put_region call
-    myRegion free_region call # Would also work in a defer
+    myListRegion myRegion region.put_region call
+    myRegion region.free_region call # Would also work in a defer
     # Region freed, dropping myListRegion
 end
 
@@ -305,9 +345,6 @@ error_function function do
 end with void or error
 
 # Example Program: Putting it together
-"std.list" require
-"std.string" require
-
 Person struct
     string name
     list<i32> scores
@@ -318,11 +355,13 @@ Person implement
         reference<Person> # The reference needs to point to a mutable value
         i32
     do
+        "std.list" require list # Also works in a struct implementation function
+
         # Current stack: [reference<Person>, <i32>]
         score const i32
         self const reference<Person>
 
-        self.scores score list_push call unwrap
+        self.scores score list.list_push call unwrap
         return
     end with void or error
 
@@ -331,19 +370,19 @@ Person implement
     do
         self const reference<Person>
 
-        (self.name "says hello!") ' ' string_join call unwrap # Take a list of string to join and a delimiter
+        self.name " says hello!" +
         return
     end with string or error
 end
 
 example_function function do
-    "std.region" require
+    "std.region" require region
 
-    myRegion make_region call
-    defer myRegion free_region call end
+    myRegion region.make_region call
+    defer myRegion region.free_region call end
 
     {name "Alice" scores (10 20)} person mutable Person # Struct literal (identifier keys), not to be confused with hashmap literals {k v}
-    person myRegion put_region call
+    person myRegion region.put_region call
 
     person borrow             # Put a reference<Person> on the stack
     person.greet call unwrap  # Use the reference<Person> to call greet and release borrow
@@ -372,9 +411,10 @@ end
 
 # Entry point of the program, always required
 main function do
-    my_function call
+    my_function call # Use the call keyword to call a function
     struct_function call
     enum_function call
+    union_function call
     defer_function call
     memory_function call
     error_function call
