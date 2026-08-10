@@ -182,7 +182,7 @@ Point implement
         reference<Point>
     do
         self const reference<Point>
-        self.x self.x * self.y self.y * +
+        self.x self.x * self.y self.y * + # Perform auto-deref on reference
         return
     end with i32
 end
