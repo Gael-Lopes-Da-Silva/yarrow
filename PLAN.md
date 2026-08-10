@@ -4,8 +4,11 @@ Status of the language as-specified in `docs/syntax.yar` versus the implemented
 pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift JIT).
 
 `docs/syntax.yar` is the source of truth. The front-end was rewritten in
-commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler has **not**
-been ported yet and does not currently build.
+commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler port is
+**in progress** — the build is restored (Stage 0), the new operators are in
+(Stage 1), and control flow is back (Stage 2: `for` over arrays/lists,
+`handle` + `fallback`, `match`, `break`/`continue`). Unions still need their
+Stage 3 rework.
 
 ## Pipeline status
 
@@ -20,11 +23,23 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
   forms; `match` cases dispatch either on a boolean condition or on a union
   member type; `handle` carries a `fallback`; types can be used as values
   (`typeof`); `move`/`borrow` are statements/operators, not `@` builtins.
-- **Compiler** — **out of sync**. `cargo check` fails with 14 errors, all in
-  `compiler/mod.rs` (lines 403, 1453, 1461–1463, 1501, 2123, 2438, 3273,
-  3411, 3861–3884): removed `While`/`Builtin`/`Over` variants, renamed
-  `MatchCase.condition`, and the new `For`/`Handle` shapes. The embedded std
-  library still uses `@`-builtins, which the new tokenizer cannot lex.
+- **Compiler** — **builds** (Stage 0 done: `cargo check` green). The old
+  `While`/`Builtin`/`Over` variants are gone; `for` handles the three new
+  shapes (`emit_for` + `emit_cond_for`, `_` discards), `handle` patterns carry
+  `fallback`, and `match` dispatches on `MatchCaseKind` (`Condition` working,
+  `Type` still `E308`). Stage 1 done: `typeof` (type values as runtime kind
+  codes, `Expr::TypeValue`/`Typeof`/`ApplyTypeof`), `borrow`
+  (`Expr::Borrow`/`ApplyBorrow` via `emit_borrow`), and `move`
+  (`Stmt::Move`/`emit_move`, use-after-move tracking limited to skip-free).
+  Stage 2 done: `for` iterates **lists** as well as arrays (list length via
+  `yarrow_list_len`, elements through `List.data` at `LIST_DATA_OFFSET`);
+  `handle` lowers its extracted `fallback` on the error path (the one-line
+  form works, error values matched with `error.X ==`, success payloads pass
+  through); the implicit function fallthrough return is skipped after an
+  explicit `return` (`FnState.terminated`, saved/restored around compound
+  statements); `collect_strings` walks `Handle.fallback`.
+  The embedded std library still uses `@`-builtins, which the new tokenizer
+  cannot lex.
 - **Runtime** — complete for the current host heap (strings/lists/maps/
   structs/arrays, regions, kind codes) but built around the `@`-builtin model;
   it will shrink to a tiny, data-registered host surface (Stage 4–5).
@@ -39,10 +54,12 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
 ### Current build
 
 ```
-cargo check
+cargo check    # green
+cargo clippy   # 2 pre-existing warnings: dead emit_builtin (deleted in
+               #   Stage 5) and a parser collapsible-if; LIST_DATA_OFFSET is
+               #   now live (used by list iteration)
+cargo run -- <file.yar>   # runs new-syntax programs (no @-builtin std yet)
 ```
-
-fails until Stage 0 is done.
 
 ## Architecture notes
 
@@ -139,8 +156,16 @@ again during Stage 0.
   return unions, `error.X` creation, `unwrap` (propagate if the function can
   error, else trap), `handle ... end` with `error.X == case` matching; error
   kind names interned per program.
-- **Ownership** — stack/variable ownership, `@move`/`@borrow` (→ `move`/
-  `borrow`), reverse-order `defer`, heap regions, recursive drops.
+- **Ownership** — stack/variable ownership, `move`/`borrow` operators
+  (`Stmt::Move`, `Expr::Borrow`/`ApplyBorrow`), reverse-order `defer`, heap
+  regions, recursive drops. `moved` is consulted to skip double frees, but a
+  _compile-time use-after-move error_ is still not enforced (matches the old
+  compiler).
+- **`typeof` / type values** — type values (`i32`, `string`, ...) push their
+  runtime kind code as an `I64`; `value typeof` pops the value (releasing heap
+  borrows) and pushes its static type code, so `myVar typeof i32 ==` is code
+  equality. References report their pointee type (`reference<T>` has physical
+  type `T`).
 - **Flexible `run_main`** — `RunResult` (`Void`/`Int`/`Bool`/`Float`/`Str`);
   still rejects struct/container/pointer results, `with T or Error` mains and
   128-bit/`F16` results (`E360`).
@@ -152,9 +177,9 @@ again during Stage 0.
 Each stage ends with a green `cargo check` and, where noted, a runnable
 example from `docs/syntax.yar`.
 
-### Stage 0 — Restore the build
+### Stage 0 — Restore the build ✅
 
-Port the compiler to the new AST. Purely mechanical.
+Port the compiler to the new AST. Purely mechanical. **Done.**
 
 - Fix the 14 pattern errors in `compiler/mod.rs`: remove `While` handling and
   `emit_while` (the conditional loop becomes `for` with a bool `source`);
@@ -167,9 +192,11 @@ Port the compiler to the new AST. Purely mechanical.
 - Gate: `cargo check` green; core numeric/control programs run again. (`@`
   std modules still fail to lex at runtime — expected until Stage 5.)
 
-### Stage 1 — New operators
+### Stage 1 — New operators ✅
 
-- `StackOp::Unrot` — `[1 2 3]` → `[3 1 2]`.
+**Done.** All gates pass.
+
+- `StackOp::Unrot` — `[1 2 3]` → `[3 1 2]` (landed in Stage 0).
 - **`typeof`** — `Expr::TypeValue`/`Typeof`/`ApplyTypeof`. Type values are
   pushed as kind codes. `typeof` pops a value and pushes its _static_ type;
   heap values arrive as borrows which `typeof` releases (leaving the data
@@ -183,7 +210,7 @@ Port the compiler to the new AST. Purely mechanical.
 - Files: `compiler/mod.rs`, `compiler/types.rs` (type-value representation).
 - Gate: `typeof`/`borrow`/`move` examples from the docs compile and run.
 
-### Stage 2 — Control flow
+### Stage 2 — Control flow ✅
 
 - **`for`**, three forms: condition (`counter 5 < for` — the former `while`),
   value (`numbers value for`), value+index (`numbers value index for`);
@@ -193,6 +220,11 @@ Port the compiler to the new AST. Purely mechanical.
 - **`match` (value form)** — rework to `MatchCaseKind::Condition`.
 - Files: `compiler/mod.rs`.
 - Gate: docs `for`/`match`/`handle` examples run.
+- Verified: condition/value/index `for` over arrays and lists; `handle` with
+  fallback on error, payload pass-through on success, `error.X ==` match cases
+  with `else`; `unwrap` error propagation; string payloads/fallbacks; `break`/
+  `continue`; explicit `return` in `with T or Error` functions (no bogus
+  fallthrough re-return).
 
 ### Stage 3 — Unions
 

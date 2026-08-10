@@ -21,7 +21,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
 use crate::parser::ast::{
-    BinOp, Expr, Function, MatchCase, MatchCaseKind, Program, StackOp, Stmt, UnOp,
+    BinOp, Expr, Function, MatchCase, MatchCaseKind, Primitive, Program, StackOp, Stmt, UnOp,
 };
 use crate::parser::literals::{
     decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
@@ -37,7 +37,7 @@ use types::CResult;
 pub use types::Ty;
 use types::{
     StructLayout, coerce, common_type, elem_code, elem_ty, error_return, kind_code, layout,
-    resolve, scalar_ty,
+    primitive_ty, resolve, scalar_ty,
 };
 
 /// The result of running a program's `main`, in a driver-displayable form.
@@ -113,6 +113,11 @@ struct FnState {
     /// Payload type of this function's `with T or Error` return envelope, if
     /// it returns an error. `None` means the function cannot error.
     error_value: Option<Ty>,
+    /// Whether the current block flow already ended with an explicit `return`
+    /// (so the implicit fallthrough return must not be emitted on an empty
+    /// compile-time stack). Reset after each compound statement whose merge
+    /// block stays live.
+    terminated: bool,
 }
 
 struct LoopCtx {
@@ -1027,6 +1032,7 @@ impl Compiler {
             moved: std::collections::HashSet::new(),
             deferred: Vec::new(),
             registered_descs: std::collections::HashSet::new(),
+            terminated: false,
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -1093,8 +1099,12 @@ impl Compiler {
 
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
 
-        // Implicit termination for a function falling off the end.
-        if st.error_value.is_some() {
+        // Implicit termination for a function falling off the end. Skipped
+        // when an explicit `return` already ended the flow (the current block
+        // is dead and the compile-time stack was already drained).
+        if st.terminated {
+            // The block is dead; nothing left to emit.
+        } else if st.error_value.is_some() {
             let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
             self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&vals);
@@ -1450,30 +1460,45 @@ impl Compiler {
                 condition,
                 then_branch,
                 else_branch,
-            } => self.emit_if(b, st, stack, condition, then_branch, else_branch)?,
+            } => {
+                let prev = st.terminated;
+                self.emit_if(b, st, stack, condition, then_branch, else_branch)?;
+                st.terminated = prev;
+            }
 
             Stmt::Match {
                 value,
                 cases,
                 else_branch,
-            } => self.emit_match(b, st, stack, value, cases, else_branch)?,
+            } => {
+                let prev = st.terminated;
+                self.emit_match(b, st, stack, value, cases, else_branch)?;
+                st.terminated = prev;
+            }
 
             Stmt::For {
                 source,
                 value,
                 index,
                 body,
-            } => self.emit_for(
-                b,
-                st,
-                stack,
-                source,
-                value.as_deref(),
-                index.as_deref(),
-                body,
-            )?,
+            } => {
+                let prev = st.terminated;
+                self.emit_for(
+                    b,
+                    st,
+                    stack,
+                    source,
+                    value.as_deref(),
+                    index.as_deref(),
+                    body,
+                )?;
+                st.terminated = prev;
+            }
 
-            Stmt::Return { .. } => self.emit_return(b, st, stack)?,
+            Stmt::Return { .. } => {
+                self.emit_return(b, st, stack)?;
+                st.terminated = true;
+            }
 
             Stmt::Break => {
                 let loop_ctx = st.loops.last().ok_or_else(|| {
@@ -1507,15 +1532,13 @@ impl Compiler {
                 st.deferred.push(body.clone());
             }
 
-            Stmt::Handle { body, .. } => self.emit_handle(b, st, stack, body)?,
-
-            Stmt::Move { .. } => {
-                return Err(CompileError::new(
-                    "'move' is not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Stmt::Handle { body, fallback } => {
+                let prev = st.terminated;
+                self.emit_handle(b, st, stack, body, fallback.as_ref())?;
+                st.terminated = prev;
             }
+
+            Stmt::Move { target, source } => self.emit_move(b, st, stack, target, source)?,
 
             // The parser extracts `fallback` out of `handle` bodies into
             // `Handle.fallback`, so a bare `Fallback` statement is unreachable
@@ -1683,6 +1706,7 @@ impl Compiler {
         st: &mut FnState,
         stack: &mut Vec<Slot>,
         body: &[Stmt],
+        fallback: Option<&Expr>,
     ) -> CResult<()> {
         if !matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
             return Ok(());
@@ -1736,6 +1760,10 @@ impl Compiler {
         // Drop the error slot if the body did not consume it.
         if stack.len() > err_idx && stack[err_idx].ty == Ty::Error && stack[err_idx].value == err {
             stack.remove(err_idx);
+        }
+        // A `fallback` value is pushed only on the error path, after the body.
+        if let Some(fb) = fallback {
+            self.compile_expr(b, st, stack, fb)?;
         }
         // The handle's result is what the body left beyond `pre`, merged with
         // the success payload.
@@ -2201,6 +2229,7 @@ impl Compiler {
     /// Sequence form: `source` must be an array; `value` (if any) is bound to
     /// each element in order and `index` (if any) to its offset. A var name of
     /// `_` discards that binding.
+    #[allow(clippy::too_many_arguments)]
     fn emit_for(
         &mut self,
         b: &mut FunctionBuilder,
@@ -2217,25 +2246,42 @@ impl Compiler {
 
         let pre = stack.clone();
         self.compile_expr(b, st, stack, source)?;
-        let arr = self.pop_slot(stack, "'for' iterable")?;
-        let (elem, count) = match arr.ty {
-            Ty::Array { elem, count } => (scalar_ty(elem), count),
+        let iterable = self.pop_slot(stack, "'for' iterable")?;
+        // Resolve the element type and how to reach the elements. Arrays have
+        // a compile-time length and their storage is the array slot itself;
+        // lists store a length in the header and their elements behind
+        // `List.data` (offset `LIST_DATA_OFFSET`).
+        let (elem, base, total, elem_size) = match iterable.ty {
+            Ty::Array { elem, count } => {
+                let elem = scalar_ty(elem);
+                let total = b.ins().iconst(irtypes::I64, count as i64);
+                (elem, iterable.value, total, elem.elem_size() as i64)
+            }
+            Ty::List { elem } => {
+                let elem = elem_ty(elem);
+                let total = self.rt_call(b, st, "yarrow_list_len", vec![iterable.value])?[0];
+                let base = b.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    iterable.value,
+                    LIST_DATA_OFFSET,
+                );
+                (elem, base, total, elem.elem_size() as i64)
+            }
             other => {
                 return Err(CompileError::new(
-                    format!("'for' requires an array iterable, got {other:?}"),
+                    format!("'for' requires an array or list iterable, got {other:?}"),
                     Location::default(),
                     "E344",
                 ));
             }
         };
-        let elem_size = elem.elem_size() as i64;
 
         let zero = b.ins().iconst(irtypes::I64, 0);
-        let total = b.ins().iconst(irtypes::I64, count as i64);
         let idx_v = b.declare_var(irtypes::I64);
         b.def_var(idx_v, zero);
         let ptr_v = b.declare_var(self.ptr_type);
-        b.def_var(ptr_v, arr.value);
+        b.def_var(ptr_v, base);
         let count_v = b.declare_var(irtypes::I64);
         b.def_var(count_v, total);
 
@@ -2256,31 +2302,31 @@ impl Compiler {
         *stack = pre.clone();
         let idx = b.use_var(idx_v);
         let mut saved: Vec<(String, Option<(cranelift_frontend::Variable, Ty)>)> = Vec::new();
-        if let Some(name) = index {
-            if name != "_" {
-                let idx_var = b.declare_var(irtypes::I64);
-                b.def_var(idx_var, idx);
-                let prev = st.vars.insert(name.to_string(), (idx_var, Ty::I64));
-                saved.push((name.to_string(), prev));
-            }
+        if let Some(name) = index
+            && name != "_"
+        {
+            let idx_var = b.declare_var(irtypes::I64);
+            b.def_var(idx_var, idx);
+            let prev = st.vars.insert(name.to_string(), (idx_var, Ty::I64));
+            saved.push((name.to_string(), prev));
         }
-        if let Some(name) = value {
-            if name != "_" {
-                let base = b.use_var(ptr_v);
-                let stride = b.ins().iconst(irtypes::I64, elem_size);
-                let off = b.ins().imul(idx, stride);
-                let addr = b.ins().iadd(base, off);
-                let val = b.ins().load(
-                    elem.clty(self.ptr_type),
-                    cranelift_codegen::ir::MemFlagsData::trusted(),
-                    addr,
-                    0,
-                );
-                let loop_var = b.declare_var(elem.clty(self.ptr_type));
-                b.def_var(loop_var, val);
-                let prev = st.vars.insert(name.to_string(), (loop_var, elem));
-                saved.push((name.to_string(), prev));
-            }
+        if let Some(name) = value
+            && name != "_"
+        {
+            let base = b.use_var(ptr_v);
+            let stride = b.ins().iconst(irtypes::I64, elem_size);
+            let off = b.ins().imul(idx, stride);
+            let addr = b.ins().iadd(base, off);
+            let val = b.ins().load(
+                elem.clty(self.ptr_type),
+                cranelift_codegen::ir::MemFlagsData::trusted(),
+                addr,
+                0,
+            );
+            let loop_var = b.declare_var(elem.clty(self.ptr_type));
+            b.def_var(loop_var, val);
+            let prev = st.vars.insert(name.to_string(), (loop_var, elem));
+            saved.push((name.to_string(), prev));
         }
         st.loops.push(LoopCtx {
             break_to: end,
@@ -2499,11 +2545,29 @@ impl Compiler {
                 });
             }
             Expr::TypeValue { name } => {
-                return Err(CompileError::new(
-                    format!("type value '{name}' ('typeof') is not yet supported"),
-                    Location::default(),
-                    "E301",
-                ));
+                // A type used as a value pushes its runtime kind code, so
+                // `==` on type values is plain code equality (`myVar typeof
+                // i32 ==`).
+                let p = Primitive::parse_name(name).ok_or_else(|| {
+                    CompileError::new(
+                        format!("unknown type value '{name}'"),
+                        Location::default(),
+                        "E302",
+                    )
+                })?;
+                let ty = primitive_ty(p).ok_or_else(|| {
+                    CompileError::new(
+                        format!("type value '{name}' is not yet supported"),
+                        Location::default(),
+                        "E301",
+                    )
+                })?;
+                let v = b.ins().iconst(irtypes::I64, kind_code(ty) as i64);
+                stack.push(Slot {
+                    value: v,
+                    ty: Ty::I64,
+                    own: Own::Trivial,
+                });
             }
             Expr::Unwrap { inner } => {
                 self.compile_expr(b, st, stack, inner)?;
@@ -2631,13 +2695,16 @@ impl Compiler {
                     own: Own::Owned,
                 });
             }
-            Expr::Typeof { .. } | Expr::Borrow { .. } | Expr::ApplyTypeof | Expr::ApplyBorrow => {
-                return Err(CompileError::new(
-                    "'typeof'/'borrow' operators are not yet supported",
-                    Location::default(),
-                    "E301",
-                ));
+            Expr::Typeof { inner } => {
+                self.compile_expr(b, st, stack, inner)?;
+                self.emit_typeof(b, st, stack)?;
             }
+            Expr::Borrow { inner } => {
+                self.compile_expr(b, st, stack, inner)?;
+                self.emit_borrow(b, st, stack)?;
+            }
+            Expr::ApplyTypeof => self.emit_typeof(b, st, stack)?,
+            Expr::ApplyBorrow => self.emit_borrow(b, st, stack)?,
         }
         Ok(())
     }
@@ -2887,69 +2954,6 @@ impl Compiler {
         name: &str,
     ) -> CResult<()> {
         match name {
-            "borrow" => {
-                let s = self.pop_slot(stack, name)?;
-                if !s.ty.is_pointer() {
-                    return Err(CompileError::new(
-                        format!(
-                            "'{name}' requires a reference, struct, array, string or container"
-                        ),
-                        Location::default(),
-                        "E341",
-                    ));
-                }
-                // A borrow is a non-owning reference: the stack no longer owns
-                // the value (its original owner still does), so any drop here
-                // is skipped via `moved`.
-                if s.own.is_owned() {
-                    st.moved.insert(s.value);
-                }
-                st.borrowed.insert(s.value);
-                stack.push(Slot {
-                    value: s.value,
-                    ty: s.ty,
-                    own: Own::Borrow,
-                });
-            }
-
-            "move" => {
-                // `source destination @move` rebinds `destination` to
-                // `source`'s storage and marks the source as moved.
-                let dest = self.pop_slot(stack, name)?;
-                let src = self.pop_slot(stack, name)?;
-                if !src.ty.is_pointer() || !dest.ty.is_pointer() {
-                    return Err(CompileError::new(
-                        "'@move' requires a reference, struct, array, string or container"
-                            .to_string(),
-                        Location::default(),
-                        "E341",
-                    ));
-                }
-                st.moved.insert(src.value);
-                let mut target = None;
-                for (var, ty) in st.vars.values() {
-                    if b.use_var(*var) == dest.value {
-                        target = Some((*var, *ty));
-                        break;
-                    }
-                }
-                match target {
-                    Some((var, ty)) => {
-                        self.claim(st, src.value, ty);
-                        b.def_var(var, src.value);
-                    }
-                    None => {
-                        // No matching variable (e.g. a fresh owned value on the
-                        // stack): leave the moved value on the stack instead.
-                        stack.push(Slot {
-                            value: src.value,
-                            ty: src.ty,
-                            own: Own::Borrow,
-                        });
-                    }
-                }
-            }
-
             "make_region" => {
                 let out = self.rt_call(b, st, "yarrow_region_new", vec![])?;
                 stack.push(Slot {
@@ -3450,6 +3454,110 @@ impl Compiler {
         Ok(method)
     }
 
+    /// `value typeof`: pop the value and push its static type as a runtime kind
+    /// code. Heap values may arrive as borrows (variable access, `dup`), which
+    /// are released here — the data stays owned by its owner. References report
+    /// their pointee type (a `reference<T>` has the physical type `T`).
+    fn emit_typeof(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+    ) -> CResult<()> {
+        let slot = self.pop_slot(stack, "'typeof'")?;
+        self.consume(b, st, slot)?;
+        let v = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
+        stack.push(Slot {
+            value: v,
+            ty: Ty::I64,
+            own: Own::Trivial,
+        });
+        Ok(())
+    }
+
+    /// `value borrow`: push a non-owning reference to the value. The value must
+    /// be a heap value (reference, struct, array, string or container). The
+    /// stack no longer owns it (its original owner still does), so any drop
+    /// here is skipped via `moved`; the borrow is tracked so consuming the
+    /// reference releases it.
+    fn emit_borrow(
+        &mut self,
+        _b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+    ) -> CResult<()> {
+        let s = self.pop_slot(stack, "'borrow'")?;
+        if !s.ty.is_pointer() {
+            return Err(CompileError::new(
+                format!(
+                    "'borrow' requires a reference, struct, array, string or container, got {:?}",
+                    s.ty
+                ),
+                Location::default(),
+                "E341",
+            ));
+        }
+        if s.own.is_owned() {
+            st.moved.insert(s.value);
+        }
+        st.borrowed.insert(s.value);
+        stack.push(Slot {
+            value: s.value,
+            ty: s.ty,
+            own: Own::Borrow,
+        });
+        Ok(())
+    }
+
+    /// `source target move`: transfer ownership of `source`'s storage to the
+    /// variable `target`. The source is marked moved (its old owner stops
+    /// freeing it) and the target is rebound to the same storage, dropping the
+    /// value the target previously owned.
+    fn emit_move(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        target: &str,
+        source: &Expr,
+    ) -> CResult<()> {
+        self.compile_expr(b, st, stack, source)?;
+        let src = self.pop_slot(stack, "'move' source")?;
+        if !src.ty.is_pointer() {
+            return Err(CompileError::new(
+                format!(
+                    "'move' requires a reference, struct, array, string or container, got {:?}",
+                    src.ty
+                ),
+                Location::default(),
+                "E341",
+            ));
+        }
+        let (var, ty) = st.vars.get(target).cloned().ok_or_else(|| {
+            CompileError::new(
+                format!("unknown variable '{target}'"),
+                Location::default(),
+                "E320",
+            )
+        })?;
+        // Type-check the transfer (exact type match or a valid coercion).
+        coerce(b, src.value, src.ty, ty, self.ptr_type)?;
+        // Drop the value the target currently owns (the runtime guards double
+        // frees), then rebind it to the source's storage.
+        if self.is_heap(ty) {
+            let old = Slot {
+                value: b.use_var(var),
+                ty,
+                own: Own::Owned,
+            };
+            self.emit_drop(b, st, old)?;
+        }
+        st.moved.insert(src.value);
+        self.claim(st, src.value, ty);
+        b.def_var(var, src.value);
+        Ok(())
+    }
+
     fn emit_stackop(
         &mut self,
         b: &mut FunctionBuilder,
@@ -3904,7 +4012,9 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
             }
             Expr::Member { base, .. }
             | Expr::Call { target: base }
-            | Expr::Unwrap { inner: base } => walk_expr(base, out),
+            | Expr::Unwrap { inner: base }
+            | Expr::Typeof { inner: base }
+            | Expr::Borrow { inner: base } => walk_expr(base, out),
             Expr::Unary { operand, .. } => walk_expr(operand, out),
             Expr::Binary { left, right, .. } => {
                 walk_expr(left, out);
@@ -3951,7 +4061,13 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
             }
             Stmt::Return { value: Some(v) } => walk_expr(v, out),
             Stmt::Return { value: None } => {}
-            Stmt::Defer { body } | Stmt::Handle { body, .. } => collect_strings(body, out),
+            Stmt::Defer { body } => collect_strings(body, out),
+            Stmt::Handle { body, fallback } => {
+                collect_strings(body, out);
+                if let Some(fb) = fallback {
+                    walk_expr(fb, out);
+                }
+            }
             Stmt::Function(f) => collect_strings(&f.body, out),
             Stmt::Implement(imp) => {
                 for f in &imp.functions {

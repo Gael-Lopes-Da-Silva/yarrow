@@ -279,7 +279,9 @@ pub fn kind_code(ty: Ty) -> u64 {
     }
 }
 
-fn primitive_ty(p: Primitive) -> Option<Ty> {
+/// Map a primitive type to its physical `Ty`. Returns `None` for primitives
+/// without a physical representation yet (`Type`, 128-bit floats).
+pub fn primitive_ty(p: Primitive) -> Option<Ty> {
     Some(match p {
         Primitive::I8 => Ty::I8,
         Primitive::I16 => Ty::I16,
