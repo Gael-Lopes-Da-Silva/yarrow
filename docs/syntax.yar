@@ -58,8 +58,11 @@ my_function function do
     true      # bool
     # Current stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true]
 
+    42 typeof # Push the literal's type into the stack. Consume the value for simple types, borrows for complex types
+    # Current stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true, u8]
+
     # Stack Manipulation: Control the stack
-    drop         # [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true] -> [] Remove all values on the stack and release all borrows
+    drop         # [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true, u8] -> [] Remove all values on the stack and release all borrows
     42 dup       # [42] -> [42, 42] Copies for simple types, borrows for complex types
     1 2 swap     # [1, 2] -> [2, 1]
     1 2 3 rot    # [1, 2, 3] -> [2, 3, 1]
@@ -84,8 +87,9 @@ my_function function do
     # Calling a variable pushes its value onto the stack (a copy for simple types, a borrow for complex types)
     myVar
     # Current stack: [23]
+    myVar typeof
+    # Current stack: [23, i32]
     drop
-    # Current stack: []
 
     # Functions: Defined with parameters and return types, can also be defined inside other functions, but can only be called in the body of said function
     # Parameters are copied onto the local stack in declaration order (first declared = deepest).
@@ -113,6 +117,13 @@ my_function function do
         "less" io.write_line call
     else
         "not less" io.write_line call
+    end
+
+    # Also works with types
+    myVar typeof i32 == if
+        "is i32" io.write_line call
+    else
+        "is not i32" io.write_line call
     end
 
     85 score const i32
