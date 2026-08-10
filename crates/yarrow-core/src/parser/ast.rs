@@ -143,9 +143,9 @@ pub enum UnOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackOp {
     Dup,
-    Over,
     Swap,
     Rot,
+    Unrot,
     Pop,
     Drop,
 }
@@ -174,7 +174,8 @@ pub enum Expr {
         base: Box<Expr>,
         member: String,
     },
-    Builtin {
+    /// A type used as a value (e.g. the `i32` in `myVar typeof i32 ==`).
+    TypeValue {
         name: String,
     },
     Binary {
@@ -192,10 +193,22 @@ pub enum Expr {
     Unwrap {
         inner: Box<Expr>,
     },
+    /// `value typeof`: pops the value and pushes its static type.
+    Typeof {
+        inner: Box<Expr>,
+    },
+    /// `value borrow`: pushes a borrow reference to the value.
+    Borrow {
+        inner: Box<Expr>,
+    },
     /// A binary operator whose operands come from the runtime stack.
     ApplyBin(BinOp),
     /// An unary operator whose operand comes from the runtime stack.
     ApplyUn(UnOp),
+    /// `typeof` applied to the top of the runtime stack.
+    ApplyTypeof,
+    /// `borrow` applied to the top of the runtime stack.
+    ApplyBorrow,
     StackOp(StackOp),
     Array(Vec<Expr>),
     List(Vec<Expr>),
@@ -260,9 +273,18 @@ pub struct UnionDecl {
     pub types: Vec<Type>,
 }
 
+/// The condition of a `match` case. Either a boolean expression evaluated
+/// against the subject (value match) or a member type the union subject is
+/// dispatched on (type match).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchCaseKind {
+    Condition(Expr),
+    Type(Type),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchCase {
-    pub condition: Expr,
+    pub kind: MatchCaseKind,
     pub body: Vec<Stmt>,
 }
 
@@ -293,13 +315,17 @@ pub enum Stmt {
         then_branch: Vec<Stmt>,
         else_branch: Vec<Stmt>,
     },
-    While {
-        condition: Expr,
-        body: Vec<Stmt>,
-    },
+    /// `for` comes in three forms:
+    /// - condition form (`counter 5 < for ... end`): `value`/`index` are `None`
+    ///   and `source` is the loop condition;
+    /// - value form (`numbers value for ... end`): `value` is the iteration
+    ///   variable and `source` the iterable;
+    /// - index form (`numbers value index for ... end`): both `value` and
+    ///   `index` are bound and `source` is the iterable.
     For {
-        iterable: Expr,
-        var: String,
+        source: Expr,
+        value: Option<String>,
+        index: Option<String>,
         body: Vec<Stmt>,
     },
     Match {
@@ -310,9 +336,21 @@ pub enum Stmt {
     Defer {
         body: Vec<Stmt>,
     },
-    /// Error-handling block: `expression handle <body> end`.
+    /// Error-handling block: `expression handle <body> end`. The body may
+    /// contain a `fallback` statement, which is extracted into `fallback`.
     Handle {
         body: Vec<Stmt>,
+        fallback: Option<Expr>,
+    },
+    /// `source target move`: transfers ownership of `source` to `target`.
+    Move {
+        target: String,
+        source: Expr,
+    },
+    /// `value fallback`: the value pushed on the stack if a `handle` catches an
+    /// error. Only meaningful inside a `handle ... end` block.
+    Fallback {
+        value: Option<Expr>,
     },
     Return {
         value: Option<Expr>,

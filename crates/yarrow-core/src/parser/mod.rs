@@ -149,14 +149,6 @@ impl Parser {
                     });
                 }
 
-                TokenKind::While => {
-                    let condition = drain_ops(&mut ops).unwrap_or_else(|| Expr::variable(""));
-                    self.advance();
-                    let body = self.body(&[TokenKind::End])?;
-                    self.expect(TokenKind::End, "expected 'end' after while block")?;
-                    stmts.push(Stmt::While { condition, body });
-                }
-
                 TokenKind::For => {
                     let stmt = self.parse_for(&mut ops)?;
                     stmts.push(stmt);
@@ -181,7 +173,34 @@ impl Parser {
                     self.advance();
                     let body = self.body(&[TokenKind::End])?;
                     self.expect(TokenKind::End, "expected 'end' after handle block")?;
-                    stmts.push(Stmt::Handle { body });
+                    let (body, fallback) = extract_fallback(body);
+                    stmts.push(Stmt::Handle { body, fallback });
+                }
+
+                TokenKind::Move => {
+                    let location = self.peek_location();
+                    self.advance();
+                    let target = ops.pop().ok_or_else(|| {
+                        ParseError::new("'move' requires a target variable", location, "E220")
+                    })?;
+                    let target = match target {
+                        Expr::Variable { name } => name,
+                        _ => {
+                            return Err(ParseError::new(
+                                "'move' requires a target variable",
+                                location,
+                                "E221",
+                            ));
+                        }
+                    };
+                    let source = drain_ops(&mut ops).unwrap_or_else(|| Expr::variable(""));
+                    stmts.push(Stmt::Move { target, source });
+                }
+
+                TokenKind::Fallback => {
+                    self.advance();
+                    let value = drain_ops(&mut ops);
+                    stmts.push(Stmt::Fallback { value });
                 }
 
                 TokenKind::Return => {
@@ -258,27 +277,41 @@ impl Parser {
         let location = self.peek_location();
         self.advance();
 
-        let var_expr = ops.pop().ok_or_else(|| {
-            ParseError::new("'for' requires an iteration variable", location, "E204")
-        })?;
-        let var = match var_expr {
-            Expr::Variable { name } => name,
-            _ => {
-                return Err(ParseError::new(
-                    "'for' requires a variable name",
-                    location,
-                    "E204",
-                ));
+        // Distinguish the three `for` forms by the operand stack:
+        //   condition form:  `<condition> for`              (top is not a bare name)
+        //   value form:      `<iterable> <var> for`         (two operands, top is a name)
+        //   index form:      `<iterable> <var> <index> for` (three+ operands, top two are names)
+        let n = ops.len();
+        let top_is_var = matches!(ops.last(), Some(Expr::Variable { .. }));
+        let second_is_var = matches!(ops.get(n.saturating_sub(2)), Some(Expr::Variable { .. }));
+
+        let (source, value, index) = if n >= 2 && top_is_var && second_is_var {
+            if n == 2 {
+                let value = pop_var_name(ops, location)?;
+                let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
+                (source, Some(value), None)
+            } else {
+                let index = pop_var_name(ops, location)?;
+                let value = pop_var_name(ops, location)?;
+                let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
+                (source, Some(value), Some(index))
             }
+        } else if n >= 2 && top_is_var {
+            let value = pop_var_name(ops, location)?;
+            let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
+            (source, Some(value), None)
+        } else {
+            let condition = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
+            (condition, None, None)
         };
 
-        let iterable = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
         let body = self.body(&[TokenKind::End])?;
         self.expect(TokenKind::End, "expected 'end' after for block")?;
 
         Ok(Stmt::For {
-            iterable,
-            var,
+            source,
+            value,
+            index,
             body,
         })
     }
@@ -300,8 +333,27 @@ impl Parser {
                 continue;
             }
 
-            // A case: `<condition words> case <body> end`.
             let location = self.peek_location();
+
+            // A type case on a union subject: `<Type> case <body> end`. Try to
+            // parse a full type first; it only wins when `case` follows
+            // immediately (`reference<i32> case`), otherwise the tokens are an
+            // ordinary condition expression and we rewind.
+            let save = self.current;
+            if let Ok(ty) = self.parse_type() {
+                if self.match_kind(TokenKind::Case) {
+                    let body = self.body(&[TokenKind::End])?;
+                    self.expect(TokenKind::End, "expected 'end' after case block")?;
+                    cases.push(MatchCase {
+                        kind: MatchCaseKind::Type(ty),
+                        body,
+                    });
+                    continue;
+                }
+            }
+            self.current = save;
+
+            // An expression case: `<condition words> case <body> end`.
             let mut cond_ops = Vec::new();
             loop {
                 let kind = self.peek_kind();
@@ -321,7 +373,10 @@ impl Parser {
             let condition = drain_ops(&mut cond_ops).unwrap_or_else(|| Expr::variable(""));
             let body = self.body(&[TokenKind::End])?;
             self.expect(TokenKind::End, "expected 'end' after case block")?;
-            cases.push(MatchCase { condition, body });
+            cases.push(MatchCase {
+                kind: MatchCaseKind::Condition(condition),
+                body,
+            });
         }
 
         Ok(Stmt::Match {
@@ -355,18 +410,12 @@ impl Parser {
             }
         };
 
-        let alias = if self.match_kind(TokenKind::As) {
-            Some(
-                self.expect(TokenKind::Identifier, "expected alias after 'as'")?
-                    .lexeme
-                    .clone(),
-            )
-        } else if self.peek_kind() == TokenKind::Identifier && !self.peek_after_is_structural() {
+        let alias = if self.peek_kind() == TokenKind::Identifier && !self.peek_after_is_structural()
+        {
             // With no newline tokens the parser cannot tell an inline alias
             // from the next statement, so `require io` binds `io` unless the
             // identifier starts a declaration/statement (`main function`,
-            // `myVar mutable`, ...). An explicit `as alias` is always
-            // unambiguous.
+            // `myVar mutable`, ...).
             Some(self.advance().lexeme.clone())
         } else {
             None
@@ -499,7 +548,7 @@ impl Parser {
         let location = self.peek_location();
 
         let name = self
-            .expect_one_of(&[TokenKind::Identifier, TokenKind::Type], "expected a type")?
+            .expect(TokenKind::Identifier, "expected a type")?
             .lexeme
             .clone();
 
@@ -530,7 +579,6 @@ impl Parser {
             } else {
                 args.push(TypeArg::Type(self.parse_type()?));
             }
-            while self.match_kind(TokenKind::Comma) {}
         }
         self.expect(TokenKind::Greater, "expected '>' to close generic type")?;
         Ok(args)
@@ -615,7 +663,7 @@ impl Parser {
             }
             TokenKind::Identifier => {
                 let name = self.advance().lexeme.clone();
-                let mut expr = Expr::variable(name);
+                let mut expr = Expr::variable(&name);
                 while self.match_kind(TokenKind::Dot) {
                     let member = self
                         .expect(TokenKind::Identifier, "expected member name after '.'")?
@@ -626,15 +674,14 @@ impl Parser {
                         member,
                     };
                 }
-                ops.push(expr);
-            }
-            TokenKind::At => {
-                self.advance();
-                let name = self
-                    .expect(TokenKind::Identifier, "expected name after '@'")?
-                    .lexeme
-                    .clone();
-                ops.push(Expr::Builtin { name });
+                // A bare primitive type name is a type value on the stack
+                // (e.g. the `i32` in `myVar typeof i32 ==`), not a variable.
+                // A dotted path (`error.CustomError`) stays a member access.
+                if matches!(expr, Expr::Variable { .. }) && Primitive::parse_name(&name).is_some() {
+                    ops.push(Expr::TypeValue { name });
+                } else {
+                    ops.push(expr);
+                }
             }
             TokenKind::Call => {
                 self.advance();
@@ -662,20 +709,32 @@ impl Parser {
                     inner: Box::new(inner),
                 });
             }
+            TokenKind::Typeof => {
+                self.advance();
+                if let Some(inner) = ops.pop() {
+                    ops.push(Expr::Typeof {
+                        inner: Box::new(inner),
+                    });
+                } else {
+                    ops.push(Expr::ApplyTypeof);
+                }
+            }
+            TokenKind::Borrow => {
+                self.advance();
+                if let Some(inner) = ops.pop() {
+                    ops.push(Expr::Borrow {
+                        inner: Box::new(inner),
+                    });
+                } else {
+                    ops.push(Expr::ApplyBorrow);
+                }
+            }
             TokenKind::Dup => {
                 self.advance();
                 if !ops.is_empty() {
                     ops.push(ops[ops.len() - 1].clone());
                 } else {
                     ops.push(Expr::StackOp(StackOp::Dup));
-                }
-            }
-            TokenKind::Over => {
-                self.advance();
-                if ops.len() >= 2 {
-                    ops.push(ops[ops.len() - 2].clone());
-                } else {
-                    ops.push(Expr::StackOp(StackOp::Over));
                 }
             }
             TokenKind::Swap => {
@@ -694,6 +753,15 @@ impl Parser {
                     ops.push(first);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Rot));
+                }
+            }
+            TokenKind::Unrot => {
+                self.advance();
+                if ops.len() >= 3 {
+                    let last = ops.pop().unwrap();
+                    ops.insert(0, last);
+                } else {
+                    ops.push(Expr::StackOp(StackOp::Unrot));
                 }
             }
             TokenKind::Pop => {
@@ -782,7 +850,6 @@ impl Parser {
             let key = self.parse_literal_element()?;
             let value = self.parse_literal_element()?;
             pairs.push((key, value));
-            while self.match_kind(TokenKind::Comma) {}
         }
         self.expect(TokenKind::RightCurly, "expected '}' to close map literal")?;
         Ok(Expr::Map(pairs))
@@ -792,7 +859,6 @@ impl Parser {
         let mut elements = Vec::new();
         while self.peek_kind() != close {
             elements.push(self.parse_literal_element()?);
-            while self.match_kind(TokenKind::Comma) {}
         }
         Ok(elements)
     }
@@ -879,7 +945,6 @@ impl Parser {
                 | TokenKind::Static
                 | TokenKind::Set
                 | TokenKind::If
-                | TokenKind::While
                 | TokenKind::For
                 | TokenKind::Match
                 | TokenKind::Defer
@@ -918,14 +983,6 @@ impl Parser {
 
     fn expect(&mut self, kind: TokenKind, message: &str) -> ParseResult<&Token> {
         if self.peek_kind() == kind {
-            Ok(self.advance())
-        } else {
-            Err(ParseError::new(message, self.peek_location(), "E217"))
-        }
-    }
-
-    fn expect_one_of(&mut self, kinds: &[TokenKind], message: &str) -> ParseResult<&Token> {
-        if kinds.contains(&self.peek_kind()) {
             Ok(self.advance())
         } else {
             Err(ParseError::new(message, self.peek_location(), "E217"))
@@ -975,6 +1032,35 @@ fn drain_ops(ops: &mut Vec<Expr>) -> Option<Expr> {
             Some(Expr::Seq(seq))
         }
     }
+}
+
+fn pop_var_name(ops: &mut Vec<Expr>, location: Location) -> ParseResult<String> {
+    match ops.pop() {
+        Some(Expr::Variable { name }) => Ok(name),
+        _ => Err(ParseError::new(
+            "expected a variable name",
+            location,
+            "E204",
+        )),
+    }
+}
+
+/// Pull the `fallback` statement out of a `handle` body, returning the
+/// remaining statements and the fallback value (if any).
+fn extract_fallback(body: Vec<Stmt>) -> (Vec<Stmt>, Option<Expr>) {
+    let mut fallback = None;
+    let mut stmts = Vec::with_capacity(body.len());
+    for stmt in body {
+        match stmt {
+            Stmt::Fallback { value } => {
+                if fallback.is_none() {
+                    fallback = value;
+                }
+            }
+            other => stmts.push(other),
+        }
+    }
+    (stmts, fallback)
 }
 
 fn pop_target(ops: &mut Vec<Expr>) -> Option<Expr> {
@@ -1032,10 +1118,12 @@ fn is_value(e: &Expr) -> bool {
             | Expr::Bool { .. }
             | Expr::Variable { .. }
             | Expr::Member { .. }
-            | Expr::Builtin { .. }
+            | Expr::TypeValue { .. }
             | Expr::Binary { .. }
             | Expr::Unary { .. }
             | Expr::Call { .. }
+            | Expr::Typeof { .. }
+            | Expr::Borrow { .. }
             | Expr::Array(_)
             | Expr::List(_)
             | Expr::Map(_)
