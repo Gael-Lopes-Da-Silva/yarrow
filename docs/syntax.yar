@@ -58,7 +58,7 @@ my_function function do
     true      # bool
     # Current stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true]
 
-    42 typeof # Push the literal's type into the stack. Consume the value for simple types, borrows for complex types
+    42 typeof # Pops the value and pushes its static type. Simple values are consumed freely; heap values arrive as borrows (from variable access or dup), which typeof releases, leaving the data owned. Reports the pointee type for references.
     # Current stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true, u8]
 
     # Stack Manipulation: Control the stack
