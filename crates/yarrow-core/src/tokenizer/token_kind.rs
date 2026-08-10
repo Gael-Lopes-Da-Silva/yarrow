@@ -17,18 +17,7 @@ pub enum TokenKind {
     Percent,
     Caret,
     Dot,
-    DotDot,
-    Question,
-    Exclamation,
-    Ampersand,
-    Bar,
-    Colon,
-    SemiColon,
-    Comma,
-    At,
-    Arrow,
 
-    Equal,
     EqualEqual,
     NotEqual,
     Greater,
@@ -41,8 +30,6 @@ pub enum TokenKind {
     Rune,
     Integer,
     Float,
-    Boolean,
-    Type,
 
     And,
     Or,
@@ -51,15 +38,15 @@ pub enum TokenKind {
     LeftShift,
     RightShift,
 
+    Typeof,
+
     If,
     Else,
-    While,
     For,
     Break,
     Continue,
     Match,
     Case,
-    Default,
 
     Unwrap,
     Handle,
@@ -82,15 +69,19 @@ pub enum TokenKind {
     Union,
 
     Require,
-    As,
     Defer,
 
     Pop,
     Drop,
     Dup,
-    Over,
     Rot,
+    Unrot,
     Swap,
+
+    Borrow,
+    Move,
+
+    Fallback,
 
     True,
     False,

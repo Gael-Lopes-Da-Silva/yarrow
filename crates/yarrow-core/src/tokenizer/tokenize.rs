@@ -24,15 +24,14 @@ impl Tokenizer {
         keywords.insert("not".to_string(), TokenKind::Not);
         keywords.insert("lshift".to_string(), TokenKind::LeftShift);
         keywords.insert("rshift".to_string(), TokenKind::RightShift);
+        keywords.insert("typeof".to_string(), TokenKind::Typeof);
         keywords.insert("if".to_string(), TokenKind::If);
         keywords.insert("else".to_string(), TokenKind::Else);
-        keywords.insert("while".to_string(), TokenKind::While);
         keywords.insert("for".to_string(), TokenKind::For);
         keywords.insert("break".to_string(), TokenKind::Break);
         keywords.insert("continue".to_string(), TokenKind::Continue);
         keywords.insert("match".to_string(), TokenKind::Match);
         keywords.insert("case".to_string(), TokenKind::Case);
-        keywords.insert("default".to_string(), TokenKind::Default);
         keywords.insert("unwrap".to_string(), TokenKind::Unwrap);
         keywords.insert("handle".to_string(), TokenKind::Handle);
         keywords.insert("function".to_string(), TokenKind::Function);
@@ -52,12 +51,14 @@ impl Tokenizer {
         keywords.insert("pop".to_string(), TokenKind::Pop);
         keywords.insert("drop".to_string(), TokenKind::Drop);
         keywords.insert("dup".to_string(), TokenKind::Dup);
-        keywords.insert("over".to_string(), TokenKind::Over);
         keywords.insert("rot".to_string(), TokenKind::Rot);
+        keywords.insert("unrot".to_string(), TokenKind::Unrot);
         keywords.insert("swap".to_string(), TokenKind::Swap);
         keywords.insert("require".to_string(), TokenKind::Require);
-        keywords.insert("as".to_string(), TokenKind::As);
         keywords.insert("defer".to_string(), TokenKind::Defer);
+        keywords.insert("borrow".to_string(), TokenKind::Borrow);
+        keywords.insert("move".to_string(), TokenKind::Move);
+        keywords.insert("fallback".to_string(), TokenKind::Fallback);
         keywords.insert("true".to_string(), TokenKind::True);
         keywords.insert("false".to_string(), TokenKind::False);
 
@@ -100,16 +101,9 @@ impl Tokenizer {
             '}' => self.add_token(TokenKind::RightCurly),
             '[' => self.add_token(TokenKind::LeftSquare),
             ']' => self.add_token(TokenKind::RightSquare),
-            ':' => self.add_token(TokenKind::Colon),
-            ';' => self.add_token(TokenKind::SemiColon),
-            ',' => self.add_token(TokenKind::Comma),
-            '?' => self.add_token(TokenKind::Question),
             '%' => self.add_token(TokenKind::Percent),
-            '&' => self.add_token(TokenKind::Ampersand),
-            '|' => self.add_token(TokenKind::Bar),
             '*' => self.add_token(TokenKind::Asterisk),
             '^' => self.add_token(TokenKind::Caret),
-            '@' => self.add_token(TokenKind::At),
             '/' => {
                 if self.match_char('/') {
                     self.add_token(TokenKind::SlashSlash);
@@ -117,18 +111,16 @@ impl Tokenizer {
                     self.add_token(TokenKind::Slash);
                 }
             }
-            '.' => {
-                if self.match_char('.') {
-                    self.add_token(TokenKind::DotDot);
-                } else {
-                    self.add_token(TokenKind::Dot);
-                }
-            }
+            '.' => self.add_token(TokenKind::Dot),
             '=' => {
                 if self.match_char('=') {
                     self.add_token(TokenKind::EqualEqual);
                 } else {
-                    self.add_token(TokenKind::Equal);
+                    return Err(TokenizeError::new(
+                        "unexpected character '='".to_string(),
+                        self.get_location(),
+                        "E100".to_string(),
+                    ));
                 }
             }
             '<' => {
@@ -149,25 +141,21 @@ impl Tokenizer {
                 if self.match_char('=') {
                     self.add_token(TokenKind::NotEqual);
                 } else {
-                    self.add_token(TokenKind::Exclamation);
+                    return Err(TokenizeError::new(
+                        "unexpected character '!'".to_string(),
+                        self.get_location(),
+                        "E100".to_string(),
+                    ));
                 }
             }
             '-' => {
                 if self.peek().is_ascii_digit() {
                     self.handle_number()?;
-                } else if self.match_char('>') {
-                    self.add_token(TokenKind::Arrow);
                 } else {
                     self.add_token(TokenKind::Minus);
                 }
             }
-            '+' => {
-                if self.peek().is_ascii_digit() {
-                    self.handle_number()?;
-                } else {
-                    self.add_token(TokenKind::Plus);
-                }
-            }
+            '+' => self.add_token(TokenKind::Plus),
             c if c.is_ascii_digit() => self.handle_number()?,
             '"' => self.handle_string()?,
             '\'' => self.handle_rune()?,
@@ -185,38 +173,55 @@ impl Tokenizer {
     }
 
     fn handle_number(&mut self) -> Result<(), TokenizeError> {
-        while self.peek().is_ascii_digit() || self.peek() == '_' {
+        if self.source.as_bytes()[self.start] == b'-' {
             self.advance();
         }
 
-        let mut is_float = false;
+        let first_digit_is_zero = self.source.as_bytes()[self.current - 1] == b'0';
 
-        if self.peek() == '.' && self.peek_next().is_ascii_digit() {
-            self.advance();
+        let mut radix = 10;
+        if first_digit_is_zero {
+            match self.peek() {
+                'b' | 'B' => {
+                    self.advance();
+                    radix = 2;
+                }
+                'x' | 'X' => {
+                    self.advance();
+                    radix = 16;
+                }
+                _ => {}
+            }
+        }
+
+        if radix != 10 {
+            if !self.is_digit(self.peek(), radix) {
+                return Err(TokenizeError::new(
+                    format!(
+                        "invalid digit in '0{}' literal",
+                        if radix == 2 { 'b' } else { 'x' }
+                    ),
+                    self.get_location(),
+                    "E110".to_string(),
+                ));
+            }
+            while self.is_digit(self.peek(), radix) || self.peek() == '_' {
+                self.advance();
+            }
+        } else {
             while self.peek().is_ascii_digit() || self.peek() == '_' {
                 self.advance();
             }
-            is_float = true;
-        }
 
-        // Scientific notation: e[+-]?digits. Backtrack when there is no digit
-        // after the 'e' so the 'e' can start an identifier instead.
-        if self.peek() == 'e' || self.peek() == 'E' {
-            let save = self.current;
-            self.advance();
-            if self.peek() == '+' || self.peek() == '-' {
+            if self.peek() == '.' && self.peek_next().is_ascii_digit() {
                 self.advance();
-            }
-            if self.peek().is_ascii_digit() {
                 while self.peek().is_ascii_digit() || self.peek() == '_' {
                     self.advance();
                 }
-                is_float = true;
-            } else {
-                self.current = save;
             }
         }
 
+        let is_float = radix == 10 && self.source[self.start..self.current].contains('.');
         self.add_token(if is_float {
             TokenKind::Float
         } else {
@@ -331,7 +336,7 @@ impl Tokenizer {
     }
 
     fn handle_identifier(&mut self) {
-        while self.peek().is_ascii_alphanumeric() || self.peek() == '_' || self.peek() == '@' {
+        while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
             self.advance();
         }
 
@@ -380,6 +385,10 @@ impl Tokenizer {
 
     fn peek_next(&self) -> char {
         self.source.chars().nth(self.current + 1).unwrap_or('\0')
+    }
+
+    fn is_digit(&self, c: char, radix: u32) -> bool {
+        c.is_digit(radix)
     }
 
     fn lexeme(&self) -> String {

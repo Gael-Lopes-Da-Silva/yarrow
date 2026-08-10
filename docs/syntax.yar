@@ -31,6 +31,8 @@ my_function function do
     1 2 !=    # true
     5 3 >     # true
     3 5 <     # true
+    5 3 >=    # true
+    3 5 <=    # true
     # Current stack: [false, true, true, true]
     drop
 
