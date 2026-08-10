@@ -2,105 +2,140 @@
 # Yarrow is a stack-based language with a rich type system and modular design.
 # Let's dive in with examples! Everything is evaluated on a stack.
 
-# Arithmetic Operators: Stack-based, operands popped in reverse order
-1 2 +    # 3 (1 + 2)
-5 3 -    # 2 (5 - 3)
-4 2 *    # 8 (4 * 2)
-10 4 /   # 2.5 (10 / 4)
-10 3 //  # 3 (10 // 3)
-10 3 %   # 1 (10 % 3)
-2 3 ^    # 8 (2 ^ 3)
+# Modules: Import with require
+"std.math.sqrt" require # Import a function into the main scope
+"std.io" require io # Import everything from io into a scope named io
+# "std.io" require # Would import everything from io into main scope
 
-# Logical Operators: Work with bools
-true false and  # false
-true false or   # true
-true not        # false
+my_function function do
+    # Arithmetic Operators: Stack-based, operands popped in reverse order
+    1 2 +    # 3 (1 + 2)
+    5 3 -    # 2 (5 - 3)
+    4 2 *    # 8 (4 * 2)
+    10 4 /   # 2.5 (10 / 4)
+    10 3 //  # 3 (10 // 3)
+    10 3 %   # 1 (10 % 3)
+    2 3 ^    # 8 (2 ^ 3)
+    # Current stack: [3, 2, 8, 2.5, 3, 1, 8]
 
-# Comparison Operators: Return bool
-1 2 ==    # false
-1 2 !=    # true
-5 3 >     # true
-3 5 <     # true
+    # Logical Operators: Work with bools
+    true false and  # false
+    true false or   # true
+    true not        # false
+    # Current stack: [3, 2, 8, 2.5, 3, 1, 8, false, true, false]
 
-# Bitwise Operators: For integers
-1 2 and      # 0
-1 5 or       # 5
-4 5 xor      # 1
-5 2 lshift   # 20
-5 2 rshift   # 1
-5 not        # -6
+    # Comparison Operators: Return bool
+    1 2 ==    # false
+    1 2 !=    # true
+    5 3 >     # true
+    3 5 <     # true
+    # Current stack: [3, 2, 8, 2.5, 3, 1, 8, false, true, false, false, true, true, true]
 
-# Types: Numeric, bool, string, and more
-42        # u8 (smallest fitting integer)
--900      # i16
-3.14      # f16
-"hello"   # string
-'\n'      # rune (char)
-true      # bool
+    # Bitwise Operators: For integers
+    1 2 and      # 0
+    1 5 or       # 5
+    4 5 xor      # 1
+    5 2 lshift   # 20
+    5 2 rshift   # 1
+    5 not        # -6
+    # Current stack: [3, 2, 8, 2.5, 3, 1, 8, false, true, false, false, true, true, true, 0, 5, 1, 20, 1, -6]
 
-# Stack Manipulation: Control the stack
-42 dup    # [42] -> [42, 42] For simple types, borrows for complex types
-1 2 swap  # [1, 2] -> [2, 1]
-1 2 3 rot # [1, 2, 3] -> [2, 3, 1]
-42 pop    # [42] -> [] Remove 42 also work with reference, releasing borrows
-drop      # [2, 3] -> [] Remove all values on the stack and release all borrows
+    # Types: Numeric, bool, string, and more
+    1_000     # Work as well
+    0b100110  # For binary
+    0xAB12    # For hexadecimal
+    42        # u8 (smallest fitting integer)
+    -900      # i16
+    3.14      # f16
+    "hello"   # string
+    '\n'      # rune (char)
+    true      # bool
+    # Current stack: [3, 2, 8, 2.5, 3, 1, 8, false, true, false, false, true, true, true, 0, 5, 1, 20, 1, -6, 42, -900, 3.14, "hello", '\n', true]
 
-# Variables: Mutable, const, or static
-42 myVar mutable i32       # Mutable, owns the value
-23 myVar set               # Update to 23, drops old value
-100 myConst const i32      # Runtime constant, owns the value
-50 myStatic static i32     # Compile-time constant, owned by program
+    # Stack Manipulation: Control the stack
+    drop      # [3, 2, 8, 2.5, 3, 1, 8, false, true, false, false, true, true, true, 0, 5, 1, 20, 1, -6, 42, -900, 3.14, "hello", '\n', true] -> [] Remove all values on the stack and release all borrows
+    42 dup    # [42] -> [42, 42] For simple types, borrows for complex types
+    1 2 swap  # [1, 2] -> [2, 1]
+    1 2 3 rot # [1, 2, 3] -> [2, 3, 1]
+    42 pop    # [42] -> [] Remove 42 also work with reference, releasing borrows
+    # Current stack: []
 
-# Functions: Defined with parameters and return types
-add function
-    i32
-    i32 # The two value are copied into the local stack
-do
-    + # We add the two value from the stack
-    return # Return the top value of the stack
-end with i32
+    # Variables: Mutable, const, or static
+    42 myVar mutable i32       # Mutable, owns the value
+    23 myVar set               # Update to 23, drops old value
+    100 myConst const i32      # Runtime constant, owns the value
+    50 myStatic static i32     # Compile-time constant, owned by program
+    # A variable declaration pop a value of the same type from the stack and store it with it's name out of the stack
+    # Calling a variable push a copy of it's value into the stack
+    myVar
+    # Current stack: [23]
+    drop
+    # Current stack: []
 
-main function do
-    10 20 add call  # Calls add(10, 20) -> 30
-end # Return void if not specified
+    # Functions: Defined with parameters and return types, can also be defined inside other functions, but can only be called in the body of said function
+    add function
+        i32
+        i32 # The two value are copied into the local stack
+    do
+        # Current stack: [<i32>, <i32>]
+        + # We add the two value from the stack
+        # Current stack: [<i32>]
+        return # Return the top value of the stack
+    end with i32 # Return an i32 value
 
-# Control Flow: If/else and match
-# For simplicity, there is no else if/elif, check match for that
-5 10 < if
-    "less"
-else
-    "not less"
-end
+    3 4
+    # Current stack: [3, 4]
+    add call
+    # Current stack: [7]
+    drop
+    # Current stack: []
 
-score 85 mutable i32
-score match
-    dup 100 <= case # Cases accept a boolean
-        "A"
-    end
-    dup 85 == case
-        "exact match"
-    end
-    dup 30 > over 90 < and case
-        "range match"
-    end
+    # Control Flow: If/else and match
+    # For simplicity, there is no else-if/elif, check match for that
+    5 10 < if # If accept a boolean
+        "less" io.write_line call
     else
-        "B or below"
+        "not less" io.write_line call
     end
-end
+    # Current stack: ["less"]
+    drop
+    # Current stack: []
 
-# Loops: Conditional or iterable
-0 counter mutable i32
-counter 5 < while
-    counter dup 1 + set # Incrementation
-    break # Exit early
-end
+    85 score const i32
+    score match
+        # Current stack: [85]
+        dup 100 <= case # Cases accept a boolean
+            "equal or less" io.write_line call
+        end
 
-[10 20 30] numbers static array<i32 3> # If size not specified, will infer it
-0 sum mutable i32
+        dup 85 == case
+            "exact match" io.write_line call
+        end
 
-numbers value for # Iterate throught iterable data structures
-    sum dup value + set
-end
+        else
+            "did not match everything above" io.write_line call
+        end
+    end
+
+    # Loops: Conditional or iterable
+    0 counter mutable i32
+    counter 5 < for # Like a while loop
+        counter dup 1 + set # Incrementation
+        break # Exit early
+        # Continue # Would break the current loop into the next one
+    end
+
+    [10 20 30] numbers static array<i32 3> # If size not specified, will infer it
+    0 sum mutable i32
+
+    numbers value for # Iterate throught iterable data structures
+        sum dup value + set
+    end
+
+    numbers value index for # To get the index
+        sum dup index + set
+    end
+end # Return void if not specified
 
 # Structs: Composite types with methods
 Point struct
@@ -118,112 +153,125 @@ Point implement
     end
 end
 
-{x 5 y 20} point mutable Point
-10 point.x set
-# Here we need to pass a reference, see memory management bellow
-point @borrow call point.distance call # 500 (10^2 + 20^2)
+struct_function function do
+    {x 5 y 20} point mutable Point
+    10 point.x set
+    # Here we need to pass a reference, see memory management bellow
+    point borrow call # Pushes reference<Point>
+    point.distance call # 500 (10^2 + 20^2)
+end
 
 # Enums: Named values
 Color enum
     RED    # 0
     GREEN  # 1
+    BLUE   # 2
+    # PURPLE 32 # Would continue from 32 to the next value
+    # YELLOW 0b101101 # Also work
 end
 
-# Unions: Hold one type at a time
-Value union
-    i32
-    string
+enum_function function do
+    Color.RED myColor const Color
+    myColor match
+        dup Color.RED == case
+            "the color is red" io.write_line call
+        end
+
+        dup Color.GREEN == case
+            "the color is green" io.write_line call
+        end
+
+        else
+            "the color is not matched" io.write_line call
+        end
+    end
 end
-
-42 val mutable Value
-"hello" val set
-
-# Modules: Import with require
-"std.math.sqrt" require
-16 sqrt call # 4.0
-
-"std.io" require io
-"Hello, Yarrow!" io.write_line call
-
-# List: Dynamic arrays
-(43 54 65) myList static list<i32>
-
-# Hashmap: List with chosen keys
-{"first" 4 "second" 5} myHashmap static hashmap<string i32>
 
 # Defer: Run at scope exit
-"myfile.txt" 'r' open_file call file mutable pointer<i32>
-defer file close_file call end # Defer body is executed in reverse
+defer_function function do
+    "std.fs" require # Import only for this function scope
+
+    "myfile.txt" 'r' open_file call unwrap
+    file mutable reference<File>
+    defer # Defer body is executed in reverse
+        # Would be last to execute
+        file close_file call
+        # Would be first to execute
+    end
+end
 
 # Memory Management: Stack-based ownership and regions
 # Yarrow manages memory using stack ownership, explicit variable ownership,
 # borrowing, region-based heap management, and compile-time checks.
+memory_function function do
+    # Stack Ownership: Stack owns temporary values, dropped when popped
+    "temp" # Pushes string, owned by stack
+    pop # Drops string, freeing memory
 
-# Stack Ownership: Stack owns temporary values, dropped when popped
-"temp" # Pushes string, owned by stack
-pop    # Drops string, freeing memory
-
-# Variable Ownership: Variables own values, dropped at scope exit
-main function do
+    # Variable Ownership: Variables own values, dropped at scope exit
     "hello" myStr mutable string
     "world" myStr set # Drops "hello", assigns "world"
-end # myStr dropped at scope exit
+    # myStr dropped at scope exit
 
-# Borrowing: Create safe references with borrow operator
-# There can only be one borrow of a value but it can move
-(1 2 3) myList mutable list<i32>
-myList @borrow call # Pushes reference<list<i32>>
-# Use the reference<list<i32>>
-pop # Ends borrow by popping the reference from the stack
-myList 4 @list_push call # Allowed after release
-0 myList2 const list<i32>
-myList myList2 @move call # Transfer the ownership of the data from myList to myList2
-myList 4 @list_push call # Compile time error because does not own the value anymore
+    "std.list" require
 
-# Regions: Heap data allocated in regions, freed as a unit
-myRegion @make_region
-defer myRegion @free_region call end
-(1 2 3) myList mutable list<i32>
-myList myRegion @put_region call
-# Region freed, dropping myList
+    # Borrowing: Create safe references with borrow operator
+    # There can only be one borrow of a value but it can move
+    (1 2 3) myList mutable list<i32>
+    myList borrow call # Pushes reference<list<i32>>
+    # Use the reference<list<i32>>
+    pop # Ends borrow by popping the reference from the stack
+    myList 4 list_push call unwrap # Allowed after release
+    0 myList2 const list<i32>
+    myList myList2 move call # Transfer the ownership of the data from myList to myList2
+    # myList 4 list_push call # Compile time error because does not own the value anymore
+    myList2 4 list_push call unwrap # Allowed after move
 
-# Compile-Time Checks: Prevent use-after-pop, use-after-free
-myList @borrow call
-myList pop # Error: Cannot pop while borrowed, need to pop reference before to release borrow
+    # Regions: Heap data allocated in regions, freed as a unit
+    myRegion make_region call
+    (1 2 3) myList mutable list<i32>
+    myList myRegion put_region call
+    myRegion free_region call # Would also work in a defer
+    # Region freed, dropping myList
 
-# Error Handling: Errors as values with unwrap and handle
-risky_operation function do
-    error.CustomError return # create new error value
-end with i32 or error
-
-main function do
-    risky_operation call unwrap # Pushes i32 or propagates error.CustomError
-    # will crash the program and throw CustomError
-    io.write_line call
+    # Compile-Time Checks: Prevent use-after-pop, use-after-free
+    myList2 borrow call
+    # myList2 pop # Error: Cannot pop while borrowed, need to pop reference before to release borrow
 end
 
-main function do
+# Error Handling: Errors as values with unwrap and handle
+error_function function do
+    risky_operation function do
+        error.CustomError # create new error value
+        return
+    end with i32 or error
+
+    # risky_operation call unwrap # Pushes i32 or propagates error.CustomError
+    # will crash the program and throw CustomError
+    # io.write_line call
+
     risky_operation call handle
         match
             error.CustomError == case
                 "Caught CustomError" io.write_line call
             end
+
             else
                 "Unknown error" io.write_line call
             end
         end
-        0 # Fallback value
+
+        "An error happened" return # Fallback value
     end
     io.write_line call
-end
 
-main function do
-    risky_operation call handle 0 end # If error, push 0
+    risky_operation call handle "An error happened" return end # If error, push string
     io.write_line call
-end
+end with void or error
 
 # Example Program: Putting it together
-"std.io" require io
+"std.list" require
+"std.string" require
 
 Person struct
     string name
@@ -238,49 +286,63 @@ Person implement
         self const reference<Person>
         score const i32
 
-        self.scores score @list_push call unwrap
+        self.scores score list_push call unwrap
         return
-    end with void or Error
+    end with void or error
 
     greet function
         reference<Person>
     do
         self const reference<Person>
 
-        self.name "says hello!" ' ' @string_join call unwrap
+        (self.name "says hello!") ' ' string_join call unwrap # Take a list of string to join and a delimiter
         return
-    end with string or Error
+    end with string or error
 end
 
-main function do
-    myRegion @make_region
-    defer myRegion @free_region call end
+example_function function do
+    myRegion make_region
+    defer myRegion free_region call end
 
     {name "Alice" scores (10 20)} person mutable Person
-    person myRegion @put_region call
+    person myRegion put_region call
 
-    person @borrow call # Put a reference<Person> on the stack
+    person borrow call # Put a reference<Person> on the stack
     person.greet call unwrap # Use the reference<Person> to call greet and release borrow
     io.write_line call # Prints "Alice says hello!"
 
-    person @borrow call
+    person borrow call
     30 person.add_score call handle # Consume the reference and the score
         match
             error.OutOfMemory == case
                 "No memory" io.write_line call
             end
+
             else
                 "Unknown error" io.write_line call
             end
         end
     end
 
-    [12 27 36] i for
-        i 30 < if
+    [12 27 36] _ index for # Only get the index, discard the value
+        index 30 < if
             "Younger" io.write_line call
         end
     end
-    # Region freed, dropping person2
+    # Region freed, dropping person
 end
+
+# Entry point of the program, always required
+main function do
+    my_function call
+    struct_function call
+    enum_function call
+    defer_function call
+    memory_function call
+    error_function call
+    example_function call
+
+    "Hello, Yarrow!" io.write_line call # Here's how to write a line
+end # May or may not return something
 
 # That's Yarrow in a nutshell! Stack-based, typed, modular, and memory-safe.
