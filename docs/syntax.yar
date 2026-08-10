@@ -45,30 +45,33 @@ my_function function do
     drop
 
     # Types: Numeric, bool, string, and more
+    # Integer literals get the smallest fitting type: positive -> smallest unsigned, negative -> smallest signed
     42        # u8 (smallest fitting integer)
     -900      # i16
-    1_000     # Work as well
-    0b100110  # For binary
-    0xAB12    # For hexadecimal
+    1_000     # u16
+    0b100110  # u8 (38)
+    0xAB12    # u16 (43890)
     3.14      # f16
-    6_329.5   # Also work
+    6_329.5   # f16
     "hello"   # string
     '\n'      # rune (char)
     true      # bool
-    # Current stack: [42, -900, 3.14, "hello", '\n', true]
+    # Current stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true]
 
     # Stack Manipulation: Control the stack
-    drop         # [42, -900, 3.14, "hello", '\n', true] -> [] Remove all values on the stack and release all borrows
-    42 dup       # [42] -> [42, 42] For simple types, borrows for complex types
+    drop         # [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true] -> [] Remove all values on the stack and release all borrows
+    42 dup       # [42] -> [42, 42] Copies for simple types, borrows for complex types
     1 2 swap     # [1, 2] -> [2, 1]
     1 2 3 rot    # [1, 2, 3] -> [2, 3, 1]
     1 2 3 unrot  # [1, 2, 3] -> [3, 1, 2]
-    42 pop       # [42] -> [] Remove 42 also work with reference, releasing borrows
+    42 pop       # [42] -> [] Removes 42, also works with references, releasing the borrow
 
     # Container literals: Array, list, hashmap
     ()    # Empty list
     []    # Empty array
     {}    # Empty hashmap
+    # Empty container literals carry no element type, so they need a typed context
+    # (such as a variable declaration) to be usable
 
     drop
 
@@ -77,20 +80,22 @@ my_function function do
     23 myVar set               # Update to 23, drops old value
     100 myConst const i32      # Runtime constant, owns the value
     50 myStatic static i32     # Compile-time constant, owned by program
-    # A variable declaration pop a value of the same type from the stack and store it with it's name out of the stack
-    # Calling a variable push a copy of it's value into the stack
+    # A variable declaration pops a value of the same type from the stack and stores it under its name, out of the stack
+    # Calling a variable pushes its value onto the stack (a copy for simple types, a borrow for complex types)
     myVar
     # Current stack: [23]
     drop
     # Current stack: []
 
     # Functions: Defined with parameters and return types, can also be defined inside other functions, but can only be called in the body of said function
+    # Parameters are copied onto the local stack in declaration order (first declared = deepest).
+    # They are bound by `name const Type` declarations in the body, which pop from the top, so the last parameter binds first.
     add function
         i32
-        i32 # The two value are copied into the local stack
+        i32 # The two values are copied into the local stack
     do
         # Current stack: [<i32>, <i32>]
-        + # We add the two value from the stack
+        + # We add the two values from the stack
         # Current stack: [<i32>]
         return # Return the top value of the stack
     end with i32 # Return an i32 value
@@ -104,7 +109,7 @@ my_function function do
 
     # Control Flow: If/else and match
     # For simplicity, there is no else-if/elif, check match for that
-    5 10 < if # If accept a boolean
+    5 10 < if # If accepts a boolean
         "less" io.write_line call
     else
         "not less" io.write_line call
@@ -113,12 +118,13 @@ my_function function do
     85 score const i32
     score match
         # Current stack: [85]
+        # Match runs the first case whose condition is true, otherwise the else block
         dup 85 == case # Cases accept a boolean
             "exact match" io.write_line call
         end
 
-        dup 100 <= case
-            "equal or less" io.write_line call
+        dup 50 < case
+            "under 50" io.write_line call
         end
 
         else
@@ -129,16 +135,16 @@ my_function function do
     # Loops: Conditional or iterable
     0 counter mutable i32
     counter 5 < for # Like a while loop
-        counter dup 1 + set # Incrementation
+        counter dup 1 + set # Increment
         break       # Exit early
-        # Continue  # Would break the current loop into the next one
+        # Continue  # Skips to the next iteration
     end
 
     # Array: Contain a declared number of values
-    [10 20 30] numbers static array<i32 3> # If size not specified, will infer it
+    [10 20 30] numbers static array<i32 3> # If the size is not specified, it is inferred from the literal
     0 sum mutable i32
 
-    numbers value for # Iterate throught iterable data structures
+    numbers value for # Iterate through iterable data structures
         sum dup value + set
     end
 
@@ -150,6 +156,7 @@ my_function function do
     (43 54 65) myList static list<i32>
 
     # Hashmap: List with chosen keys
+    # {k v} with literal keys is a hashmap literal; {field value} with identifier keys is a struct literal
     {"first" 4 "second" 5} myHashmap static hashmap<string i32>
 end # Return void if not specified
 
@@ -172,7 +179,7 @@ end
 struct_function function do
     {x 5 y 20} point mutable Point
     10 point.x set
-    # Here we need to pass a reference, see memory management bellow
+    # Here we need to pass a reference, see memory management below
     point borrow         # Pushes reference<Point>
     point.distance call  # 500 (10^2 + 20^2)
     # Current stack: [500]
@@ -183,8 +190,8 @@ Color enum
     RED    # 0
     GREEN  # 1
     BLUE   # 2
-    # PURPLE 32 # Would continue from 32 to the next value
-    # YELLOW 0b101101 # Also work
+    # PURPLE 32 # An explicit value: the next member would continue from 33
+    # YELLOW 0b101101 # Also works
 end
 
 enum_function function do
@@ -247,7 +254,7 @@ memory_function function do
     myList2 4 list_push call unwrap # Allowed after move
 
     # Compile-Time Checks: Prevent use-after-pop, use-after-free
-    # myList2 borrow call
+    # myList2 borrow
     # myList2 pop # Error: Cannot pop while borrowed, need to pop reference before to release borrow
 
     # Regions: Heap data allocated in regions, freed as a unit
@@ -255,7 +262,7 @@ memory_function function do
     (1 2 3) myListRegion mutable list<i32>
     myListRegion myRegion put_region call
     myRegion free_region call # Would also work in a defer
-    # Region freed, dropping myList
+    # Region freed, dropping myListRegion
 end
 
 # Error Handling: Errors as values with unwrap and handle
@@ -265,8 +272,7 @@ error_function function do
         return
     end with i32 or error
 
-    # risky_operation call unwrap # Pushes i32 or propagates error.CustomError
-    # will crash the program and throw CustomError
+    # risky_operation call unwrap # Pushes the i32 on success; on error, propagates error.CustomError (returned from this function since it can return an error). In a function that cannot error, unwrap would crash the program instead.
     # io.write_line call
     risky_operation call handle
         match
@@ -298,7 +304,7 @@ end
 
 Person implement
     add_score function
-        reference<Person> # The reference need to point to mutable value
+        reference<Person> # The reference needs to point to a mutable value
         i32
     do
         # Current stack: [reference<Person>, <i32>]
@@ -325,7 +331,7 @@ example_function function do
     myRegion make_region call
     defer myRegion free_region call end
 
-    {name "Alice" scores (10 20)} person mutable Person # Not to be confused with hashmaps
+    {name "Alice" scores (10 20)} person mutable Person # Struct literal (identifier keys), not to be confused with hashmap literals {k v}
     person myRegion put_region call
 
     person borrow             # Put a reference<Person> on the stack
