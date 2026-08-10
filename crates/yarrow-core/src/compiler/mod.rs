@@ -20,7 +20,9 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
-use crate::parser::ast::{BinOp, Expr, Function, MatchCase, Program, StackOp, Stmt, UnOp};
+use crate::parser::ast::{
+    BinOp, Expr, Function, MatchCase, MatchCaseKind, Program, StackOp, Stmt, UnOp,
+};
 use crate::parser::literals::{
     decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
 };
@@ -400,7 +402,7 @@ impl Compiler {
                     self.load_requires_stmts(then_branch, out)?;
                     self.load_requires_stmts(else_branch, out)?;
                 }
-                Stmt::While { body, .. } | Stmt::Defer { body } | Stmt::Handle { body } => {
+                Stmt::Defer { body } | Stmt::Handle { body, .. } => {
                     self.load_requires_stmts(body, out)?
                 }
                 Stmt::For { body, .. } => self.load_requires_stmts(body, out)?,
@@ -1450,8 +1452,6 @@ impl Compiler {
                 else_branch,
             } => self.emit_if(b, st, stack, condition, then_branch, else_branch)?,
 
-            Stmt::While { condition, body } => self.emit_while(b, st, stack, condition, body)?,
-
             Stmt::Match {
                 value,
                 cases,
@@ -1459,10 +1459,19 @@ impl Compiler {
             } => self.emit_match(b, st, stack, value, cases, else_branch)?,
 
             Stmt::For {
-                iterable,
-                var,
+                source,
+                value,
+                index,
                 body,
-            } => self.emit_for(b, st, stack, iterable, var, body)?,
+            } => self.emit_for(
+                b,
+                st,
+                stack,
+                source,
+                value.as_deref(),
+                index.as_deref(),
+                body,
+            )?,
 
             Stmt::Return { .. } => self.emit_return(b, st, stack)?,
 
@@ -1498,7 +1507,20 @@ impl Compiler {
                 st.deferred.push(body.clone());
             }
 
-            Stmt::Handle { body } => self.emit_handle(b, st, stack, body)?,
+            Stmt::Handle { body, .. } => self.emit_handle(b, st, stack, body)?,
+
+            Stmt::Move { .. } => {
+                return Err(CompileError::new(
+                    "'move' is not yet supported",
+                    Location::default(),
+                    "E301",
+                ));
+            }
+
+            // The parser extracts `fallback` out of `handle` bodies into
+            // `Handle.fallback`, so a bare `Fallback` statement is unreachable
+            // here; treat it as a no-op rather than a hard error.
+            Stmt::Fallback { .. } => {}
         }
         Ok(())
     }
@@ -2032,47 +2054,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_while(
-        &mut self,
-        b: &mut FunctionBuilder,
-        st: &mut FnState,
-        stack: &mut Vec<Slot>,
-        condition: &Expr,
-        body: &[Stmt],
-    ) -> CResult<()> {
-        let pre = stack.clone();
-        let header = b.create_block();
-        let body_blk = b.create_block();
-        let end = b.create_block();
-        b.ins().jump(header, &[]);
-
-        b.switch_to_block(header);
-        *stack = pre.clone();
-        let cond = self.eval_cond(b, st, stack, condition)?;
-        b.ins().brif(cond, body_blk, &[], end, &[]);
-
-        b.switch_to_block(body_blk);
-        *stack = pre.clone();
-        st.loops.push(LoopCtx {
-            break_to: end,
-            continue_to: header,
-        });
-        self.compile_body(b, st, stack, body)?;
-        st.loops.pop();
-        if stack.len() != pre.len() {
-            return Err(CompileError::new(
-                "while body must leave the stack balanced",
-                Location::default(),
-                "E325",
-            ));
-        }
-        b.ins().jump(header, &[]);
-
-        b.switch_to_block(end);
-        *stack = pre;
-        Ok(())
-    }
-
     /// `value match <case ...> else <body> end`.
     ///
     /// The subject is evaluated once and lives on the compile-time stack for
@@ -2120,7 +2101,16 @@ impl Compiler {
                 b.switch_to_block(cond_blks[i - 1]);
             }
             *stack = sub_stack.clone();
-            let cond = self.eval_match_cond(b, st, stack, &case.condition)?;
+            let cond = match &case.kind {
+                MatchCaseKind::Condition(expr) => self.eval_match_cond(b, st, stack, expr)?,
+                MatchCaseKind::Type(_) => {
+                    return Err(CompileError::new(
+                        "union type dispatch in 'match' is not yet supported",
+                        Location::default(),
+                        "E308",
+                    ));
+                }
+            };
             // The condition may keep the subject on the stack (`dup X ==`) or
             // consume stack values (`error.X ==` compares against the subject),
             // so it may leave at most the pre-condition stack height.
@@ -2203,19 +2193,30 @@ impl Compiler {
         Ok(())
     }
 
-    /// `iterable var for <body> end` over a fixed-size array. The iterable is
-    /// evaluated once, then each element is loaded into `var` in order.
+    /// `for` has two shapes.
+    ///
+    /// Condition form (`value` and `index` both `None`): evaluate `source` as
+    /// a boolean each iteration and loop while it is truthy.
+    ///
+    /// Sequence form: `source` must be an array; `value` (if any) is bound to
+    /// each element in order and `index` (if any) to its offset. A var name of
+    /// `_` discards that binding.
     fn emit_for(
         &mut self,
         b: &mut FunctionBuilder,
         st: &mut FnState,
         stack: &mut Vec<Slot>,
-        iterable: &Expr,
-        var: &str,
+        source: &Expr,
+        value: Option<&str>,
+        index: Option<&str>,
         body: &[Stmt],
     ) -> CResult<()> {
+        if value.is_none() && index.is_none() {
+            return self.emit_cond_for(b, st, stack, source, body);
+        }
+
         let pre = stack.clone();
-        self.compile_expr(b, st, stack, iterable)?;
+        self.compile_expr(b, st, stack, source)?;
         let arr = self.pop_slot(stack, "'for' iterable")?;
         let (elem, count) = match arr.ty {
             Ty::Array { elem, count } => (scalar_ty(elem), count),
@@ -2254,29 +2255,48 @@ impl Compiler {
         b.switch_to_block(body_blk);
         *stack = pre.clone();
         let idx = b.use_var(idx_v);
-        let base = b.use_var(ptr_v);
-        let stride = b.ins().iconst(irtypes::I64, elem_size);
-        let off = b.ins().imul(idx, stride);
-        let addr = b.ins().iadd(base, off);
-        let val = b.ins().load(
-            elem.clty(self.ptr_type),
-            cranelift_codegen::ir::MemFlagsData::trusted(),
-            addr,
-            0,
-        );
-        let loop_var = b.declare_var(elem.clty(self.ptr_type));
-        b.def_var(loop_var, val);
-        let saved = st.vars.insert(var.to_string(), (loop_var, elem));
+        let mut saved: Vec<(String, Option<(cranelift_frontend::Variable, Ty)>)> = Vec::new();
+        if let Some(name) = index {
+            if name != "_" {
+                let idx_var = b.declare_var(irtypes::I64);
+                b.def_var(idx_var, idx);
+                let prev = st.vars.insert(name.to_string(), (idx_var, Ty::I64));
+                saved.push((name.to_string(), prev));
+            }
+        }
+        if let Some(name) = value {
+            if name != "_" {
+                let base = b.use_var(ptr_v);
+                let stride = b.ins().iconst(irtypes::I64, elem_size);
+                let off = b.ins().imul(idx, stride);
+                let addr = b.ins().iadd(base, off);
+                let val = b.ins().load(
+                    elem.clty(self.ptr_type),
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    addr,
+                    0,
+                );
+                let loop_var = b.declare_var(elem.clty(self.ptr_type));
+                b.def_var(loop_var, val);
+                let prev = st.vars.insert(name.to_string(), (loop_var, elem));
+                saved.push((name.to_string(), prev));
+            }
+        }
         st.loops.push(LoopCtx {
             break_to: end,
             continue_to: step,
         });
         self.compile_body(b, st, stack, body)?;
         st.loops.pop();
-        if let Some(saved) = saved {
-            st.vars.insert(var.to_string(), saved);
-        } else {
-            st.vars.remove(var);
+        for (name, prev) in saved {
+            match prev {
+                Some(p) => {
+                    st.vars.insert(name, p);
+                }
+                None => {
+                    st.vars.remove(&name);
+                }
+            }
         }
         if stack.len() != pre.len() {
             return Err(CompileError::new(
@@ -2291,6 +2311,49 @@ impl Compiler {
         let idx = b.use_var(idx_v);
         let next = b.ins().iadd_imm(idx, 1);
         b.def_var(idx_v, next);
+        b.ins().jump(header, &[]);
+
+        b.switch_to_block(end);
+        *stack = pre;
+        Ok(())
+    }
+
+    /// Condition form of `for`: repeatedly evaluate `condition` and run
+    /// `body` while it is truthy.
+    fn emit_cond_for(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        condition: &Expr,
+        body: &[Stmt],
+    ) -> CResult<()> {
+        let pre = stack.clone();
+        let header = b.create_block();
+        let body_blk = b.create_block();
+        let end = b.create_block();
+        b.ins().jump(header, &[]);
+
+        b.switch_to_block(header);
+        *stack = pre.clone();
+        let cond = self.eval_cond(b, st, stack, condition)?;
+        b.ins().brif(cond, body_blk, &[], end, &[]);
+
+        b.switch_to_block(body_blk);
+        *stack = pre.clone();
+        st.loops.push(LoopCtx {
+            break_to: end,
+            continue_to: header,
+        });
+        self.compile_body(b, st, stack, body)?;
+        st.loops.pop();
+        if stack.len() != pre.len() {
+            return Err(CompileError::new(
+                "for body must leave the stack balanced",
+                Location::default(),
+                "E325",
+            ));
+        }
         b.ins().jump(header, &[]);
 
         b.switch_to_block(end);
@@ -2435,7 +2498,13 @@ impl Compiler {
                     own: Own::Trivial,
                 });
             }
-            Expr::Builtin { name } => self.emit_builtin(b, st, stack, name)?,
+            Expr::TypeValue { name } => {
+                return Err(CompileError::new(
+                    format!("type value '{name}' ('typeof') is not yet supported"),
+                    Location::default(),
+                    "E301",
+                ));
+            }
             Expr::Unwrap { inner } => {
                 self.compile_expr(b, st, stack, inner)?;
                 self.emit_unwrap(b, st, stack)?;
@@ -2561,6 +2630,13 @@ impl Compiler {
                     },
                     own: Own::Owned,
                 });
+            }
+            Expr::Typeof { .. } | Expr::Borrow { .. } | Expr::ApplyTypeof | Expr::ApplyBorrow => {
+                return Err(CompileError::new(
+                    "'typeof'/'borrow' operators are not yet supported",
+                    Location::default(),
+                    "E301",
+                ));
             }
         }
         Ok(())
@@ -3270,11 +3346,6 @@ impl Compiler {
                     self.method_name(st, base, member)?
                 }
             }
-            Expr::Builtin { name: _ } => {
-                // `@borrow call` / `@move call` apply the builtin itself.
-                self.compile_expr(b, st, stack, target)?;
-                return Ok(());
-            }
             _ => {
                 return Err(CompileError::new(
                     "'call' target must be a function name",
@@ -3408,12 +3479,13 @@ impl Compiler {
                     own,
                 });
             }
-            StackOp::Over => {
-                let top = self.pop_slot(stack, "over")?;
-                let sec = self.pop_slot(stack, "over")?;
-                stack.push(sec);
-                stack.push(top);
-                stack.push(sec);
+            StackOp::Unrot => {
+                let a = self.pop_slot(stack, "unrot")?;
+                let second = self.pop_slot(stack, "unrot")?;
+                let third = self.pop_slot(stack, "unrot")?;
+                stack.push(a);
+                stack.push(third);
+                stack.push(second);
             }
             StackOp::Swap => {
                 let top = self.pop_slot(stack, "swap")?;
@@ -3858,13 +3930,8 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
                 collect_strings(then_branch, out);
                 collect_strings(else_branch, out);
             }
-            Stmt::While { condition, body }
-            | Stmt::For {
-                iterable: condition,
-                body,
-                ..
-            } => {
-                walk_expr(condition, out);
+            Stmt::For { source, body, .. } => {
+                walk_expr(source, out);
                 collect_strings(body, out);
             }
             Stmt::Match {
@@ -3874,14 +3941,17 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
             } => {
                 walk_expr(value, out);
                 for c in cases {
-                    walk_expr(&c.condition, out);
+                    match &c.kind {
+                        MatchCaseKind::Condition(expr) => walk_expr(expr, out),
+                        MatchCaseKind::Type(_) => {}
+                    }
                     collect_strings(&c.body, out);
                 }
                 collect_strings(else_branch, out);
             }
             Stmt::Return { value: Some(v) } => walk_expr(v, out),
             Stmt::Return { value: None } => {}
-            Stmt::Defer { body } | Stmt::Handle { body } => collect_strings(body, out),
+            Stmt::Defer { body } | Stmt::Handle { body, .. } => collect_strings(body, out),
             Stmt::Function(f) => collect_strings(&f.body, out),
             Stmt::Implement(imp) => {
                 for f in &imp.functions {

@@ -3,211 +3,312 @@
 Status of the language as-specified in `docs/syntax.yar` versus the implemented
 pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift JIT).
 
+`docs/syntax.yar` is the source of truth. The front-end was rewritten in
+commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler has **not**
+been ported yet and does not currently build.
+
 ## Pipeline status
 
-- **Tokenizer** — complete; all spec tokens present (`tokenizer/token_kind.rs`).
-- **Parser** — parses the whole spec into an AST: containers, `for`, `match`,
-  `handle`, `defer`, `require`, structs/enums/unions, generics, and type-unions.
-- **Compiler** — everything in section 1 lowers to JIT:
-  - done: numeric/control core, structs/methods/`self`, `match`, `for` over
-    fixed-size arrays, strings/lists/hashmaps/`@sqrt` via a heap host runtime,
-    modules/`require` with an embedded std library, error handling as values
-    (`error`/`Error` types, `error.X`, `unwrap`, `handle`), flexible
-    `run_main` (void/int/float/bool/string results), and the ownership model
-    (`@move`, `@borrow`, reverse-order `defer`, heap regions, struct/array
-    drop/free).
-  - remaining: unions, fixed-array indexing, and the spec-divergence
-    items in section 3 (milestones 9–15).
+- **Tokenizer** — complete for the new spec (`tokenizer/token_kind.rs`,
+  `tokenize.rs`). Dropped tokens: `DotDot Question Exclamation Ampersand Bar
+Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
+  Added tokens/keywords: `typeof`, `unrot`, `borrow`, `move`, `fallback`
+  (`>=`/`<=` and `//` exist). There is no `@` token and no `while` keyword
+  anymore.
+- **Parser** — complete for the new AST (`parser/mod.rs`, `ast.rs`,
+  `literals.rs`). No `Stmt::While`; `for` is the only loop and comes in three
+  forms; `match` cases dispatch either on a boolean condition or on a union
+  member type; `handle` carries a `fallback`; types can be used as values
+  (`typeof`); `move`/`borrow` are statements/operators, not `@` builtins.
+- **Compiler** — **out of sync**. `cargo check` fails with 14 errors, all in
+  `compiler/mod.rs` (lines 403, 1453, 1461–1463, 1501, 2123, 2438, 3273,
+  3411, 3861–3884): removed `While`/`Builtin`/`Over` variants, renamed
+  `MatchCase.condition`, and the new `For`/`Handle` shapes. The embedded std
+  library still uses `@`-builtins, which the new tokenizer cannot lex.
+- **Runtime** — complete for the current host heap (strings/lists/maps/
+  structs/arrays, regions, kind codes) but built around the `@`-builtin model;
+  it will shrink to a tiny, data-registered host surface (Stage 4–5).
+- **Std library** — embedded Yarrow modules in `compiler/modules.rs`
+  (`std.io`, `std.math.sqrt`, `std.string`, `std.list`, `std.map`) written in
+  the old `@`-builtin syntax; must be rewritten as pure-Yarrow **source files**
+  in `crates/yarrow-core/lib/std/` (auto-discovered by a `build.rs`) and
+  extended with `std.math`, `std.region`, `std.fs`. `require` resolves a
+  dotted path as a _function in the parent module_ with a module-file
+  fallback (function wins on ambiguity, with a warning).
 
-Most remaining work is in the **compiler**, not the front-end.
+### Current build
 
-Signed literals (`-900`, `+300`) and scientific-notation floats (`1e3`, `-1.5e-3`)
-lex at the tokenizer as numeric tokens with no unary operators required
-(`tokenize.rs` `handle_number`). Literal lexemes are decoded and validated in
-`parser/literals.rs` (`decode_int_literal` -> `i128`, `decode_float_literal`,
-`decode_rune_literal`); the parser validates them at the token's real location
-and the compiler reuses the same decoders.
+```
+cargo check
+```
 
-## 1. Working today (compiles and runs)
+fails until Stage 0 is done.
 
-- Int arithmetic `+ - * // % ^` (pow via inline loop), float `/`, comparisons
-  `== != > >= < <=`, logical/bitwise `and or xor not`, `lshift`/`rshift`.
-- Literals: integers (forced to I64), floats (F64), bools (I8), runes (I32).
-- Stack ops `dup over swap rot pop`; `set`; var declarations
-  `mutable/const/static`; functions with params + multi-return, `call`, `return`,
-  and stack-based implicit fallthrough return.
-- `if`/`else` and `while` plus `break`/`continue` (conditions precede the
-  keyword, matching the spec).
-- **Structs, field access, methods, `self`** — struct declarations compute real
-  layouts (`layout`/`FieldLayout`/`StructLayout`, heap-allocated via
-  `yarrow_alloc`); literals `{x 5 y 20}` init fields (nested structs recurse,
-  missing fields zeroed); `point.x` loads / `10 point.x set` stores;
-  `Point implement distance function` lowers to `Point::distance` and
-  `point.distance call` resolves by receiver type; `self` is auto-bound to the
-  method receiver; `@borrow`/`@move` implement ownership transfer.
-- **Match** — `score match ... case ... else ... end`. The subject is evaluated
-  once and lives on the compile-time stack for the whole match (conditions
-  commonly `dup` it); the first truthy case runs its body, otherwise `else`;
-  the subject is dropped at the end so the match yields only the chosen
-  branch's value(s). A bare `match` (no subject) runs conditions against the
-  stack as it was when the match started.
-- **`for` loops over fixed-size arrays** — `numbers value for ... end` and
-  `[12 27 36] i for ... end`; supports `break`/`continue` and nested loops.
-- **Fixed-size arrays** — `array<i32 3>` types with literal `[a b c]`
-  initializers (standalone or in var decls/struct fields), scalar element
-  types, heap-allocated blocks; array sizes are inferred when omitted
-  (`array<i32>`).
-- **Strings** — `"..."` literals lower through read-only data sections
-  (`declare_data` + `GlobalValue`) into `yarrow_str_new` handles; the `string`
-  type resolves; `@print`, `@string_len`, `@string_join` (left, right, sep),
-  string comparison (`== != > >= < <=` via `yarrow_str_cmp`), and `+`
-  concatenation (`yarrow_str_join`).
-- **Lists/hashmaps** — `(a b c)` and `{k v}` literals lower to host handles
-  (`yarrow_list_new`/`yarrow_map_new`); `list<i32>` / `hashmap<k v>` types
-  resolve; `@list_len`/`@list_get`/`@list_set`/`@list_push`,
-  `@map_len`/`@map_get`/`@map_set` (`@map_get` pushes `(value, found)`, value
-  then found flag); typed list/map var decls, struct fields of list/hashmap
-  type, int/string literal keys and values; `@list_get`/`@list_set`
-  bounds-check via `trapz`.
-- **Builtins & heap runtime** — `runtime.rs` implements `yarrow_alloc`/
-  `yarrow_free` plus the string/list/map/print ops, imported as typed
-  `extern "C"` symbols. `@borrow`/`@move` transfer ownership (see milestone 5);
-  `@make_region`/`@free_region`/`@put_region` implement heap regions; `@sqrt`
-  coerces ints/floats to `F64`. Heap values are dropped when popped,
-  overwritten, or at scope exit.
-- **`defer`/`handle`** — `defer` bodies compile in reverse order at scope exit;
-  `handle ... end` catches the error envelope from a `with T or Error` call —
-  its body runs on error with the error value on the stack (typically matched
-  with `error.X == case`), otherwise the success payload is kept, and a `handle
- v end` fallback pushes `v` on error.
-- **Enums** — `Color enum RED GREEN end` (members on their own line, `#` ordinal
-  comments allowed) lowers to program-wide named constants: `RED` and
-  `Color.RED` both push the member's value, and `Color` resolves as a real type
-  for `val`/params/returns/struct fields. Members get implicit ordinals from 0
-  or an explicit value (`RED 10 GREEN 20`, negatives like `BAD -1` allowed);
-  enum values are physically I64, compare like ints, and can live in
-  lists/maps/arrays (as I64 scalars).
+## Architecture notes
 
-## 2. Parsed but NOT compiled
+### Values and memory today
 
-- **Unions** — `Value union i32 string end` parses but is unresolved (`E308`).
-- **Array indexing** — fixed-size `array<T n>` compiles for scalar elements,
-  but there is no `index`/`get`/`set` word yet (lists have `@list_get`/
-  `@list_set`).
-- **Unknown builtins** — builtins not handled by `emit_builtin` (I/O words,
-  list/map removals, etc.) fall through to `E301`.
+Scalars live in registers. Heap values are opaque `u64` handles pointing at
+runtime headers tagged by a kind code (`runtime.rs`: `KIND_STRING = 0x10`,
+`KIND_LIST = 0x20`, `KIND_MAP = 0x30`, `KIND_STRUCT = 0x40`, `KIND_PTR = 0x50`,
+`KIND_ARRAY = 0x60`). Structs are heap blocks whose fields are laid out with
+their own kind-code bytes (`compiler/mod.rs:527`). The compiler already emits
+the loads/stores that build and read these headers — but **Yarrow-level code
+cannot**: `pointer<T>` types are rejected (`compiler/types.rs:364`, `E307`)
+and there is no load/store/address-arithmetic word. That is the single biggest
+gap for the std library.
 
-## 3. Compiles but diverges from the spec (semantic mismatches)
+### Ownership model
 
-- `drop` pops 1 like `pop`; the spec says `drop` empties the whole stack (and
-  releases borrows). `compiler/mod.rs` treats `Pop | Drop` identically.
-- **Literal typing** — spec: `42 -> u8`, `-900 -> i16`, `3.14 -> f16` (smallest
-  fitting type); the compiler pins all int literals to I64 and floats to F64,
-  with no smallest-fit inference.
-- **`run_main` result coverage** — struct/container/pointer results and
-  `with T or Error` mains are rejected (`E360`); 128-bit and `F16` results are
-  unsupported.
-- **128-bit** — `i128/u128/f128` map to Cranelift types but 128->float
-  conversions are rejected (`E310`) and 128-bit arithmetic is untested.
-- **Float mod/pow** — `%`/`^` on floats are unsupported (`E334`).
-- **Arrays** — element types are restricted to scalars (`E344` otherwise),
-  there is no array `index`/`get`/`set` word yet, and array values alias the
-  same heap block on assignment (no copy semantics).
+Stack values are dropped when popped; variables own their values and drop
+them at scope exit; `borrow` pushes a borrow reference (released on pop);
+`move` transfers ownership and marks the source moved; `defer` runs in reverse
+order; heap regions own registered values and free them as a unit; structs and
+arrays free their fields recursively. Compile-time checks reject use-after-move
+and popping/`set`-ing while borrowed.
 
-## 4. Infrastructure gaps
+### Host bridge (target design)
 
-- No garbage collector; the heap host runtime
-  covers strings/lists/maps/structs/arrays/print/`sqrt`; freed on drop per the
-  ownership model (`@move`, `@borrow`, regions), but no cycle collection.
-- Structs and arrays are real layouts backed by heap blocks (`yarrow_alloc`)
-  that own their fields; assigning variables aliases pointers (no copy
-  semantics), with ownership tracked by the compiler and enforced by runtime
-  frees/regions.
-- Coercion gaps: `int -> bool` via `ireduce` on a comparison result (correct for
-  > 8-bit); `bool -> int` only widens; no `float -> int` truncation test coverage.
+The language has **no named builtins and no per-name compiler code**. The
+compiler's call lowering is generic: an undefined function name falls back to a
+data table of host functions. The irreducible host surface is kept tiny —
+memory and OS I/O only:
 
-## Suggested milestones (priority order)
+- `alloc(size) -> ptr` (today: `yarrow_alloc`)
+- `free(ptr)` (today: `yarrow_free_value`)
+- OS syscalls for `std.io`/`std.fs`: `write(fd, ptr, len)`, `open(ptr, len,
+mode)`, `read(fd, ...)`, `close(fd)`
 
-1. **Structs, field access, methods, `self`** — done. Layouts are computed from
-   declarations and used for field loads/stores; method calls resolve by
-   receiver type; `self` is bound to the receiver; `@borrow`/`@move` implement
-   ownership transfer.
-2. **Match + For loops** — done. `match` lowers to a chain of conditional
-   branches over the subject (with the subject dropped at the end); `for`
-   iterates fixed-size arrays (`array<T n>` + `[a b c]` literals landed to
-   support it) with `break`/`continue`. Also fixed a latent parser bug where
-   `array<i32 3>`/`hashmap<k v>` type args were dropped, and made `if`/`else`
-   (and match) merge blocks coerce branch values so mixed-width branches (I32
-   vs I64) type-check.
-3. **Strings, containers, builtins** — done. Strings, lists/hashmaps
-   (literals, types, `@list_*`/`@map_*` builtins), `@sqrt`, and
-   `@borrow`/`@move`/`@make_region`/`@free_region`/`@put_region` lower to a
-   heap host runtime in `runtime.rs` (`yarrow_alloc`, `yarrow_str_*`,
-   `yarrow_list_*`, `yarrow_map_*`, prints). `defer`/`handle` bodies compile
-   inline. Array indexing (a fixed-array `get`/`set` word) remains.
-4. **Modules/`require` + std library** — done. `ModuleLoader` resolves dotted
-   paths to embedded std modules (`std.io`, `std.math.sqrt`, `std.string`,
-   `std.list`, `std.map`) or `path/to/module.yar` on the search path; requires
-   load depth-first and compile into the same JIT module. Functions are
-   fully-qualified as `{module}::{func}`, alias-less requires expose plain
-   names, `alias.func` calls resolve via the alias, and the CLI adds the source
-   file's directory to the search path. Inline `require` alias binding only
-   applies when the next token is not a declaration/statement keyword.
-5. **Memory model (borrows, regions, ownership)** — done. Stack/vars own their
-   heap values and drop them at scope exit; `@move` transfers ownership and
-   marks the source moved; `@borrow` pushes a borrow reference released on pop;
-   `defer` runs in reverse order at scope exit; heap regions own registered
-   values and free them on `@region_free`/exit; structs and arrays are
-   `yarrow_alloc` blocks whose fields (strings/lists/maps/structs/arrays) are
-   freed recursively.
-6. **Error handling as values** — done. The `error`/`Error` types and
-   `with T or Error` return unions resolve; `error.CustomError` creates a
-   tagged error value; `unwrap` keeps the success value or propagates the
-   error (returning it when the function itself can error, otherwise trapping);
-   `handle ... end` catches it (`error.X == case`, `else`) and its `handle v
-end` fallback form pushes `v` on error. A `with T or Error` function has the
-   Cranelift signature `() -> (env: I64, payload: I64)` with `env == 0` on
-   success; error kind names are interned per program so comparisons and
-   propagation agree. The spec's example program (`docs/syntax.yar` lines
-   225–284) still needs its `implement`/method dispatch and the `std.io`
-   module.
-7. **Void/flexible `run_main`** — done. `run_main()` now returns a
-   `RunResult` (`Void`/`Int`/`Bool`/`Float`/`Str`) instead of requiring exactly
-   one I64/I32/I8 return: void `main` (no `with` clause, or `with void`) runs,
-   and integer, rune, bool, float (`F32`/`F64`) and string results are decoded
-   and printed by the driver. Still rejected (`E360`): struct/container/pointer
-   results, `with T or Error` mains, and 128-bit/`F16` results.
-8. **Enums** — done. `Color enum RED GREEN end` lowers to named constant values
-   with the member names bound (implicit ordinals, explicit values if
-   specified). Bare members (`RED`) and `Color.RED` push the value; `Color`
-   resolves as a real type (`Ty::Enum`) usable in `val`/params/returns/struct
-   fields, stored as an I64 so enums compare like ints and fit in
-   lists/maps/arrays.
-9. **Unions** — `Value union i32 string end` becomes a tagged one-of type;
-   `val` declarations hold one member at a time, `set` switches the active
-   member and drops the old one, and reads must be matched/tagged.
-10. **Fixed-array indexing** — an `index`/`get`/`set` word over
-    `array<T n>` with bounds checks (mirroring `@list_get`/`@list_set`), and
-    lifting the scalar-only element restriction (`E344`) so arrays and `for`
-    iterate string/container/struct elements.
-11. **Spec literal typing** — `42 -> u8`, `-900 -> i16`, `3.14 -> f16`:
-    infer the smallest type a literal fits instead of pinning every int to I64
-    and float to F64.
-12. **`drop` semantics** — `drop` empties the whole stack and releases every
-    borrow (the spec says one value for `pop`, all for `drop`); `Pop` and
-    `Drop` currently lower identically.
-13. **128-bit numbers** — `i128/u128/f128` arithmetic, comparisons, and
-    conversions to/from floats (removes `E310`); currently 128-bit values
-    exist in the type system but are effectively unusable.
-14. **Float mod/pow** — `%` and `^` over floats (removes `E334`), matching the
-    spec's `10 4 /` float division and general numeric operators.
-15. **Expanded std library & builtins** — I/O words (`open_file`,
-    `close_file`, reads), list/map removal words, and std modules
-    (`std.list`, `std.map`) generalized beyond `i32`/`i64` element types.
+Everything else — strings, lists, maps, regions, formatting, `sqrt`, I/O
+wrappers (`print` = `write(1, ...)`) — is **implemented in Yarrow** in the
+std library, which requires the memory-access capability from Stage 4.
+
+### Libraries and `require`
+
+Language-source libraries live under `crates/yarrow-core/lib/`:
+
+- `lib/std/` — the embedded std library, authored as `.yar` source files and
+  embedded into the binary by a `build.rs` that globs `lib/std/**/*.yar`,
+  maps each file to its dotted module name (`math.yar` -> `std.math`), and
+  generates the `STD_MODULES` table consumed by `compiler/modules.rs`.
+- `lib/vendor/` — future: wrappers/rewrites of third-party libraries (e.g.
+  raylib).
+- `lib/core/` — future: the compiler's own non-user Yarrow code.
+
+`require` resolves a dotted path through the module tree; the last segment is
+an item lookup in the parent module with a module-file fallback:
+
+1. `a.b.c` resolves module `a.b` first; if it defines function `c`, only `c`
+   is imported (by plain name, or under an alias). If `a/b/c.yar` exists too,
+   the function wins and the compiler warns about the ambiguity.
+2. Otherwise `a/b/c.yar` is imported as a module.
+3. No parent module file (`std.io`) -> the full path is a module file
+   (`std/io.yar`).
+
+## Implemented so far
+
+Written against the old spec (as of commit `184218c`); all of this must be
+kept working through the port. Details are historical and will be validated
+again during Stage 0.
+
+- **Numeric/control core** — int `+ - * // % ^` (pow via inline loop), float
+  `/`, comparisons `== != > >= < <=`, logical/bitwise `and or xor not`,
+  `lshift`/`rshift`; `if`/`else`; stack ops `dup swap rot pop` (new: `unrot`,
+  `over` removed).
+- **Structs, field access, methods, `self`** — real layouts
+  (`layout`/`FieldLayout`/`StructLayout`, heap blocks via `yarrow_alloc`);
+  `{x 5 y 20}` literals (nested recursion, missing fields zeroed); `point.x`
+  loads / `10 point.x set` stores; `Point implement distance function` lowers
+  to `Point::distance`; `self` auto-bound to the receiver; auto-deref on
+  member reads.
+- **Match (value form)** — subject evaluated once and kept on the stack
+  (conditions `dup` it); first truthy case wins, else `else`; subject dropped
+  at the end; bare `match` runs conditions against the current stack.
+- **`for`** — over fixed-size arrays (`numbers value for`, `[a b c] i for`),
+  `break`/`continue`, nested loops. Will be reworked for the three new forms.
+- **Fixed-size arrays** — `array<T n>` with `[a b c]` literals, size inferred
+  when omitted, scalar-only elements (`E344` otherwise), heap blocks.
+- **Strings/lists/hashmaps** — literals and types, host handles, `+`
+  concatenation, `@string_*`/`@list_*`/`@map_*` builtins (all `@` builtins are
+  scheduled for deletion in favor of pure-Yarrow std).
+- **Modules/`require`** — `ModuleLoader` resolves dotted paths to embedded
+  std modules or `path/to/module.yar`; loads depth-first into the same JIT
+  module; alias vs. main-scope binding; CLI adds the source directory to the
+  search path.
+- **Error handling as values** — `error`/`Error` types, `with T or Error`
+  return unions, `error.X` creation, `unwrap` (propagate if the function can
+  error, else trap), `handle ... end` with `error.X == case` matching; error
+  kind names interned per program.
+- **Ownership** — stack/variable ownership, `@move`/`@borrow` (→ `move`/
+  `borrow`), reverse-order `defer`, heap regions, recursive drops.
+- **Flexible `run_main`** — `RunResult` (`Void`/`Int`/`Bool`/`Float`/`Str`);
+  still rejects struct/container/pointer results, `with T or Error` mains and
+  128-bit/`F16` results (`E360`).
+- **Enums** — named constants with implicit/explicit ordinals, `Color.RED` and
+  bare `RED` push the value, `Color` resolves as a type, physical `I64`.
+
+## Roadmap
+
+Each stage ends with a green `cargo check` and, where noted, a runnable
+example from `docs/syntax.yar`.
+
+### Stage 0 — Restore the build
+
+Port the compiler to the new AST. Purely mechanical.
+
+- Fix the 14 pattern errors in `compiler/mod.rs`: remove `While` handling and
+  `emit_while` (the conditional loop becomes `for` with a bool `source`);
+  adapt `Stmt::For { source, value, index }`; add `fallback` to
+  `Stmt::Handle` patterns; match on `MatchCaseKind` (start with `Condition`);
+  rename `Expr::Builtin` → `Expr::TypeValue`; replace `StackOp::Over` with
+  `Unrot`.
+- Update the `load_requires_stmts` traversal for the new shapes.
+- Files: `compiler/mod.rs`.
+- Gate: `cargo check` green; core numeric/control programs run again. (`@`
+  std modules still fail to lex at runtime — expected until Stage 5.)
+
+### Stage 1 — New operators
+
+- `StackOp::Unrot` — `[1 2 3]` → `[3 1 2]`.
+- **`typeof`** — `Expr::TypeValue`/`Typeof`/`ApplyTypeof`. Type values are
+  pushed as kind codes. `typeof` pops a value and pushes its _static_ type;
+  heap values arrive as borrows which `typeof` releases (leaving the data
+  owned); references report their pointee type. `==` on type values is code
+  equality (`myVar typeof i32 ==`).
+- **`borrow`** — `Expr::Borrow`/`ApplyBorrow` replace the `@borrow` path in
+  `emit_builtin`; keep borrow tracking.
+- **`move`** — `Stmt::Move { target, source }` replaces `@move`; keep
+  use-after-move errors.
+- Remove the dead `@borrow`/`@move` arms from `emit_builtin`.
+- Files: `compiler/mod.rs`, `compiler/types.rs` (type-value representation).
+- Gate: `typeof`/`borrow`/`move` examples from the docs compile and run.
+
+### Stage 2 — Control flow
+
+- **`for`**, three forms: condition (`counter 5 < for` — the former `while`),
+  value (`numbers value for`), value+index (`numbers value index for`);
+  `_` discard bindings; arrays and lists as iterables; `break`/`continue`.
+- **`handle` + `fallback`** — `Stmt::Fallback` lowered via the extracted
+  `Handle.fallback` (incl. the one-line `risky call handle "x" fallback end`).
+- **`match` (value form)** — rework to `MatchCaseKind::Condition`.
+- Files: `compiler/mod.rs`.
+- Gate: docs `for`/`match`/`handle` examples run.
+
+### Stage 3 — Unions
+
+- `UnionDecl` (currently `E308`) → a **tagged one-of type**: a member kind
+  code tag plus an inline payload sized to the largest member. Add
+  `Ty::Union`; `val`/`set` hold and switch the active member (old one
+  dropped).
+- **`match` type dispatch** — `MatchCaseKind::Type`: compare the tag against
+  each case type's kind code in order, `else` branch; each branch receives the
+  member as a `reference<Type>` that auto-derefs on read; the borrow is
+  released at the end of the match, leaving the union untouched. Validate:
+  member types distinct, case type must be a member.
+- Files: `compiler/mod.rs`, `compiler/types.rs`.
+- Gate: docs `union_function` example compiles and runs.
+
+### Stage 4 — Memory access in the language (largest stage)
+
+Gives the std library the ability to manipulate heap headers directly, so the
+host surface can shrink.
+
+- Enable `pointer<T>` (remove `E307`): a typed raw pointer, represented as an
+  address; type information is compile-time.
+- Typed **load** (auto-deref reads, as `reference<T>` already does) and
+  **store** through pointers (extend `set`), plus **address arithmetic**
+  (pointer + byte offset; integer/pointer conversions as needed).
+- Expose `alloc`/`free` to Yarrow through the generic host bridge.
+- Extend the ownership/borrow/region compile-time checks so raw pointers
+  cannot alias a borrowed value or outlive their region.
+- **Host registry + generic lowering** — a data table
+  `{name, signature, extern "C" fn}` in `runtime.rs` and one generic
+  host-call path in the compiler (no per-name match arms). Replace the
+  ad-hoc `extern` symbol imports with it.
+- Files: `docs/syntax.yar` (spec), tokenizer/parser if new words are needed,
+  `compiler/mod.rs`, `compiler/types.rs`, `runtime.rs`.
+- Gate: hand-written Yarrow functions can allocate, read/write headers and
+  build/free heap values (e.g. a list push by hand).
+
+### Stage 5 — Std library in pure Yarrow
+
+- Move the std to real source files: create `crates/yarrow-core/lib/std/`,
+  add a `build.rs` that globs `lib/std/**/*.yar` into the generated
+  `STD_MODULES` table (`include_str!` per entry, `rerun-if-changed` on the
+  directory), and delete the inline `const STD_IO = r#"..."#` literals from
+  `compiler/modules.rs`.
+- Rework `require` resolution: `RequiredModule` gains `item: Option<String>`;
+  a parent-first resolver (parse the parent module, check the last segment as
+  a function, fall back to the module file) replaces the one-path-one-file
+  lookup, with an ambiguity warning when both match; `register_module_bindings`
+  exposes only the item for item imports.
+- Author the modules in new syntax on top of the memory-access words:
+  - `std.io` — `write_line`, `print`, `print_int`, `print_float` (over
+    `write(1, ...)`; formatting loops in Yarrow).
+  - `std.string` — `string_len`, `string_join`, comparisons.
+  - `std.list` — `list_push`, `list_get`, `list_set`, `list_len`.
+  - `std.map` — `map_get`, `map_set`, `map_len`.
+  - `std.region` — `make_region`, `put_region`, `free_region`.
+  - `std.math` — `sqrt` and friends (pure arithmetic).
+  - `std.fs` — `open_file`, `close_file`, `read_line`.
+- Layout is flat: one file per module (`io.yar`, `math.yar` with `sqrt`
+  inside, ...); sub-folder module files remain possible but std does not
+  need them.
+- Honor `require` alias-vs-main-scope semantics everywhere.
+- Delete `emit_builtin` and the now-redundant runtime container/string/print
+  helpers; keep only the tiny host surface.
+- Files: `compiler/modules.rs` (+ new `build.rs`, `lib/std/`),
+  `compiler/mod.rs`, `runtime.rs`.
+- Gate: the full docs example program (`docs/syntax.yar`) compiles and runs.
+
+### Stage 6 — Remaining spec conformance
+
+Remaining old milestones reviewed against the new spec:
+
+- **Literal smallest-fit typing** — `42 → u8`, `-900 → i16`, `1_000 → u16`,
+  `3.14 → f16` (the tokenizer/parser already keep lexemes lossless; the
+  compiler currently pins ints to `I64` and floats to `F64`).
+- **`drop` semantics** — the spec: `pop` removes one value, `drop` empties the
+  whole stack and releases every borrow; they currently lower identically.
+- **128-bit numbers** — `i128/u128/f128` arithmetic, comparisons and
+  float conversions (removes `E310`).
+- **Float `%`/`^`** — removes `E334`.
+- **`run_main` coverage** — decide which remaining result kinds to support.
+- **Fixed-array indexing** — **dropped**: the new spec has no indexing syntax
+  (iteration is via `for`).
+- Gate: the full docs example runs; no `E301`–`E308` remnants for spec
+  features; build green with the std library fully in Yarrow except the tiny
+  host surface.
+
+## Open design questions
+
+To be settled during Stage 4, not blocking earlier stages:
+
+- How pointer arithmetic is spelled (pointer + int ops vs. a dedicated offset
+  word) and whether `alloc` returns `pointer<void>` or a `u64`.
+- Alias rules: can a raw pointer alias a borrowed value without tripping the
+  compile-time checks, and how regions guard raw pointers.
+- Whether `pointer<T>` load/store needs new syntax or reuses the
+  `reference<T>` auto-deref model with a store through it.
 
 ## Definition of done
 
-The compiler is feature-complete when the remaining `E301`/`E303`–`E308`/"not
-yet supported" branches (milestones 9–15) are replaced with real codegen, the
-spec-divergence items above match `docs/syntax.yar`, and the spec's full
-example program (`docs/syntax.yar` lines 225–284) compiles and runs.
+The compiler is feature-complete when `cargo check` is green, the new-front-end
+port (Stages 0–3) is in place, Yarrow has generic memory access with the tiny
+host surface (Stage 4), the std library is pure Yarrow authored as source
+files under `crates/yarrow-core/lib/std/`, embedded by `build.rs`, with
+`require` resolution matching the spec (Stage 5), the spec's full example
+program (`docs/syntax.yar`) compiles and runs, and the remaining
+spec-conformance items (Stage 6) match `docs/syntax.yar`.
+
+## Building and running
+
+```
+cargo check                       # must stay green after every stage
+cargo clippy                      # must stay green after every stage
+cargo run -- <file.yar>           # tokenize + parse + compile + run
+```
+
+The driver lives at `src/main.rs` (the `yarrow-cli` crate is an empty stub);
+modules required from user files resolve relative to the source file's
+directory.
