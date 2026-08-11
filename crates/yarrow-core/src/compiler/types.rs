@@ -66,6 +66,11 @@ pub enum Ty {
         key: u32,
         value: u32,
     },
+    /// A tagged one-of type: an index into the compiler's union table. The
+    /// value is a pointer to a heap block holding the active member's index
+    /// (the tag) followed by an inline payload sized to the largest member.
+    /// Freeing reads the tag to pick the runtime descriptor for that member.
+    Union(u32),
     /// An error value: a program-unique tag (u32) identifying the error kind
     /// (`error.CustomError`, `error.OutOfMemory`, ...). Also the runtime
     /// envelope discriminator of `with T or Error` calls: 0 means success,
@@ -138,6 +143,7 @@ impl Ty {
                 | Ty::String
                 | Ty::List { .. }
                 | Ty::Hashmap { .. }
+                | Ty::Union(_)
         )
     }
 
@@ -156,6 +162,7 @@ impl Ty {
             | Ty::String
             | Ty::List { .. }
             | Ty::Hashmap { .. }
+            | Ty::Union(_)
             | Ty::Error => 64,
             Ty::I128 | Ty::U128 | Ty::F128 => 128,
             Ty::Void => 0,
@@ -197,6 +204,7 @@ impl Ty {
             Ty::String => ptr_type,
             Ty::List { .. } => ptr_type,
             Ty::Hashmap { .. } => ptr_type,
+            Ty::Union(_) => ptr_type,
             Ty::Error => irtypes::I64,
         }
     }
@@ -236,12 +244,13 @@ pub fn scalar_ty(code: u8) -> Ty {
 ///
 /// The encoding mirrors the runtime kind codes so a container's element code
 /// can drive `yarrow_free_value` recursion directly: scalars `0..=15`, a
-/// string `16`, a struct `0x40 | (id << 8)` and anything else a `0x50`
-/// (generic pointer, cannot recurse).
+/// string `16`, a struct `0x40 | (id << 8)`, a union `0x70 | (id << 8)` and
+/// anything else a `0x50` (generic pointer, cannot recurse).
 pub fn elem_code(ty: Ty) -> Option<u32> {
     match ty {
         Ty::String => Some(16),
         Ty::Struct(id) => Some(0x40 | (id << 8)),
+        Ty::Union(id) => Some(0x70 | (id << 8)),
         Ty::Ptr | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x50),
         other => other.scalar_code().map(u32::from),
     }
@@ -253,6 +262,7 @@ pub fn elem_ty(code: u32) -> Ty {
         0..=15 => scalar_ty(code as u8),
         16 => Ty::String,
         0x50 => Ty::Ptr,
+        c if c & 0xff == 0x70 => Ty::Union(c >> 8),
         0x40.. => Ty::Struct(code >> 8),
         _ => Ty::Ptr,
     }
@@ -267,6 +277,7 @@ pub fn elem_ty(code: u32) -> Ty {
 /// * a list is `0x20 | (element code << 8)`,
 /// * a hashmap is `0x30 | (key code << 8) | (value code << 40)`,
 /// * a struct is `0x40 | (layout id << 8)`,
+/// * a union is `0x70 | (union id << 8)`,
 /// * anything else (generic pointers, frames) is `0x50`.
 pub fn kind_code(ty: Ty) -> u64 {
     match ty {
@@ -274,6 +285,7 @@ pub fn kind_code(ty: Ty) -> u64 {
         Ty::List { elem } => 0x20 | ((elem as u64) << 8),
         Ty::Hashmap { key, value } => 0x30 | ((key as u64) << 8) | ((value as u64) << 40),
         Ty::Struct(id) => 0x40 | ((id as u64) << 8),
+        Ty::Union(id) => 0x70 | ((id as u64) << 8),
         Ty::Array { elem, count } => 0x60 | ((elem as u64) << 8) | ((count as u64) << 40),
         other => other.scalar_code().map(u64::from).unwrap_or(0x50),
     }
@@ -641,4 +653,41 @@ pub fn common_type(a: Ty, b: Ty) -> Option<Ty> {
         return Some(if a.is_signed() || b.is_signed() { a } else { b });
     }
     Some(if a.bits() > b.bits() { a } else { b })
+}
+
+/// Whether `from` can be coerced to `to` by [`coerce`]. Mirrors that
+/// function's accepted conversions (minus the exact error paths) so union
+/// member selection can probe candidate types without forcing an error.
+pub fn coercible(from: Ty, to: Ty) -> bool {
+    if from == to {
+        return true;
+    }
+    if to == Ty::Ptr && from.is_pointer() {
+        return true;
+    }
+    if to.is_pointer() && from.is_int() {
+        return true;
+    }
+    if from.is_pointer() && to == Ty::I64 {
+        return true;
+    }
+    if from.is_bool() && to.is_int() && !to.is_bool() {
+        return true;
+    }
+    if from.is_int() && !from.is_bool() && to.is_bool() {
+        return true;
+    }
+    if from.is_int() && to.is_int() && !from.is_bool() && !to.is_bool() {
+        return true;
+    }
+    if from.is_float() && to.is_float() {
+        return true;
+    }
+    if from.is_int() && to.is_float() {
+        return true;
+    }
+    if from.is_float() && to.is_int() {
+        return true;
+    }
+    false
 }

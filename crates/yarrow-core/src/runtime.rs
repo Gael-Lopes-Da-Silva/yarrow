@@ -42,12 +42,21 @@ use cranelift_jit::JITBuilder;
 /// * `0x40` — a struct; struct layout id in bits 8.. .
 /// * `0x50` — a generic pointer (cannot recurse).
 /// * `0x60` — a fixed-size array; element kind in bits 8.. .
+/// * `0x70` — a union; union id in bits 8.. . The union block stores the
+///   active member's index (a tag) and an inline payload; the member kind
+///   codes are registered via `yarrow_register_union_descs`.
 pub const KIND_STRING: u64 = 16;
 pub const KIND_LIST: u64 = 0x20;
 pub const KIND_MAP: u64 = 0x30;
 pub const KIND_STRUCT: u64 = 0x40;
 pub const KIND_PTR: u64 = 0x50;
 pub const KIND_ARRAY: u64 = 0x60;
+pub const KIND_UNION: u64 = 0x70;
+
+/// Byte offsets inside a union block, in sync with the compiler's
+/// `emit_union_wrap`.
+pub const UNION_TAG_OFFSET: u64 = 0;
+pub const UNION_PAYLOAD_OFFSET: u64 = 8;
 
 #[inline]
 fn tag(kind: u64) -> u64 {
@@ -126,6 +135,11 @@ static FREED: std::sync::LazyLock<Mutex<std::collections::HashSet<u64>>> =
 
 /// Struct layout id -> registered field descriptors.
 static STRUCT_DESCS: std::sync::LazyLock<Mutex<HashMap<u32, Vec<FieldDesc>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Union id -> registered member kind codes (one per member, indexed by the
+/// union's active-member tag).
+static UNION_DESCS: std::sync::LazyLock<Mutex<HashMap<u32, Vec<u64>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ---------------------------------------------------------------------------
@@ -525,6 +539,30 @@ fn free_array(a: u64) {
     mark_freed(a);
 }
 
+/// Free a union block: read the active member's tag, free the inline payload
+/// using that member's registered kind code, then free the block itself.
+fn free_union(u: u64, id: u32) {
+    if u == 0 || FREED.lock().unwrap().contains(&u) {
+        return;
+    }
+    detach(u);
+    unsafe {
+        let tag = std::ptr::read_unaligned((u as *const u64).add(UNION_TAG_OFFSET as usize));
+        let descs = match UNION_DESCS.lock().unwrap().get(&id) {
+            Some(d) => d.clone(),
+            None => Vec::new(),
+        };
+        let payload = std::ptr::read_unaligned(
+            (u as *const u8).add(UNION_PAYLOAD_OFFSET as usize) as *const u64
+        );
+        if let Some(kind) = descs.get(tag as usize) {
+            free_value(payload, *kind);
+        }
+        libc::free(u as *mut libc::c_void);
+    }
+    mark_freed(u);
+}
+
 // ---------------------------------------------------------------------------
 // Generic free
 // ---------------------------------------------------------------------------
@@ -543,6 +581,7 @@ pub extern "C" fn free_value(v: u64, kind: u64) {
         KIND_STRUCT => free_struct(v, (kind >> 8) as u32),
         KIND_PTR => {}
         KIND_ARRAY => free_array(v),
+        KIND_UNION => free_union(v, (kind >> 8) as u32),
         _ => {}
     }
 }
@@ -558,6 +597,20 @@ pub unsafe extern "C" fn yarrow_register_struct_descs(id: u32, ptr: *const Field
         descs.push(*ptr.add(i));
     }
     STRUCT_DESCS.lock().unwrap().insert(id, descs);
+}
+
+/// Register a union's member kind codes so `yarrow_free_value` can free the
+/// union's active payload.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid array of at least `count` `u64` kind codes.
+pub unsafe extern "C" fn yarrow_register_union_descs(id: u32, ptr: *const u64, count: u64) {
+    let mut descs = Vec::with_capacity(count as usize);
+    for i in 0..count as usize {
+        descs.push(*ptr.add(i));
+    }
+    UNION_DESCS.lock().unwrap().insert(id, descs);
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +768,10 @@ pub fn install_runtime(builder: &mut JITBuilder) {
     builder.symbol(
         "yarrow_register_struct_descs",
         sym(yarrow_register_struct_descs as *const () as usize),
+    );
+    builder.symbol(
+        "yarrow_register_union_descs",
+        sym(yarrow_register_union_descs as *const () as usize),
     );
     builder.symbol(
         "yarrow_region_new",

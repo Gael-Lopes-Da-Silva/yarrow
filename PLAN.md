@@ -6,9 +6,10 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 `docs/syntax.yar` is the source of truth. The front-end was rewritten in
 commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler port is
 **in progress** — the build is restored (Stage 0), the new operators are in
-(Stage 1), and control flow is back (Stage 2: `for` over arrays/lists,
-`handle` + `fallback`, `match`, `break`/`continue`). Unions still need their
-Stage 3 rework.
+(Stage 1), control flow is back (Stage 2: `for` over arrays/lists,
+`handle` + `fallback`, `match`, `break`/`continue`), and unions now resolve,
+wrap and dispatch in `match` (Stage 3). Next: memory access in the language
+(Stage 4).
 
 ## Pipeline status
 
@@ -26,8 +27,8 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
 - **Compiler** — **builds** (Stage 0 done: `cargo check` green). The old
   `While`/`Builtin`/`Over` variants are gone; `for` handles the three new
   shapes (`emit_for` + `emit_cond_for`, `_` discards), `handle` patterns carry
-  `fallback`, and `match` dispatches on `MatchCaseKind` (`Condition` working,
-  `Type` still `E308`). Stage 1 done: `typeof` (type values as runtime kind
+  `fallback`, and `match` dispatches on `MatchCaseKind` (both `Condition` and
+  `Type` work now). Stage 1 done: `typeof` (type values as runtime kind
   codes, `Expr::TypeValue`/`Typeof`/`ApplyTypeof`), `borrow`
   (`Expr::Borrow`/`ApplyBorrow` via `emit_borrow`), and `move`
   (`Stmt::Move`/`emit_move`, use-after-move tracking limited to skip-free).
@@ -38,11 +39,19 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
   through); the implicit function fallthrough return is skipped after an
   explicit `return` (`FnState.terminated`, saved/restored around compound
   statements); `collect_strings` walks `Handle.fallback`.
+  Stage 3 done: unions are tagged heap blocks (tag + inline payload); member
+  types must be distinct and ≤ 8 bytes; `Ty::Union(id)` resolves through
+  `union_ids`/`unions`; `coerce_or_wrap` wraps a raw value into a fresh union
+  block (the old member is freed on `set`); `match` type dispatch compares the
+  subject's tag against each case member index in order, each branch receives
+  the member as a `reference<Type>` (an auto-deref borrow) released at the end
+  of the case body, and the union is left untouched; variables track an `Own`
+  flag so borrowed case-body bindings are not freed at scope exit.
   The embedded std library still uses `@`-builtins, which the new tokenizer
   cannot lex.
 - **Runtime** — complete for the current host heap (strings/lists/maps/
-  structs/arrays, regions, kind codes) but built around the `@`-builtin model;
-  it will shrink to a tiny, data-registered host surface (Stage 4–5).
+  structs/arrays/unions, regions, kind codes) but built around the `@`-builtin
+  model; it will shrink to a tiny, data-registered host surface (Stage 4–5).
 - **Std library** — embedded Yarrow modules in `compiler/modules.rs`
   (`std.io`, `std.math.sqrt`, `std.string`, `std.list`, `std.map`) written in
   the old `@`-builtin syntax; must be rewritten as pure-Yarrow **source files**
@@ -68,8 +77,12 @@ cargo run -- <file.yar>   # runs new-syntax programs (no @-builtin std yet)
 Scalars live in registers. Heap values are opaque `u64` handles pointing at
 runtime headers tagged by a kind code (`runtime.rs`: `KIND_STRING = 0x10`,
 `KIND_LIST = 0x20`, `KIND_MAP = 0x30`, `KIND_STRUCT = 0x40`, `KIND_PTR = 0x50`,
-`KIND_ARRAY = 0x60`). Structs are heap blocks whose fields are laid out with
-their own kind-code bytes (`compiler/mod.rs:527`). The compiler already emits
+`KIND_ARRAY = 0x60`, `KIND_UNION = 0x70`). Structs are heap blocks whose fields
+are laid out with
+their own kind-code bytes (`compiler/mod.rs:527`); unions are heap blocks with
+a u64 member-index tag at byte 0 and the member payload inline at byte 8
+(`UNION_TAG_OFFSET`/`UNION_PAYLOAD_OFFSET`, `free_union` reads the payload by
+byte-addressed offsets). The compiler already emits
 the loads/stores that build and read these headers — but **Yarrow-level code
 cannot**: `pointer<T>` types are rejected (`compiler/types.rs:364`, `E307`)
 and there is no load/store/address-arithmetic word. That is the single biggest
@@ -226,9 +239,9 @@ Port the compiler to the new AST. Purely mechanical. **Done.**
   `continue`; explicit `return` in `with T or Error` functions (no bogus
   fallthrough re-return).
 
-### Stage 3 — Unions
+### Stage 3 — Unions ✅
 
-- `UnionDecl` (currently `E308`) → a **tagged one-of type**: a member kind
+- `UnionDecl` → a **tagged one-of type**: a member kind
   code tag plus an inline payload sized to the largest member. Add
   `Ty::Union`; `val`/`set` hold and switch the active member (old one
   dropped).
@@ -237,8 +250,23 @@ Port the compiler to the new AST. Purely mechanical. **Done.**
   member as a `reference<Type>` that auto-derefs on read; the borrow is
   released at the end of the match, leaving the union untouched. Validate:
   member types distinct, case type must be a member.
-- Files: `compiler/mod.rs`, `compiler/types.rs`.
+- Files: `compiler/mod.rs`, `compiler/types.rs`, `runtime.rs`.
 - Gate: docs `union_function` example compiles and runs.
+- **Done.** Unions lower to tagged heap blocks: `Ty::Union(id)` (kind code
+  `0x70 | (id << 8)`), union/desc tables in the compiler, `coerce_or_wrap`
+  wraps raw values (VarDecl, `set`, field stores, call args/returns) and frees
+  the previous member on `set`; `match` dispatch compares the loaded tag
+  against member indices, pushes the payload as a borrow, and removes the
+  unconsumed borrow before merging branches (verified against an empty-case
+  edge case where the parser folds `dup * drop` away); `reference<T>` resolves
+  transparently, so variables now carry an `Own` flag in `FnState.vars` to
+  avoid freeing borrowed case-body bindings at scope exit; `free_union`
+  registered and called through `KIND_UNION` (payload read is byte-addressed).
+- Verified: empty-case union match, `dup *` on the auto-deref member, string
+  concat through `reference<string>`, `set` switching the active member and
+  re-matching, structs/`self`/`for`/borrow+move regression, error cases
+  (duplicate member, empty union, non-member case type, Type-case on non-union
+  subject), `cargo check` green.
 
 ### Stage 4 — Memory access in the language (largest stage)
 

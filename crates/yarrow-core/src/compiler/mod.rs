@@ -36,8 +36,8 @@ pub use errors::CompileError;
 use types::CResult;
 pub use types::Ty;
 use types::{
-    StructLayout, coerce, common_type, elem_code, elem_ty, error_return, kind_code, layout,
-    primitive_ty, resolve, scalar_ty,
+    StructLayout, coerce, coercible, common_type, elem_code, elem_ty, error_return, kind_code,
+    layout, primitive_ty, resolve, scalar_ty,
 };
 
 /// The result of running a program's `main`, in a driver-displayable form.
@@ -89,7 +89,7 @@ struct Slot {
 
 /// Per-function lowering state.
 struct FnState {
-    vars: HashMap<String, (Variable, Ty)>,
+    vars: HashMap<String, (Variable, Ty, Own)>,
     loops: Vec<LoopCtx>,
     returns: Vec<Ty>,
     frefs: HashMap<String, FuncRef>,
@@ -110,6 +110,9 @@ struct FnState {
     /// Struct layout ids whose field descriptors were already registered in
     /// the runtime this function.
     registered_descs: std::collections::HashSet<u32>,
+    /// Union ids whose member-kind tables were already registered in the
+    /// runtime this function.
+    registered_unions: std::collections::HashSet<u32>,
     /// Payload type of this function's `with T or Error` return envelope, if
     /// it returns an error. `None` means the function cannot error.
     error_value: Option<Ty>,
@@ -133,6 +136,14 @@ struct EnumInfo {
     members: Vec<(String, i64)>,
 }
 
+/// A program-wide union declaration: the member types the union can hold,
+/// resolved to their physical `Ty`. The active member is selected by index.
+#[derive(Debug, Clone)]
+struct UnionInfo {
+    name: String,
+    members: Vec<Ty>,
+}
+
 /// JIT compiler that turns a whole `Program` into a single linked module.
 pub struct Compiler {
     module: JITModule,
@@ -147,6 +158,14 @@ pub struct Compiler {
     enums: Vec<EnumInfo>,
     /// Bare enum member name -> (enum id, value), so `RED` resolves anywhere.
     enum_consts: HashMap<String, (u32, i64)>,
+    /// Union name -> index into `unions`.
+    union_ids: HashMap<String, u32>,
+    /// Every union, indexed by `Ty::Union(id).0`.
+    unions: Vec<UnionInfo>,
+    /// Union id -> data object holding its member-kind-code table.
+    union_desc_ids: HashMap<u32, DataId>,
+    /// Per-function global value for each union's member-kind-code table.
+    union_desc_gvs: HashMap<u32, GlobalValue>,
     sigs: HashMap<String, cranelift_codegen::ir::Signature>,
     sig_tys: HashMap<String, (Vec<Ty>, Vec<Ty>)>,
     func_ids: HashMap<String, FuncId>,
@@ -193,6 +212,10 @@ impl Compiler {
             enum_ids: HashMap::new(),
             enums: Vec::new(),
             enum_consts: HashMap::new(),
+            union_ids: HashMap::new(),
+            unions: Vec::new(),
+            union_desc_ids: HashMap::new(),
+            union_desc_gvs: HashMap::new(),
             sigs: HashMap::new(),
             sig_tys: HashMap::new(),
             func_ids: HashMap::new(),
@@ -228,6 +251,9 @@ impl Compiler {
         self.enum_ids.clear();
         self.enums.clear();
         self.enum_consts.clear();
+        self.union_ids.clear();
+        self.unions.clear();
+        self.union_desc_ids.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
@@ -252,6 +278,22 @@ impl Compiler {
                         fields: Vec::new(),
                         size: 0,
                         align: 1,
+                    });
+                }
+            }
+        }
+
+        // Pass A1: register every union name, so types referencing a union
+        // resolve before members are known.
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Union(d) = item {
+                    self.union_ids
+                        .entry(d.name.clone())
+                        .or_insert(self.unions.len() as u32);
+                    self.unions.push(UnionInfo {
+                        name: d.name.clone(),
+                        members: Vec::new(),
                     });
                 }
             }
@@ -313,6 +355,44 @@ impl Compiler {
             }
         }
 
+        // Pass B1: resolve every union's member types. Members must be
+        // distinct (dispatch compares tags as indices) and no wider than a
+        // pointer (the payload is inline).
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Union(d) = item {
+                    let id = self.union_ids[&d.name];
+                    if d.types.is_empty() {
+                        return Err(CompileError::new(
+                            format!("union '{}' must have at least one member type", d.name),
+                            Location::default(),
+                            "E346",
+                        ));
+                    }
+                    let mut members = Vec::with_capacity(d.types.len());
+                    for t in &d.types {
+                        let mt = self.resolve_ty(t)?;
+                        if mt.elem_size() > 8 {
+                            return Err(CompileError::new(
+                                format!("union member type '{mt:?}' is wider than 8 bytes",),
+                                Location::default(),
+                                "E346",
+                            ));
+                        }
+                        if members.contains(&mt) {
+                            return Err(CompileError::new(
+                                format!("union '{}' has duplicate member type '{mt:?}'", d.name),
+                                Location::default(),
+                                "E346",
+                            ));
+                        }
+                        members.push(mt);
+                    }
+                    self.unions[id as usize].members = members;
+                }
+            }
+        }
+
         // Pass C: declare every function, then register module name bindings.
         for (path, prog) in &units {
             for item in &prog.items {
@@ -340,6 +420,7 @@ impl Compiler {
             self.declare_string_data(prog)?;
         }
         self.declare_struct_desc_data()?;
+        self.declare_union_desc_data()?;
         self.declare_runtime_imports()?;
 
         // Pass D: compile every function.
@@ -546,6 +627,30 @@ impl Compiler {
         Ok(())
     }
 
+    /// Declare a read-only data object per union holding its member-kind-code
+    /// table (one `u64` per member). `yarrow_free_value` reads the union's tag
+    /// (the active member index) to pick the right member kind when freeing
+    /// the inline payload.
+    fn declare_union_desc_data(&mut self) -> CResult<()> {
+        for id in 0..self.unions.len() as u32 {
+            let info = &self.unions[id as usize];
+            let mut bytes: Vec<u8> = Vec::with_capacity(info.members.len() * 8);
+            for m in &info.members {
+                bytes.extend_from_slice(&kind_code(*m).to_le_bytes());
+            }
+            let name = format!("yarrow.uniondesc.{id}");
+            let data_id = self
+                .module
+                .declare_data(&name, Linkage::Local, false, false)?;
+            let mut desc = DataDescription::new();
+            desc.set_align(8);
+            desc.define(bytes.into_boxed_slice());
+            self.module.define_data(data_id, &desc)?;
+            self.union_desc_ids.insert(id, data_id);
+        }
+        Ok(())
+    }
+
     /// Import every host runtime function so JIT code can `call` it.
     fn declare_runtime_imports(&mut self) -> CResult<()> {
         for (name, params, returns) in RUNTIME_SIGS {
@@ -679,6 +784,9 @@ impl Compiler {
             if let Some(id) = self.struct_ids.get(n) {
                 return Some(Ty::Struct(*id));
             }
+            if let Some(id) = self.union_ids.get(n) {
+                return Some(Ty::Union(*id));
+            }
             self.enum_ids.get(n).map(|id| Ty::Enum(*id))
         })
     }
@@ -701,8 +809,8 @@ impl Compiler {
     fn base_struct(&self, st: &FnState, base: &Expr) -> CResult<u32> {
         match base {
             Expr::Variable { name } => match st.vars.get(name) {
-                Some((_, Ty::Struct(id))) => Ok(*id),
-                Some((_, other)) => Err(CompileError::new(
+                Some((_, Ty::Struct(id), _)) => Ok(*id),
+                Some((_, other, _)) => Err(CompileError::new(
                     format!("'{name}' is a {other:?}, not a struct value"),
                     Location::default(),
                     "E340",
@@ -874,7 +982,7 @@ impl Compiler {
             }
             self.compile_expr(b, st, stack, value_expr)?;
             let slot = self.pop_slot(stack, "struct field value")?;
-            let val = coerce(b, slot.value, slot.ty, field.ty, self.ptr_type)?;
+            let val = self.coerce_or_wrap(b, st, slot.value, slot.ty, field.ty)?;
             b.ins().store(
                 cranelift_codegen::ir::MemFlagsData::trusted(),
                 val,
@@ -1032,6 +1140,7 @@ impl Compiler {
             moved: std::collections::HashSet::new(),
             deferred: Vec::new(),
             registered_descs: std::collections::HashSet::new(),
+            registered_unions: std::collections::HashSet::new(),
             terminated: false,
         };
 
@@ -1057,6 +1166,12 @@ impl Compiler {
         for (&id, &did) in &self.struct_desc_ids {
             let gv = self.module.declare_data_in_func(did, &mut ctx.func);
             self.struct_desc_gvs.insert(id, gv);
+        }
+        // Global values for each union's member-kind table.
+        self.union_desc_gvs.clear();
+        for (&id, &did) in &self.union_desc_ids {
+            let gv = self.module.declare_data_in_func(did, &mut ctx.func);
+            self.union_desc_gvs.insert(id, gv);
         }
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -1094,7 +1209,14 @@ impl Compiler {
         if is_method && let Some((t, v)) = params_ty.first().zip(param_vals.first()) {
             let var = b.declare_var(t.clty(self.ptr_type));
             b.def_var(var, *v);
-            st.vars.insert("self".to_string(), (var, *t));
+            // The receiver is borrowed from the caller; the callee must not
+            // free it at scope exit.
+            let own = if self.is_heap(*t) {
+                Own::Borrow
+            } else {
+                Own::Trivial
+            };
+            st.vars.insert("self".to_string(), (var, *t, own));
         }
 
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
@@ -1272,17 +1394,26 @@ impl Compiler {
                         (slot, slot.value, slot.ty)
                     }
                 };
-                let val = coerce(b, val, val_ty, t, self.ptr_type)?;
+                let val = self.coerce_or_wrap(b, st, val, val_ty, t)?;
                 self.claim(st, val, t);
                 let var = b.declare_var(t.clty(self.ptr_type));
                 b.def_var(var, val);
                 let _ = mutability;
-                st.vars.insert(name.clone(), (var, t));
+                // A value with an active borrow is not owned by this variable
+                // (its true owner frees it); everything heap is owned here.
+                let var_own = if st.borrowed.contains(&val) {
+                    Own::Borrow
+                } else if self.is_heap(t) {
+                    Own::Owned
+                } else {
+                    Own::Trivial
+                };
+                st.vars.insert(name.clone(), (var, t, var_own));
             }
 
             Stmt::Set { target, value } => match target {
                 Expr::Variable { name } => {
-                    let (var, t) = st.vars.get(name).cloned().ok_or_else(|| {
+                    let (var, t, _old_own) = st.vars.get(name).cloned().ok_or_else(|| {
                         CompileError::new(
                             format!("unknown variable '{name}'"),
                             Location::default(),
@@ -1299,7 +1430,8 @@ impl Compiler {
                     };
                     let reuses_ptr = trailing_map && matches!(t, Ty::Struct(_));
                     // Drop the value the variable currently owns (the runtime
-                    // guards against double frees).
+                    // guards against double frees). Borrowed variables own
+                    // nothing, so their value is left for its true owner.
                     if self.is_heap(t) && !reuses_ptr {
                         let old = Slot {
                             value: b.use_var(var),
@@ -1406,9 +1538,17 @@ impl Compiler {
                             (slot, slot.value, slot.ty)
                         }
                     };
-                    let val = coerce(b, val, val_ty, t, self.ptr_type)?;
+                    let val = self.coerce_or_wrap(b, st, val, val_ty, t)?;
                     self.claim(st, val, t);
                     b.def_var(var, val);
+                    let var_own = if st.borrowed.contains(&val) {
+                        Own::Borrow
+                    } else if self.is_heap(t) {
+                        Own::Owned
+                    } else {
+                        Own::Trivial
+                    };
+                    st.vars.insert(name.clone(), (var, t, var_own));
                 }
                 Expr::Member { base, member } => {
                     let sid = self.base_struct(st, base)?;
@@ -1439,7 +1579,20 @@ impl Compiler {
                             (slot.value, slot.ty)
                         }
                     };
-                    let val = coerce(b, val, val_ty, field.ty, self.ptr_type)?;
+                    let val = self.coerce_or_wrap(b, st, val, val_ty, field.ty)?;
+                    // Skipping the old member would leak it when switching a
+                    // union field: free the previous value before overwriting
+                    // (the runtime guards double frees on the struct drop).
+                    if matches!(field.ty, Ty::Union(_)) {
+                        let old = b.ins().load(
+                            self.ptr_type,
+                            cranelift_codegen::ir::MemFlagsData::trusted(),
+                            ptr.value,
+                            field.offset,
+                        );
+                        let kind = b.ins().iconst(irtypes::I64, kind_code(field.ty) as i64);
+                        self.rt_call(b, st, "yarrow_free_value", vec![old, kind])?;
+                    }
                     b.ins().store(
                         cranelift_codegen::ir::MemFlagsData::trusted(),
                         val,
@@ -1607,15 +1760,16 @@ impl Compiler {
             ));
         }
         let tail = stack.split_off(stack.len() - n);
+        let wants: Vec<Ty> = st.returns.clone();
         let mut out = Vec::with_capacity(n);
-        for (slot, want) in tail.iter().zip(&st.returns) {
+        for (slot, want) in tail.iter().zip(&wants) {
             // Heap-typed return values transfer ownership to the caller, so
             // the callee must not free them at scope exit (this also covers a
             // `myStr return` that borrows the value out of a variable).
             if self.is_heap(slot.ty) {
                 st.moved.insert(slot.value);
             }
-            out.push(coerce(b, slot.value, slot.ty, *want, self.ptr_type)?);
+            out.push(self.coerce_or_wrap(b, st, slot.value, slot.ty, *want)?);
         }
         Ok(out)
     }
@@ -1857,7 +2011,12 @@ impl Compiler {
     fn is_heap(&self, ty: Ty) -> bool {
         matches!(
             ty,
-            Ty::String | Ty::List { .. } | Ty::Hashmap { .. } | Ty::Struct(_) | Ty::Array { .. }
+            Ty::String
+                | Ty::List { .. }
+                | Ty::Hashmap { .. }
+                | Ty::Struct(_)
+                | Ty::Array { .. }
+                | Ty::Union(_)
         )
     }
 
@@ -1922,6 +2081,104 @@ impl Compiler {
         Ok(())
     }
 
+    /// Emit `yarrow_register_union_descs(id, table, count)` once per union per
+    /// function, so `yarrow_free_value` can free a union's active payload.
+    fn emit_register_union(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        id: u32,
+    ) -> CResult<()> {
+        if !st.registered_unions.insert(id) {
+            return Ok(());
+        }
+        let gv = self.union_desc_gvs.get(&id).copied().ok_or_else(|| {
+            CompileError::new(
+                format!("no member-kind table for union #{id}"),
+                Location::default(),
+                "E371",
+            )
+        })?;
+        let addr = b.ins().global_value(self.ptr_type, gv);
+        let idv = b.ins().iconst(irtypes::I64, id as i64);
+        let count = b
+            .ins()
+            .iconst(irtypes::I64, self.unions[id as usize].members.len() as i64);
+        self.rt_call(b, st, "yarrow_register_union_descs", vec![idv, addr, count])?;
+        Ok(())
+    }
+
+    /// Wrap `value` of type `from` into a fresh union block for union `id`,
+    /// selecting the first member type it can coerce to. Returns the union
+    /// handle (a pointer to the block). The caller owns the block; a heap
+    /// source value is marked moved since the union's payload now owns it.
+    fn emit_union_wrap(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        value: Value,
+        from: Ty,
+        id: u32,
+    ) -> CResult<Value> {
+        let info = &self.unions[id as usize];
+        let idx = info
+            .members
+            .iter()
+            .position(|m| coercible(from, *m))
+            .ok_or_else(|| {
+                CompileError::new(
+                    format!(
+                        "cannot convert '{from:?}' into union '{}' (members: {:?})",
+                        info.name, info.members
+                    ),
+                    Location::default(),
+                    "E309",
+                )
+            })?;
+        let member = info.members[idx];
+        let val = coerce(b, value, from, member, self.ptr_type)?;
+        self.emit_register_union(b, st, id)?;
+        let size = b.ins().iconst(irtypes::I64, 16);
+        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        let out = out[0];
+        let tag = b.ins().iconst(irtypes::I64, idx as i64);
+        b.ins().store(
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            tag,
+            out,
+            UNION_TAG_OFFSET,
+        );
+        b.ins().store(
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            val,
+            out,
+            UNION_PAYLOAD_OFFSET,
+        );
+        if self.is_heap(from) {
+            st.moved.insert(value);
+        }
+        Ok(out)
+    }
+
+    /// Coerce `value` of type `from` to `to`, wrapping a raw member value into
+    /// a union when `to` is a union type. Identity when already a union of the
+    /// same id. See [`Self::emit_union_wrap`].
+    fn coerce_or_wrap(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        value: Value,
+        from: Ty,
+        to: Ty,
+    ) -> CResult<Value> {
+        match to {
+            Ty::Union(id) if !matches!(from, Ty::Union(_)) => {
+                self.emit_union_wrap(b, st, value, from, id)
+            }
+            _ => coerce(b, value, from, to, self.ptr_type),
+        }
+    }
+
     /// Function-scope exit: run deferred bodies in reverse, then drop every
     /// owned value left on the stack and owned variables.
     fn emit_scope_exit(
@@ -1937,13 +2194,15 @@ impl Compiler {
             self.emit_drop(b, st, slot)?;
         }
         let mut var_slots: Vec<Slot> = Vec::new();
-        for (var, ty) in st.vars.values() {
-            if self.is_heap(*ty) {
+        for (var, ty, own) in st.vars.values() {
+            // Borrowed variables own nothing; their true owner frees the
+            // value at scope exit.
+            if self.is_heap(*ty) && own.is_owned() {
                 let v = b.use_var(*var);
                 var_slots.push(Slot {
                     value: v,
                     ty: *ty,
-                    own: Own::Owned,
+                    own: *own,
                 });
             }
         }
@@ -2094,6 +2353,12 @@ impl Compiler {
     /// An empty `value` (`Expr::variable("")`, produced when the parser saw a
     /// bare `match`) means there is no subject; conditions then operate on the
     /// stack as it was when the match started.
+    ///
+    /// On a union subject, a `Type` case dispatches on the active member's
+    /// tag (compared against each case type's member index in order) and its
+    /// body receives the member as a `reference<Type>` (a borrow with the
+    /// member's physical type, so reads auto-deref). The borrow is released at
+    /// the end of the case body and the union itself is left untouched.
     fn emit_match(
         &mut self,
         b: &mut FunctionBuilder,
@@ -2115,6 +2380,40 @@ impl Compiler {
             sub_stack.push(s);
         }
 
+        // Prepare union type dispatch: the subject must be a union, and its
+        // active-member tag is loaded once, before the branch structure.
+        let has_type_case = cases
+            .iter()
+            .any(|c| matches!(c.kind, MatchCaseKind::Type(_)));
+        let subject_union: Option<(Slot, u32, Value)> = if has_type_case {
+            let s = subject.ok_or_else(|| {
+                CompileError::new(
+                    "match type dispatch requires a subject value",
+                    Location::default(),
+                    "E308",
+                )
+            })?;
+            let id = match s.ty {
+                Ty::Union(id) => id,
+                other => {
+                    return Err(CompileError::new(
+                        format!("match type dispatch requires a union subject, got {other:?}"),
+                        Location::default(),
+                        "E308",
+                    ));
+                }
+            };
+            let tag = b.ins().load(
+                irtypes::I64,
+                cranelift_codegen::ir::MemFlagsData::trusted(),
+                s.value,
+                UNION_TAG_OFFSET,
+            );
+            Some((s, id, tag))
+        } else {
+            None
+        };
+
         let merge = b.create_block();
         let body_blks: Vec<Block> = (0..cases.len()).map(|_| b.create_block()).collect();
         let cond_blks: Vec<Block> = (0..cases.len().saturating_sub(1))
@@ -2125,30 +2424,57 @@ impl Compiler {
         let mut results_ty: Option<Vec<Ty>> = None;
 
         for (i, case) in cases.iter().enumerate() {
+            let case_member: Option<Ty> = match &case.kind {
+                MatchCaseKind::Type(ty) => {
+                    let (_, id, _) = subject_union.as_ref().unwrap();
+                    let t = self.resolve_ty(ty)?;
+                    let members = &self.unions[*id as usize].members;
+                    if !members.contains(&t) {
+                        return Err(CompileError::new(
+                            format!(
+                                "case type {t:?} is not a member of union '{}'",
+                                self.unions[*id as usize].name
+                            ),
+                            Location::default(),
+                            "E308",
+                        ));
+                    }
+                    Some(t)
+                }
+                MatchCaseKind::Condition(_) => None,
+            };
             if i > 0 {
                 b.switch_to_block(cond_blks[i - 1]);
             }
             *stack = sub_stack.clone();
-            let cond = match &case.kind {
-                MatchCaseKind::Condition(expr) => self.eval_match_cond(b, st, stack, expr)?,
-                MatchCaseKind::Type(_) => {
-                    return Err(CompileError::new(
-                        "union type dispatch in 'match' is not yet supported",
-                        Location::default(),
-                        "E308",
-                    ));
+            let cond = match (&case.kind, case_member) {
+                (MatchCaseKind::Condition(expr), _) => {
+                    let cond = self.eval_match_cond(b, st, stack, expr)?;
+                    // The condition may keep the subject on the stack
+                    // (`dup X ==`) or consume stack values (`error.X ==`
+                    // compares against the subject), so it may leave at most
+                    // the pre-condition stack height.
+                    if stack.len() > sub_stack.len() {
+                        return Err(CompileError::new(
+                            "a 'match' case condition must leave the stack balanced",
+                            Location::default(),
+                            "E343",
+                        ));
+                    }
+                    cond
                 }
+                (MatchCaseKind::Type(_), Some(mt)) => {
+                    let (_, id, tag) = subject_union.as_ref().unwrap();
+                    let idx = self.unions[*id as usize]
+                        .members
+                        .iter()
+                        .position(|m| *m == mt)
+                        .unwrap();
+                    let want = b.ins().iconst(irtypes::I64, idx as i64);
+                    b.ins().icmp(IntCC::Equal, *tag, want)
+                }
+                _ => unreachable!(),
             };
-            // The condition may keep the subject on the stack (`dup X ==`) or
-            // consume stack values (`error.X ==` compares against the subject),
-            // so it may leave at most the pre-condition stack height.
-            if stack.len() > sub_stack.len() {
-                return Err(CompileError::new(
-                    "a 'match' case condition must leave the stack balanced",
-                    Location::default(),
-                    "E343",
-                ));
-            }
             let false_target = if i + 1 < cases.len() {
                 cond_blks[i]
             } else {
@@ -2158,7 +2484,44 @@ impl Compiler {
 
             b.switch_to_block(body_blks[i]);
             *stack = sub_stack.clone();
+            let mut case_ref: Option<Slot> = None;
+            if let Some(mt) = case_member {
+                // Push the active member as a borrow reference: same physical
+                // type as the member (auto-deref on read), owned by the union.
+                let (s, _, _) = subject_union.as_ref().unwrap();
+                let payload = b.ins().load(
+                    mt.clty(self.ptr_type),
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    s.value,
+                    UNION_PAYLOAD_OFFSET,
+                );
+                if self.is_heap(mt) {
+                    st.moved.insert(payload);
+                }
+                st.borrowed.insert(payload);
+                let slot = Slot {
+                    value: payload,
+                    ty: mt,
+                    own: Own::Borrow,
+                };
+                case_ref = Some(slot);
+                stack.push(slot);
+            }
             self.compile_body(b, st, stack, &case.body)?;
+            // The member borrow is transient: if the body left it on the
+            // stack (unconsumed), release it so it does not count as a branch
+            // result (the union keeps ownership of the payload). The body's
+            // own results share the payload value only as non-borrow copies
+            // (variable reads), so comparing the borrow slot catches exactly
+            // the unconsumed reference.
+            if let Some(r) = case_ref {
+                if stack.len() > sub_stack.len()
+                    && stack[sub_stack.len()].value == r.value
+                    && stack[sub_stack.len()].own == Own::Borrow
+                {
+                    stack.remove(sub_stack.len());
+                }
+            }
             let results = stack.split_off(sub_stack.len());
             self.match_merge(b, merge, &mut results_ty, results)?;
         }
@@ -2301,13 +2664,15 @@ impl Compiler {
         b.switch_to_block(body_blk);
         *stack = pre.clone();
         let idx = b.use_var(idx_v);
-        let mut saved: Vec<(String, Option<(cranelift_frontend::Variable, Ty)>)> = Vec::new();
+        let mut saved: Vec<(String, Option<(cranelift_frontend::Variable, Ty, Own)>)> = Vec::new();
         if let Some(name) = index
             && name != "_"
         {
             let idx_var = b.declare_var(irtypes::I64);
             b.def_var(idx_var, idx);
-            let prev = st.vars.insert(name.to_string(), (idx_var, Ty::I64));
+            let prev = st
+                .vars
+                .insert(name.to_string(), (idx_var, Ty::I64, Own::Trivial));
             saved.push((name.to_string(), prev));
         }
         if let Some(name) = value
@@ -2325,7 +2690,9 @@ impl Compiler {
             );
             let loop_var = b.declare_var(elem.clty(self.ptr_type));
             b.def_var(loop_var, val);
-            let prev = st.vars.insert(name.to_string(), (loop_var, elem));
+            let prev = st
+                .vars
+                .insert(name.to_string(), (loop_var, elem, Own::Trivial));
             saved.push((name.to_string(), prev));
         }
         st.loops.push(LoopCtx {
@@ -2465,7 +2832,7 @@ impl Compiler {
             }
             Expr::String { value } => self.emit_string(b, st, stack, value)?,
             Expr::Variable { name } => {
-                if let Some((var, t)) = st.vars.get(name).cloned() {
+                if let Some((var, t, _own)) = st.vars.get(name).cloned() {
                     let v = b.use_var(var);
                     stack.push(Slot {
                         value: v,
@@ -3385,7 +3752,17 @@ impl Compiler {
             if slot.own.is_owned() && self.is_heap(slot.ty) {
                 owned_temps.push(*slot);
             }
-            args.push(coerce(b, slot.value, slot.ty, param_tys[i], self.ptr_type)?);
+            let arg = self.coerce_or_wrap(b, st, slot.value, slot.ty, param_tys[i])?;
+            // Wrapping a raw member into a union freshly allocates a block the
+            // caller owns and must free after the call.
+            if matches!(param_tys[i], Ty::Union(_)) && !matches!(slot.ty, Ty::Union(_)) {
+                owned_temps.push(Slot {
+                    value: arg,
+                    ty: param_tys[i],
+                    own: Own::Owned,
+                });
+            }
+            args.push(arg);
         }
 
         let fref = st.frefs.get(&name).copied().ok_or_else(|| {
@@ -3533,7 +3910,7 @@ impl Compiler {
                 "E341",
             ));
         }
-        let (var, ty) = st.vars.get(target).cloned().ok_or_else(|| {
+        let (var, ty, _own) = st.vars.get(target).cloned().ok_or_else(|| {
             CompileError::new(
                 format!("unknown variable '{target}'"),
                 Location::default(),
@@ -3555,6 +3932,14 @@ impl Compiler {
         st.moved.insert(src.value);
         self.claim(st, src.value, ty);
         b.def_var(var, src.value);
+        let var_own = if st.borrowed.contains(&src.value) {
+            Own::Borrow
+        } else if self.is_heap(ty) {
+            Own::Owned
+        } else {
+            Own::Trivial
+        };
+        st.vars.insert(target.to_string(), (var, ty, var_own));
         Ok(())
     }
 
@@ -3932,6 +4317,11 @@ impl Compiler {
 /// Byte offset of the `data` field inside the runtime `List` header.
 const LIST_DATA_OFFSET: i32 = 24;
 
+/// Byte offset of a union block's active-member tag.
+const UNION_TAG_OFFSET: i32 = 0;
+/// Byte offset of a union block's inline payload.
+const UNION_PAYLOAD_OFFSET: i32 = 8;
+
 /// Host runtime functions imported by compiled code: (symbol, params, returns).
 /// Pointers, integers and floats are passed by value in a single register.
 const RUNTIME_SIGS: &[(&str, &[CLType], &[CLType])] = &[
@@ -3977,6 +4367,11 @@ const RUNTIME_SIGS: &[(&str, &[CLType], &[CLType])] = &[
     ("yarrow_free_value", &[irtypes::I64, irtypes::I64], &[]),
     (
         "yarrow_register_struct_descs",
+        &[irtypes::I64, irtypes::I64, irtypes::I64],
+        &[],
+    ),
+    (
+        "yarrow_register_union_descs",
         &[irtypes::I64, irtypes::I64, irtypes::I64],
         &[],
     ),
