@@ -708,8 +708,196 @@ pub extern "C" fn yarrow_print_newline() {
     let _ = out.flush();
 }
 
-pub extern "C" fn yarrow_sqrt(v: f64) -> f64 {
-    v.sqrt()
+// ---------------------------------------------------------------------------
+// Container printing (@print_array / @print_list / @print_hashmap)
+// ---------------------------------------------------------------------------
+
+/// Byte width of a scalar kind code (`scalar_code` encoding, plus the string
+/// and pointer handles at 8 bytes).
+fn scalar_bits(code: u64) -> u64 {
+    match code {
+        0 | 1 | 6 => 8,
+        2 | 7 | 12 => 16,
+        3 | 8 | 11 | 13 => 32,
+        _ => 64,
+    }
+}
+
+/// Read a scalar of `bits` width from `p` (used for fixed-size arrays, whose
+/// storage is one contiguous block).
+unsafe fn read_scalar(p: *const u8, bits: u64) -> u64 {
+    unsafe {
+        match bits {
+            8 => *p as u64,
+            16 => *(p as *const u16) as u64,
+            32 => *(p as *const u32) as u64,
+            _ => *(p as *const u64),
+        }
+    }
+}
+
+fn print_scalar(out: &mut dyn std::io::Write, v: u64, code: u64) {
+    match code {
+        0 => {
+            let _ = write!(out, "{}", v != 0);
+        }
+        1 => {
+            let _ = write!(out, "{}", v as i8);
+        }
+        2 => {
+            let _ = write!(out, "{}", v as i16);
+        }
+        3 => {
+            let _ = write!(out, "{}", v as i32);
+        }
+        4 => {
+            let _ = write!(out, "{}", v as i64);
+        }
+        6 => {
+            let _ = write!(out, "{}", v as u8);
+        }
+        7 => {
+            let _ = write!(out, "{}", v as u16);
+        }
+        8 => {
+            let _ = write!(out, "{}", v as u32);
+        }
+        9 => {
+            let _ = write!(out, "{}", v);
+        }
+        11 => match char::from_u32(v as u32) {
+            Some(c) => {
+                let _ = write!(out, "{c}");
+            }
+            None => {
+                let _ = write!(out, "<invalid rune>");
+            }
+        },
+        13 => {
+            let _ = write!(out, "{}", f32::from_bits(v as u32));
+        }
+        14 => {
+            let _ = write!(out, "{}", f64::from_bits(v));
+        }
+        _ => {
+            let _ = write!(out, "{}", v as i64);
+        }
+    }
+}
+
+unsafe fn print_str_to(out: &mut dyn std::io::Write, s: u64) {
+    if s == 0 {
+        return;
+    }
+    let str = unsafe { &*(s as *const Str) };
+    let bytes = unsafe { std::slice::from_raw_parts(str.ptr, str.len) };
+    let _ = out.write_all(bytes);
+}
+
+/// Print one value by its runtime kind code. Scalars/strings/containers print
+/// their contents; structs, unions and generic pointers have no runtime field
+/// names or element kind, so they degrade to a descriptor.
+unsafe fn print_value_to(out: &mut dyn std::io::Write, v: u64, kind: u64) {
+    match tag(kind) {
+        0..=15 => print_scalar(out, v, kind),
+        16 => unsafe { print_str_to(out, v) },
+        0x20 => unsafe { print_list_to(out, v, kind >> 8) },
+        0x30 => unsafe { print_map_to(out, v, (kind >> 8) & 0xffffffff, kind >> 40) },
+        0x60 => unsafe { print_array_to(out, v, kind >> 8, kind >> 40) },
+        0x40 => {
+            let _ = write!(out, "#<struct {}>", kind >> 8);
+        }
+        0x50 => {
+            let _ = write!(out, "#<ptr {v:#x}>");
+        }
+        0x70 => {
+            let _ = write!(out, "#<union {}>", kind >> 8);
+        }
+        _ => {
+            let _ = write!(out, "{v}");
+        }
+    }
+}
+
+unsafe fn print_list_to(out: &mut dyn std::io::Write, l: u64, elem_kind: u64) {
+    if l == 0 {
+        let _ = write!(out, "()");
+        return;
+    }
+    let list = unsafe { &*(l as *const List) };
+    let _ = write!(out, "(");
+    for i in 0..list.len {
+        if i > 0 {
+            let _ = write!(out, ", ");
+        }
+        let elem = read_elem(list, i);
+        unsafe { print_value_to(out, elem, elem_kind) };
+    }
+    let _ = write!(out, ")");
+}
+
+unsafe fn print_map_to(out: &mut dyn std::io::Write, m: u64, key_kind: u64, val_kind: u64) {
+    if m == 0 {
+        let _ = write!(out, "{{}}");
+        return;
+    }
+    let map = unsafe { &*(m as *const Map) };
+    let _ = write!(out, "{{");
+    let mut first = true;
+    for i in 0..map.cap {
+        if unsafe { *map.used.add(i) } == 0 {
+            continue;
+        }
+        if !first {
+            let _ = write!(out, ", ");
+        }
+        let key = unsafe { *map.keys.add(i) };
+        let val = unsafe { *map.vals.add(i) };
+        unsafe { print_value_to(out, key, key_kind) };
+        let _ = write!(out, ": ");
+        unsafe { print_value_to(out, val, val_kind) };
+        first = false;
+    }
+    let _ = write!(out, "}}");
+}
+
+unsafe fn print_array_to(out: &mut dyn std::io::Write, a: u64, elem_kind: u64, count: u64) {
+    if a == 0 {
+        let _ = write!(out, "[]");
+        return;
+    }
+    let bits = scalar_bits(elem_kind);
+    let step = (bits / 8) as usize;
+    let _ = write!(out, "[");
+    for i in 0..count {
+        if i > 0 {
+            let _ = write!(out, ", ");
+        }
+        let elem = read_scalar((a as *const u8).add(i as usize * step), bits);
+        unsafe { print_value_to(out, elem, elem_kind) };
+    }
+    let _ = write!(out, "]");
+}
+
+pub extern "C" fn yarrow_print_array(a: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_array_to(&mut out, a, kind >> 8, kind >> 40) };
+    let _ = out.flush();
+}
+
+pub extern "C" fn yarrow_print_list(l: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_list_to(&mut out, l, kind >> 8) };
+    let _ = out.flush();
+}
+
+pub extern "C" fn yarrow_print_hashmap(m: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_map_to(&mut out, m, (kind >> 8) & 0xffffffff, kind >> 40) };
+    let _ = out.flush();
 }
 
 // ---------------------------------------------------------------------------
@@ -843,10 +1031,22 @@ pub static HOST_FNS: std::sync::LazyLock<Vec<HostFn>> = std::sync::LazyLock::new
             address: yarrow_print_newline as *const () as usize,
         },
         HostFn {
-            name: "sqrt",
-            params: &[KIND_F64],
-            returns: &[KIND_F64],
-            address: yarrow_sqrt as *const () as usize,
+            name: "print_array",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_array as *const () as usize,
+        },
+        HostFn {
+            name: "print_list",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_list as *const () as usize,
+        },
+        HostFn {
+            name: "print_hashmap",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_hashmap as *const () as usize,
         },
         HostFn {
             name: "free_value",

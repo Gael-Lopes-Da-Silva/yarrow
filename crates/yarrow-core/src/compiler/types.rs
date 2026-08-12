@@ -61,13 +61,13 @@ pub enum Ty {
     /// type is stored as a container code (see [`elem_code`]); `elem_size()`
     /// must be at most pointer-sized.
     List {
-        elem: u32,
+        elem: u64,
     },
     /// A heap hashmap: an opaque handle to a runtime `Map` header. Keys and
     /// values are stored as container codes (see [`elem_code`]).
     Hashmap {
-        key: u32,
-        value: u32,
+        key: u64,
+        value: u64,
     },
     /// A tagged one-of type: an index into the compiler's union table. The
     /// value is a pointer to a heap block holding the active member's index
@@ -241,34 +241,48 @@ pub fn scalar_ty(code: u8) -> Ty {
 }
 
 /// A compact code for container element/key/value types. Covers scalars,
-/// strings, structs (encoded with their layout id) and any other pointer-like
-/// type (which degrades to a generic pointer). Returns `None` for types that
-/// cannot be stored in a container (`Void`, 128-bit values).
+/// strings, structs (encoded with their layout id) and containers (which
+/// recurse into their own kind code, so nested containers can be printed and
+/// freed by the runtime). Returns `None` for types that cannot be stored in a
+/// container (`Void`, 128-bit values).
 ///
 /// The encoding mirrors the runtime kind codes so a container's element code
 /// can drive `yarrow_free_value` recursion directly: scalars `0..=15`, a
-/// string `16`, a struct `0x40 | (id << 8)`, a union `0x70 | (id << 8)` and
-/// anything else a `0x50` (generic pointer, cannot recurse).
-pub fn elem_code(ty: Ty) -> Option<u32> {
+/// string `16`, a struct `0x40 | (id << 8)`, a union `0x70 | (id << 8)`, a
+/// list `0x20 | (elem << 8)`, a hashmap `0x30 | (key << 8) | (value << 40)`
+/// and anything opaque (arrays, raw pointers) a `0x50` (cannot recurse).
+pub fn elem_code(ty: Ty) -> Option<u64> {
     match ty {
         Ty::String => Some(16),
-        Ty::Struct(id) => Some(0x40 | (id << 8)),
-        Ty::Union(id) => Some(0x70 | (id << 8)),
-        Ty::Ptr(_) | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x50),
-        other => other.scalar_code().map(u32::from),
+        Ty::Struct(id) => Some(0x40 | ((id as u64) << 8)),
+        Ty::Union(id) => Some(0x70 | ((id as u64) << 8)),
+        Ty::List { .. } | Ty::Hashmap { .. } => Some(kind_code(ty)),
+        Ty::Ptr(_) | Ty::Array { .. } => Some(0x50),
+        other => other.scalar_code().map(u64::from),
     }
 }
 
 /// Inverse of [`elem_code`]. `0x50` (a generic pointer whose pointee is
 /// unknown) decodes to `Ty::Ptr(0x50)`, a "generic pointer" that cannot be
-/// loaded or stored through.
-pub fn elem_ty(code: u32) -> Ty {
-    match code {
-        0..=15 => scalar_ty(code as u8),
+/// loaded or stored through. The low byte is the kind tag, so nested
+/// container codes round-trip.
+pub fn elem_ty(code: u64) -> Ty {
+    let tag = code & 0xff;
+    match tag {
+        0..=15 => scalar_ty(tag as u8),
         16 => Ty::String,
+        0x20 => Ty::List { elem: code >> 8 },
+        0x30 => Ty::Hashmap {
+            key: (code >> 8) & 0xffffffff,
+            value: code >> 40,
+        },
+        0x40 => Ty::Struct((code >> 8) as u32),
         0x50 => Ty::Ptr(0x50),
-        c if c & 0xff == 0x70 => Ty::Union(c >> 8),
-        0x40.. => Ty::Struct(code >> 8),
+        0x60 => Ty::Array {
+            elem: (code >> 8) as u8,
+            count: (code >> 40) as u32,
+        },
+        0x70 => Ty::Union((code >> 8) as u32),
         _ => Ty::Ptr(0x50),
     }
 }
@@ -287,8 +301,8 @@ pub fn elem_ty(code: u32) -> Ty {
 pub fn kind_code(ty: Ty) -> u64 {
     match ty {
         Ty::String => 16,
-        Ty::List { elem } => 0x20 | ((elem as u64) << 8),
-        Ty::Hashmap { key, value } => 0x30 | ((key as u64) << 8) | ((value as u64) << 40),
+        Ty::List { elem } => 0x20 | (elem << 8),
+        Ty::Hashmap { key, value } => 0x30 | (key << 8) | (value << 40),
         Ty::Struct(id) => 0x40 | ((id as u64) << 8),
         Ty::Union(id) => 0x70 | ((id as u64) << 8),
         Ty::Array { elem, count } => 0x60 | ((elem as u64) << 8) | ((count as u64) << 40),
@@ -371,6 +385,15 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
         TypeKind::List { element } => {
             let elem = resolve(element, named)?;
             let code = container_elem_code(elem, loc)?;
+            // The list elem code is shifted left 8 by kind_code; a code wider
+            // than 56 bits would overflow the 64-bit kind register.
+            if code >> 56 != 0 {
+                return Err(CompileError::unsupported(
+                    format!("list element type {elem:?} is nested too deeply"),
+                    loc,
+                    "E344",
+                ));
+            }
             Ok(Ty::List { elem: code })
         }
         TypeKind::Hashmap { key, value } => {
@@ -378,6 +401,22 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             let vt = resolve(value, named)?;
             let key = container_elem_code(kt, loc)?;
             let value = container_elem_code(vt, loc)?;
+            // The kind-code format gives keys 32 bits (extracted with a mask)
+            // and values 24 bits (bits 40..); larger codes would not round-trip.
+            if key >> 32 != 0 {
+                return Err(CompileError::unsupported(
+                    format!("hashmap key type {kt:?} is nested too deeply"),
+                    loc,
+                    "E344",
+                ));
+            }
+            if value >> 24 != 0 {
+                return Err(CompileError::unsupported(
+                    format!("hashmap value type {vt:?} is nested too deeply"),
+                    loc,
+                    "E344",
+                ));
+            }
             Ok(Ty::Hashmap { key, value })
         }
         TypeKind::Pointer { inner } => {
@@ -386,7 +425,10 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             // information; `pointer<void>` and un-encodable pointees become a
             // generic pointer that cannot be loaded/stored through.
             let code = elem_code(pointee).unwrap_or(0x50);
-            Ok(Ty::Ptr(code))
+            // `Ty::Ptr` carries a u32 payload; pointee codes beyond 32 bits
+            // (deeply nested containers) degrade to a generic pointer.
+            let code = if code >> 32 != 0 { 0x50 } else { code };
+            Ok(Ty::Ptr(code as u32))
         }
         TypeKind::Union(_) => Err(CompileError::unsupported(
             "union types are not yet supported",
@@ -421,7 +463,7 @@ pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
 
 /// Encode an element/key/value type for a container, rejecting values wider
 /// than a pointer (128-bit scalars).
-fn container_elem_code(elem: Ty, loc: Location) -> CResult<u32> {
+fn container_elem_code(elem: Ty, loc: Location) -> CResult<u64> {
     if elem.elem_size() > 8 {
         return Err(CompileError::unsupported(
             format!("container element type {elem:?} is wider than 8 bytes"),

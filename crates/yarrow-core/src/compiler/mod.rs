@@ -818,7 +818,7 @@ impl Compiler {
         fn struct_id(ty: Ty) -> Option<u32> {
             match ty {
                 Ty::Struct(id) => Some(id),
-                Ty::Ptr(code) => match elem_ty(code) {
+                Ty::Ptr(code) => match elem_ty(code.into()) {
                     Ty::Struct(id) => Some(id),
                     _ => None,
                 },
@@ -3163,7 +3163,7 @@ impl Compiler {
                         "E341",
                     ));
                 }
-                let pointee = elem_ty(code);
+                let pointee = elem_ty(code.into());
                 let val = self.coerce_or_wrap(b, st, value.value, value.ty, pointee)?;
                 b.ins().store(
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -3206,7 +3206,7 @@ impl Compiler {
                 "E341",
             ));
         }
-        let pointee = elem_ty(code);
+        let pointee = elem_ty(code.into());
         let val = b.ins().load(
             pointee.clty(self.ptr_type),
             cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -3264,7 +3264,7 @@ impl Compiler {
         stack: &mut Vec<Slot>,
         elems: &[Expr],
         declared: Option<Ty>,
-    ) -> CResult<(Value, u32)> {
+    ) -> CResult<(Value, u64)> {
         let elem = if let Some(declared) = declared {
             declared
         } else {
@@ -3363,7 +3363,7 @@ impl Compiler {
         stack: &mut Vec<Slot>,
         pairs: &[(Expr, Expr)],
         declared: Option<Ty>,
-    ) -> CResult<(Value, u32, u32)> {
+    ) -> CResult<(Value, u64, u64)> {
         let (kt, vt) = match declared {
             Some(Ty::Hashmap { key, value }) => (elem_ty(key), elem_ty(value)),
             Some(_) => {
@@ -3815,23 +3815,41 @@ impl Compiler {
             "print_newline" => {
                 self.rt_call(b, st, "print_newline", Vec::new())?;
             }
-
-            "sqrt" => {
-                let v = self.pop_slot(stack, "'@sqrt'")?;
-                if !v.ty.is_float() && !v.ty.is_int() {
+            "print_array" => {
+                let v = self.pop_slot(stack, "'@print_array'")?;
+                if !matches!(v.ty, Ty::Array { .. }) {
                     return Err(CompileError::new(
-                        format!("'@sqrt' requires a number, got {:?}", v.ty),
+                        format!("'@print_array' requires an array, got {:?}", v.ty),
                         Location::default(),
                         "E372",
                     ));
                 }
-                let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
-                let out = self.rt_call(b, st, "sqrt", vec![arg])?;
-                stack.push(Slot {
-                    value: out[0],
-                    ty: Ty::F64,
-                    own: Own::Trivial,
-                });
+                let kind = b.ins().iconst(irtypes::I64, kind_code(v.ty) as i64);
+                self.rt_call(b, st, "print_array", vec![v.value, kind])?;
+            }
+            "print_list" => {
+                let v = self.pop_slot(stack, "'@print_list'")?;
+                if !matches!(v.ty, Ty::List { .. }) {
+                    return Err(CompileError::new(
+                        format!("'@print_list' requires a list, got {:?}", v.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let kind = b.ins().iconst(irtypes::I64, kind_code(v.ty) as i64);
+                self.rt_call(b, st, "print_list", vec![v.value, kind])?;
+            }
+            "print_hashmap" => {
+                let v = self.pop_slot(stack, "'@print_hashmap'")?;
+                if !matches!(v.ty, Ty::Hashmap { .. }) {
+                    return Err(CompileError::new(
+                        format!("'@print_hashmap' requires a hashmap, got {:?}", v.ty),
+                        Location::default(),
+                        "E372",
+                    ));
+                }
+                let kind = b.ins().iconst(irtypes::I64, kind_code(v.ty) as i64);
+                self.rt_call(b, st, "print_hashmap", vec![v.value, kind])?;
             }
 
             _ => return Ok(false),

@@ -56,13 +56,22 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
   resolved from a data table (`HOST_FNS`) through one generic host-call path
   (`emit_host_call`) instead of per-name `extern` imports (`RUNTIME_SIGS`
   deleted). The embedded std library still uses `@`-builtins, which now lex
-  again; a few per-name compiler arms (`@map_get`, `@string_len`, raw
-  `@load`/`@store`) remain alongside the host fallback until Stage 5.
+  again; `sqrt` is implemented in pure Yarrow (`std.math.sqrt`, a 32-iteration
+  Newton's method that binds its parameter to a variable); a few per-name
+  compiler arms (`@map_get`, `@string_len`, raw `@load`/`@store`, the container
+  printers) remain alongside the host fallback until Stage 5.
 - **Runtime** — complete for the current host heap (strings/lists/maps/
   structs/arrays/unions, regions, kind codes). Stage 4 shrank the surface to a
-  data-registered `HOST_FNS` table (24 entries) that both `install_runtime`
+  data-registered `HOST_FNS` table (26 entries) that both `install_runtime`
   and the compiler's generic host-call path iterate; per-name helpers
   (string/list/map/print) remain until Stage 5 rewrites the std in Yarrow.
+  Container printing is a set of `@print_array`/`@print_list`/`@print_hashmap`
+  builtins (inlined kind-code arms + runtime printers); container element
+  kinds now **recurse** (`elem_code` encodes nested containers as full kind
+  codes, `elem_ty` decodes them), so nested containers print their contents
+  and are freed recursively. The kind-code format limits nesting depth: list
+  elements to 56 bits, hashmap keys to 32 bits, hashmap values to 24 bits —
+  deeper nesting (e.g. `hashmap<i64 hashmap<i64 i64>>`) is rejected with E344.
 - **Std library** — embedded Yarrow modules in `compiler/modules.rs`
   (`std.io`, `std.math.sqrt`, `std.string`, `std.list`, `std.map`) written in
   the old `@`-builtin syntax; must be rewritten as pure-Yarrow **source files**
@@ -121,9 +130,11 @@ memory and OS I/O only:
 - OS syscalls for `std.io`/`std.fs`: `write(fd, ptr, len)`, `open(ptr, len,
 mode)`, `read(fd, ...)`, `close(fd)`
 
-Everything else — strings, lists, maps, regions, formatting, `sqrt`, I/O
-wrappers (`print` = `write(1, ...)`) — is **implemented in Yarrow** in the
-std library, which requires the memory-access capability from Stage 4.
+Everything else — strings, lists, maps, regions, formatting, I/O
+wrappers (`print` = `write(1, ...)`), and `sqrt` (already rewritten as a
+pure-Yarrow Newton's method in `std.math.sqrt`, no longer a host function) —
+is **implemented in Yarrow** in the std library, which requires the
+memory-access capability from Stage 4.
 
 ### Libraries and `require`
 
