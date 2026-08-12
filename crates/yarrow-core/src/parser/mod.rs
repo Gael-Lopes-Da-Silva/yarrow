@@ -696,6 +696,20 @@ impl Parser {
                     target: Box::new(target),
                 });
             }
+            TokenKind::At => {
+                let lexeme = self.advance().lexeme.clone();
+                let name = lexeme.strip_prefix('@').unwrap_or(&lexeme);
+                if name.is_empty() {
+                    return Err(ParseError::new(
+                        "expected a builtin name after '@'",
+                        self.peek_location(),
+                        "E217",
+                    ));
+                }
+                ops.push(Expr::Builtin {
+                    name: name.to_string(),
+                });
+            }
             TokenKind::Unwrap => {
                 self.advance();
                 let inner = ops.pop().ok_or_else(|| {
@@ -728,6 +742,33 @@ impl Parser {
                 } else {
                     ops.push(Expr::ApplyBorrow);
                 }
+            }
+            TokenKind::Load => {
+                self.advance();
+                if let Some(inner) = ops.pop() {
+                    ops.push(Expr::Load {
+                        inner: Box::new(inner),
+                    });
+                } else {
+                    ops.push(Expr::ApplyLoad);
+                }
+            }
+            TokenKind::Store => {
+                self.advance();
+                let value = ops.pop().ok_or_else(|| {
+                    ParseError::new(
+                        "'store' requires a value and an address",
+                        self.peek_location(),
+                        "E221",
+                    )
+                })?;
+                let addr = ops.pop().ok_or_else(|| {
+                    ParseError::new("'store' requires an address", self.peek_location(), "E221")
+                })?;
+                ops.push(Expr::Store {
+                    addr: Box::new(addr),
+                    value: Box::new(value),
+                });
             }
             TokenKind::Dup => {
                 self.advance();

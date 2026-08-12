@@ -50,8 +50,11 @@ pub enum Ty {
         elem: u8,
         count: u32,
     },
-    /// A raw pointer (reserved for `pointer<T>`; currently unused).
-    Ptr,
+    /// A raw pointer (`pointer<T>`): a typed address into raw memory. The
+    /// payload is the pointee's container element code (see [`elem_code`] /
+    /// [`elem_ty`]); the type information is compile-time only — the physical
+    /// representation is a bare address.
+    Ptr(u32),
     /// A heap string: an opaque handle to a `Str` header in the runtime.
     String,
     /// A heap list: an opaque handle to a runtime `List` header. The element
@@ -137,7 +140,7 @@ impl Ty {
     pub fn is_pointer(self) -> bool {
         matches!(
             self,
-            Ty::Ptr
+            Ty::Ptr(_)
                 | Ty::Struct(_)
                 | Ty::Array { .. }
                 | Ty::String
@@ -155,7 +158,7 @@ impl Ty {
             Ty::I64
             | Ty::U64
             | Ty::F64
-            | Ty::Ptr
+            | Ty::Ptr(_)
             | Ty::Struct(_)
             | Ty::Enum(_)
             | Ty::Array { .. }
@@ -197,7 +200,7 @@ impl Ty {
             Ty::F64 => irtypes::F64,
             Ty::F128 => irtypes::F128,
             Ty::Void => irtypes::I8,
-            Ty::Ptr => ptr_type,
+            Ty::Ptr(_) => ptr_type,
             Ty::Struct(_) => ptr_type,
             Ty::Enum(_) => irtypes::I64,
             Ty::Array { .. } => ptr_type,
@@ -251,20 +254,22 @@ pub fn elem_code(ty: Ty) -> Option<u32> {
         Ty::String => Some(16),
         Ty::Struct(id) => Some(0x40 | (id << 8)),
         Ty::Union(id) => Some(0x70 | (id << 8)),
-        Ty::Ptr | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x50),
+        Ty::Ptr(_) | Ty::Array { .. } | Ty::List { .. } | Ty::Hashmap { .. } => Some(0x50),
         other => other.scalar_code().map(u32::from),
     }
 }
 
-/// Inverse of [`elem_code`].
+/// Inverse of [`elem_code`]. `0x50` (a generic pointer whose pointee is
+/// unknown) decodes to `Ty::Ptr(0x50)`, a "generic pointer" that cannot be
+/// loaded or stored through.
 pub fn elem_ty(code: u32) -> Ty {
     match code {
         0..=15 => scalar_ty(code as u8),
         16 => Ty::String,
-        0x50 => Ty::Ptr,
+        0x50 => Ty::Ptr(0x50),
         c if c & 0xff == 0x70 => Ty::Union(c >> 8),
         0x40.. => Ty::Struct(code >> 8),
-        _ => Ty::Ptr,
+        _ => Ty::Ptr(0x50),
     }
 }
 
@@ -375,11 +380,14 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             let value = container_elem_code(vt, loc)?;
             Ok(Ty::Hashmap { key, value })
         }
-        TypeKind::Pointer { .. } => Err(CompileError::unsupported(
-            "pointer types are not yet supported",
-            loc,
-            "E307",
-        )),
+        TypeKind::Pointer { inner } => {
+            let pointee = resolve(inner, named)?;
+            // The pointee's container element code carries the type
+            // information; `pointer<void>` and un-encodable pointees become a
+            // generic pointer that cannot be loaded/stored through.
+            let code = elem_code(pointee).unwrap_or(0x50);
+            Ok(Ty::Ptr(code))
+        }
         TypeKind::Union(_) => Err(CompileError::unsupported(
             "union types are not yet supported",
             loc,
@@ -526,8 +534,9 @@ pub fn coerce(
     let to_cl = to.clty(ptr_type);
 
     // Any pointer value satisfies a generic `pointer<T>` target (used by
-    // containers whose element type degraded to `Ty::Ptr`).
-    if to == Ty::Ptr && from.is_pointer() {
+    // containers whose element type degraded to `Ty::Ptr`). The target's
+    // pointee code is compile-time only; the address passes through unchanged.
+    if matches!(to, Ty::Ptr(_)) && from.is_pointer() {
         return Ok(value);
     }
 
@@ -636,9 +645,16 @@ pub fn coerce(
 
 /// Pick a common type for binary operands: the wider of the two; when equally
 /// wide and one side is signed, prefer signed so negative values survive.
+/// `pointer<T> + int` keeps the pointer (raw address arithmetic).
 pub fn common_type(a: Ty, b: Ty) -> Option<Ty> {
     if a == b {
         return Some(a);
+    }
+    if matches!(a, Ty::Ptr(_)) && b.is_int() {
+        return Some(a);
+    }
+    if matches!(b, Ty::Ptr(_)) && a.is_int() {
+        return Some(b);
     }
     if a.is_float() || b.is_float() {
         if !a.is_float() || !b.is_float() {
@@ -662,7 +678,7 @@ pub fn coercible(from: Ty, to: Ty) -> bool {
     if from == to {
         return true;
     }
-    if to == Ty::Ptr && from.is_pointer() {
+    if matches!(to, Ty::Ptr(_)) && from.is_pointer() {
         return true;
     }
     if to.is_pointer() && from.is_int() {

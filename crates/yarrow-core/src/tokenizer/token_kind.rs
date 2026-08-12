@@ -81,7 +81,12 @@ pub enum TokenKind {
     Borrow,
     Move,
 
+    Load,
+    Store,
+
     Fallback,
+
+    At,
 
     True,
     False,

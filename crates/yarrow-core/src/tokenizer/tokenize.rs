@@ -58,6 +58,8 @@ impl Tokenizer {
         keywords.insert("defer".to_string(), TokenKind::Defer);
         keywords.insert("borrow".to_string(), TokenKind::Borrow);
         keywords.insert("move".to_string(), TokenKind::Move);
+        keywords.insert("load".to_string(), TokenKind::Load);
+        keywords.insert("store".to_string(), TokenKind::Store);
         keywords.insert("fallback".to_string(), TokenKind::Fallback);
         keywords.insert("true".to_string(), TokenKind::True);
         keywords.insert("false".to_string(), TokenKind::False);
@@ -159,6 +161,15 @@ impl Tokenizer {
             c if c.is_ascii_digit() => self.handle_number()?,
             '"' => self.handle_string()?,
             '\'' => self.handle_rune()?,
+            '@' => {
+                // `@name` is a builtin word: scan the identifier inline so
+                // keywords (like `load`/`store`) are not substituted. The
+                // lexeme keeps the '@'; the parser strips it.
+                while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
+                    self.advance();
+                }
+                self.add_token(TokenKind::At);
+            }
             c if c.is_ascii_alphabetic() || c == '_' => self.handle_identifier(),
             _ => {
                 return Err(TokenizeError::new(

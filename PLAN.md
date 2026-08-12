@@ -7,18 +7,21 @@ pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift J
 commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler port is
 **in progress** — the build is restored (Stage 0), the new operators are in
 (Stage 1), control flow is back (Stage 2: `for` over arrays/lists,
-`handle` + `fallback`, `match`, `break`/`continue`), and unions now resolve,
-wrap and dispatch in `match` (Stage 3). Next: memory access in the language
-(Stage 4).
+`handle` + `fallback`, `match`, `break`/`continue`), unions now resolve,
+wrap and dispatch in `match` (Stage 3), and memory access is in the language
+(Stage 4: `pointer<T>` load/store/arithmetic + the `HOST_FNS` host bridge).
+Next: the std library as pure-Yarrow source files (Stage 5).
 
 ## Pipeline status
 
 - **Tokenizer** — complete for the new spec (`tokenizer/token_kind.rs`,
   `tokenize.rs`). Dropped tokens: `DotDot Question Exclamation Ampersand Bar
 Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
-  Added tokens/keywords: `typeof`, `unrot`, `borrow`, `move`, `fallback`
-  (`>=`/`<=` and `//` exist). There is no `@` token and no `while` keyword
-  anymore.
+  Added tokens/keywords: `typeof`, `unrot`, `borrow`, `move`, `fallback`,
+  `load`, `store` (`>=`/`<=` and `//` exist). There is no `while` keyword
+  anymore. The `@` token was reintroduced in Stage 4 for builtin words
+  (`@alloc`, `@print_int`, ...); `@name` lexes as a single token so the name
+  never collides with keywords.
 - **Parser** — complete for the new AST (`parser/mod.rs`, `ast.rs`,
   `literals.rs`). No `Stmt::While`; `for` is the only loop and comes in three
   forms; `match` cases dispatch either on a boolean condition or on a union
@@ -47,11 +50,19 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
   the member as a `reference<Type>` (an auto-deref borrow) released at the end
   of the case body, and the union is left untouched; variables track an `Own`
   flag so borrowed case-body bindings are not freed at scope exit.
-  The embedded std library still uses `@`-builtins, which the new tokenizer
-  cannot lex.
+  Stage 4 done: `pointer<T>` (a typed raw address) with `load`/`store` words,
+  byte-offset arithmetic (`pointer + int`), member auto-deref through pointers
+  and `set` write-through; raw memory via `@alloc`/`@free`; host functions are
+  resolved from a data table (`HOST_FNS`) through one generic host-call path
+  (`emit_host_call`) instead of per-name `extern` imports (`RUNTIME_SIGS`
+  deleted). The embedded std library still uses `@`-builtins, which now lex
+  again; a few per-name compiler arms (`@map_get`, `@string_len`, raw
+  `@load`/`@store`) remain alongside the host fallback until Stage 5.
 - **Runtime** — complete for the current host heap (strings/lists/maps/
-  structs/arrays/unions, regions, kind codes) but built around the `@`-builtin
-  model; it will shrink to a tiny, data-registered host surface (Stage 4–5).
+  structs/arrays/unions, regions, kind codes). Stage 4 shrank the surface to a
+  data-registered `HOST_FNS` table (24 entries) that both `install_runtime`
+  and the compiler's generic host-call path iterate; per-name helpers
+  (string/list/map/print) remain until Stage 5 rewrites the std in Yarrow.
 - **Std library** — embedded Yarrow modules in `compiler/modules.rs`
   (`std.io`, `std.math.sqrt`, `std.string`, `std.list`, `std.map`) written in
   the old `@`-builtin syntax; must be rewritten as pure-Yarrow **source files**
@@ -64,10 +75,11 @@ Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
 
 ```
 cargo check    # green
-cargo clippy   # 2 pre-existing warnings: dead emit_builtin (deleted in
-               #   Stage 5) and a parser collapsible-if; LIST_DATA_OFFSET is
-               #   now live (used by list iteration)
-cargo run -- <file.yar>   # runs new-syntax programs (no @-builtin std yet)
+cargo clippy   # 3 pre-existing warnings, none in Stage 4 code: two
+               #   collapsible-if (compiler match/case, parser case) and one
+               #   very-complex-type (compiler for-index)
+cargo run -- <file.yar>   # runs new-syntax programs; @-builtin std modules
+                          #   lex again but still carry the old syntax
 ```
 
 ## Architecture notes
@@ -268,27 +280,49 @@ Port the compiler to the new AST. Purely mechanical. **Done.**
   (duplicate member, empty union, non-member case type, Type-case on non-union
   subject), `cargo check` green.
 
-### Stage 4 — Memory access in the language (largest stage)
+### Stage 4 — Memory access in the language (largest stage) ✅
 
 Gives the std library the ability to manipulate heap headers directly, so the
-host surface can shrink.
+host surface can shrink. **Done** (ownership checks deferred, see below).
 
 - Enable `pointer<T>` (remove `E307`): a typed raw pointer, represented as an
-  address; type information is compile-time.
+  address; type information is compile-time. `Ty::Ptr(u32)` carries the
+  pointee's container element code (`0x50` = generic/unknown pointee, from
+  `pointer<void>` or unencodable pointees; loading/storing through `0x50` is
+  rejected).
 - Typed **load** (auto-deref reads, as `reference<T>` already does) and
   **store** through pointers (extend `set`), plus **address arithmetic**
   (pointer + byte offset; integer/pointer conversions as needed).
+  - `p load` → `Expr::Load` (word, or postfix `p load`-style via
+    `Expr::ApplyLoad`); `addr value store` → `Expr::Store`; `pointer + int`
+    keeps the pointer type, pointers are rejected for non-address ops.
+  - `set`/member reads auto-deref through `Ty::Ptr` (`cp.value` reads the
+    pointee field; `cp.value 123 set` writes through it).
+  - Pointers are trivial (not heap): excluded from `is_heap`, never freed by
+    scope drops.
 - Expose `alloc`/`free` to Yarrow through the generic host bridge.
 - Extend the ownership/borrow/region compile-time checks so raw pointers
-  cannot alias a borrowed value or outlive their region.
+  cannot alias a borrowed value or outlive their region. **Deferred**: not
+  enforced; pointers are treated as trivial values (matching the old
+  compiler's laxness). Left as an open design question.
 - **Host registry + generic lowering** — a data table
   `{name, signature, extern "C" fn}` in `runtime.rs` and one generic
   host-call path in the compiler (no per-name match arms). Replace the
-  ad-hoc `extern` symbol imports with it.
-- Files: `docs/syntax.yar` (spec), tokenizer/parser if new words are needed,
-  `compiler/mod.rs`, `compiler/types.rs`, `runtime.rs`.
+  ad-hoc `extern` symbol imports with it. `HOST_FNS` (a `LazyLock<Vec<HostFn>>`
+  table of 24 entries) drives both `install_runtime` and
+  `declare_runtime_imports`; `emit_host_call` lowers any `@name` or
+  undefined-function call generically (pop params in order, coerce, call, push
+  returns, claim ownership for heap results). `RUNTIME_SIGS` deleted; a few
+  per-name `emit_builtin` arms (`@map_get`, `@string_*`/`@list_*` getters, raw
+  `@load`/`@store`) remain and fall back to the registry via a bool return.
+- Files: `docs/syntax.yar` (spec), tokenizer/parser (`At` token + `load`/
+  `store` keywords, `Expr::Load`/`Store`/`Builtin`), `compiler/mod.rs`,
+  `compiler/types.rs`, `runtime.rs`.
 - Gate: hand-written Yarrow functions can allocate, read/write headers and
-  build/free heap values (e.g. a list push by hand).
+  build/free heap values (e.g. a list push by hand). Verified with a Stage 4
+  demo: `@alloc`/`@free` raw memory, `pointer<i32>` load/store, pointer +
+  offset, raw `@load`/`@store`, `pointer<Cell>` auto-deref read and
+  write-through `set`.
 
 ### Stage 5 — Std library in pure Yarrow
 
@@ -345,11 +379,21 @@ Remaining old milestones reviewed against the new spec:
 To be settled during Stage 4, not blocking earlier stages:
 
 - How pointer arithmetic is spelled (pointer + int ops vs. a dedicated offset
-  word) and whether `alloc` returns `pointer<void>` or a `u64`.
+  word) and whether `alloc` returns `pointer<void>` or a `u64`. **Decided**:
+  `pointer + int` byte-offset arithmetic keeps the pointer type (int/pointer
+  conversions remain via the pre-existing null/round-trip coercion); `@alloc`
+  returns a plain `i64` address (interchangeable with `pointer<void>` via
+  coercion, and store/load on it are the raw word forms). `alloc` is exposed
+  as the host function `alloc` (`@alloc`).
 - Alias rules: can a raw pointer alias a borrowed value without tripping the
-  compile-time checks, and how regions guard raw pointers.
+  compile-time checks, and how regions guard raw pointers. **Open**: raw
+  pointers are treated as trivial values today; the ownership checks are
+  deferred until the std rewrite (Stage 5) shows what is needed.
 - Whether `pointer<T>` load/store needs new syntax or reuses the
-  `reference<T>` auto-deref model with a store through it.
+  `reference<T>` auto-deref model with a store through it. **Decided**: both —
+  explicit `load`/`store` words for the raw forms, and the `reference<T>`
+  auto-deref model (member reads and `set` write-through) already applies to
+  pointers through `Ty::Ptr` resolution in `base_struct`.
 
 ## Definition of done
 

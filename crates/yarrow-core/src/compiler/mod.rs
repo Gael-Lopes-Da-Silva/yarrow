@@ -651,18 +651,24 @@ impl Compiler {
         Ok(())
     }
 
-    /// Import every host runtime function so JIT code can `call` it.
+    /// Import every host runtime function so JIT code can `call` it. The
+    /// signatures come from the runtime's [`HOST_FNS`] registry (one source of
+    /// truth); scalar kind codes decode through [`scalar_ty`].
     fn declare_runtime_imports(&mut self) -> CResult<()> {
-        for (name, params, returns) in RUNTIME_SIGS {
+        for host in crate::runtime::HOST_FNS.iter() {
             let mut sig = self.module.make_signature();
-            for &p in *params {
-                sig.params.push(AbiParam::new(p));
+            for &p in host.params {
+                let ty = scalar_ty(p as u8);
+                sig.params.push(AbiParam::new(ty.clty(self.ptr_type)));
             }
-            for &r in *returns {
-                sig.returns.push(AbiParam::new(r));
+            for &r in host.returns {
+                let ty = scalar_ty(r as u8);
+                sig.returns.push(AbiParam::new(ty.clty(self.ptr_type)));
             }
-            let id = self.module.declare_function(name, Linkage::Import, &sig)?;
-            self.runtime_ids.insert(name.to_string(), id);
+            let id = self
+                .module
+                .declare_function(host.name, Linkage::Import, &sig)?;
+            self.runtime_ids.insert(host.name.to_string(), id);
         }
         Ok(())
     }
@@ -807,14 +813,27 @@ impl Compiler {
     /// member access is always ultimately a variable (`point`, `self`, or a
     /// nested field), so no runtime type information is needed.
     fn base_struct(&self, st: &FnState, base: &Expr) -> CResult<u32> {
+        /// A struct id after following pointer layers: `pointer<Foo>` resolves
+        /// to `Foo`, a struct value stays itself, everything else is an error.
+        fn struct_id(ty: Ty) -> Option<u32> {
+            match ty {
+                Ty::Struct(id) => Some(id),
+                Ty::Ptr(code) => match elem_ty(code) {
+                    Ty::Struct(id) => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
         match base {
             Expr::Variable { name } => match st.vars.get(name) {
-                Some((_, Ty::Struct(id), _)) => Ok(*id),
-                Some((_, other, _)) => Err(CompileError::new(
-                    format!("'{name}' is a {other:?}, not a struct value"),
-                    Location::default(),
-                    "E340",
-                )),
+                Some((_, ty, _)) => struct_id(*ty).ok_or_else(|| {
+                    CompileError::new(
+                        format!("'{name}' is a {ty:?}, not a struct value"),
+                        Location::default(),
+                        "E340",
+                    )
+                }),
                 None => Err(CompileError::new(
                     format!("unknown variable '{name}'"),
                     Location::default(),
@@ -838,14 +857,13 @@ impl Compiler {
                             "E340",
                         )
                     })?;
-                match field.ty {
-                    Ty::Struct(id) => Ok(id),
-                    _ => Err(CompileError::new(
+                struct_id(field.ty).ok_or_else(|| {
+                    CompileError::new(
                         format!("field '{member}' is not a struct value"),
                         Location::default(),
                         "E340",
-                    )),
-                }
+                    )
+                })
             }
             _ => Err(CompileError::new(
                 "expected a struct value before '.'",
@@ -879,7 +897,7 @@ impl Compiler {
     ) -> CResult<Value> {
         let lay = self.struct_layout(id);
         let size = b.ins().iconst(irtypes::I64, lay.size as i64);
-        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        let out = self.rt_call(b, st, "alloc", vec![size])?;
         Ok(out[0])
     }
 
@@ -1020,7 +1038,7 @@ impl Compiler {
     ) -> CResult<Value> {
         let size = ((elem.elem_size() as u64) * (count as u64)).max(1) as i64;
         let size = b.ins().iconst(irtypes::I64, size);
-        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        let out = self.rt_call(b, st, "alloc", vec![size])?;
         Ok(out[0])
     }
 
@@ -1591,7 +1609,7 @@ impl Compiler {
                             field.offset,
                         );
                         let kind = b.ins().iconst(irtypes::I64, kind_code(field.ty) as i64);
-                        self.rt_call(b, st, "yarrow_free_value", vec![old, kind])?;
+                        self.rt_call(b, st, "free_value", vec![old, kind])?;
                     }
                     b.ins().store(
                         cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -2004,6 +2022,63 @@ impl Compiler {
         coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)
     }
 
+    /// The generic host-call path: `@name` (or a call to an undefined
+    /// function) whose name lives in the runtime's [`HOST_FNS`] registry is
+    /// lowered purely from that table's signature — pop `params` in order,
+    /// coerce, call, push `returns`. No per-name compiler code.
+    fn emit_host_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        name: &str,
+    ) -> CResult<()> {
+        let host = crate::runtime::HOST_FNS
+            .iter()
+            .find(|h| h.name == name)
+            .ok_or_else(|| {
+                CompileError::new(
+                    format!("unknown host function '{name}'"),
+                    Location::default(),
+                    "E372",
+                )
+            })?;
+        let n = host.params.len();
+        if stack.len() < n {
+            return Err(CompileError::new(
+                format!("'{name}' requires {n} argument(s)"),
+                Location::default(),
+                "E331",
+            ));
+        }
+        let tail = stack.split_off(stack.len() - n);
+        let mut args: Vec<Value> = Vec::with_capacity(n);
+        for (i, slot) in tail.iter().enumerate() {
+            let pt = scalar_ty(host.params[i] as u8);
+            args.push(coerce(b, slot.value, slot.ty, pt, self.ptr_type)?);
+        }
+        let fref = st.rt.get(name).copied().ok_or_else(|| {
+            CompileError::new(
+                format!("unregistered host function '{name}'"),
+                Location::default(),
+                "E370",
+            )
+        })?;
+        let inst = b.ins().call(fref, &args);
+        let results = b.inst_results(inst).to_vec();
+        for (v, code) in results.into_iter().zip(host.returns) {
+            let ty = scalar_ty(*code as u8);
+            let own = if self.is_heap(ty) {
+                Own::Owned
+            } else {
+                Own::Trivial
+            };
+            self.claim(st, v, ty);
+            stack.push(Slot { value: v, ty, own });
+        }
+        Ok(())
+    }
+
     /// Whether `ty` owns heap storage (strings, lists, hashmaps, structs,
     /// arrays). Struct and array instances are heap-allocated by the compiler
     /// so their addresses stay valid across calls; dropping them emits
@@ -2035,7 +2110,7 @@ impl Compiler {
             return Ok(());
         }
         let kind = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
-        self.rt_call(b, st, "yarrow_free_value", vec![slot.value, kind])?;
+        self.rt_call(b, st, "free_value", vec![slot.value, kind])?;
         st.owns.remove(&slot.value);
         Ok(())
     }
@@ -2072,12 +2147,7 @@ impl Compiler {
         let count = b
             .ins()
             .iconst(irtypes::I64, self.struct_layout(id).fields.len() as i64);
-        self.rt_call(
-            b,
-            st,
-            "yarrow_register_struct_descs",
-            vec![idv, addr, count],
-        )?;
+        self.rt_call(b, st, "register_struct_descs", vec![idv, addr, count])?;
         Ok(())
     }
 
@@ -2104,7 +2174,7 @@ impl Compiler {
         let count = b
             .ins()
             .iconst(irtypes::I64, self.unions[id as usize].members.len() as i64);
-        self.rt_call(b, st, "yarrow_register_union_descs", vec![idv, addr, count])?;
+        self.rt_call(b, st, "register_union_descs", vec![idv, addr, count])?;
         Ok(())
     }
 
@@ -2139,7 +2209,7 @@ impl Compiler {
         let val = coerce(b, value, from, member, self.ptr_type)?;
         self.emit_register_union(b, st, id)?;
         let size = b.ins().iconst(irtypes::I64, 16);
-        let out = self.rt_call(b, st, "yarrow_alloc", vec![size])?;
+        let out = self.rt_call(b, st, "alloc", vec![size])?;
         let out = out[0];
         let tag = b.ins().iconst(irtypes::I64, idx as i64);
         b.ins().store(
@@ -2622,7 +2692,7 @@ impl Compiler {
             }
             Ty::List { elem } => {
                 let elem = elem_ty(elem);
-                let total = self.rt_call(b, st, "yarrow_list_len", vec![iterable.value])?[0];
+                let total = self.rt_call(b, st, "list_len", vec![iterable.value])?[0];
                 let base = b.ins().load(
                     self.ptr_type,
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -3070,9 +3140,84 @@ impl Compiler {
                 self.compile_expr(b, st, stack, inner)?;
                 self.emit_borrow(b, st, stack)?;
             }
+            Expr::Load { inner } => {
+                self.compile_expr(b, st, stack, inner)?;
+                self.emit_load(b, stack)?;
+            }
+            Expr::Store { addr, value } => {
+                self.compile_expr(b, st, stack, addr)?;
+                self.compile_expr(b, st, stack, value)?;
+                let value = self.pop_slot(stack, "'store'")?;
+                let addr = self.pop_slot(stack, "'store'")?;
+                let Ty::Ptr(code) = addr.ty else {
+                    return Err(CompileError::new(
+                        format!("'store' requires a pointer target, got {:?}", addr.ty),
+                        Location::default(),
+                        "E341",
+                    ));
+                };
+                if code == 0x50 {
+                    return Err(CompileError::new(
+                        "cannot 'store' through a pointer to an unknown type",
+                        Location::default(),
+                        "E341",
+                    ));
+                }
+                let pointee = elem_ty(code);
+                let val = self.coerce_or_wrap(b, st, value.value, value.ty, pointee)?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    val,
+                    addr.value,
+                    0,
+                );
+            }
             Expr::ApplyTypeof => self.emit_typeof(b, st, stack)?,
             Expr::ApplyBorrow => self.emit_borrow(b, st, stack)?,
+            Expr::ApplyLoad => self.emit_load(b, stack)?,
+            Expr::Builtin { name } => {
+                // Per-name words (`@map_get`, `@string_len`, the raw memory
+                // words ...) first; anything not defined inline falls through
+                // to the generic host-call path over `HOST_FNS`.
+                if !self.emit_builtin(b, st, stack, name)? {
+                    self.emit_host_call(b, st, stack, name)?;
+                }
+            }
         }
+        Ok(())
+    }
+
+    /// Lower `pointer<T> load`: pop an address and push the pointee read from
+    /// it. Handles are passed through as trivial values, matching `@list_get`
+    /// (the runtime guards double frees).
+    fn emit_load(&mut self, b: &mut FunctionBuilder, stack: &mut Vec<Slot>) -> CResult<()> {
+        let addr = self.pop_slot(stack, "'load'")?;
+        let Ty::Ptr(code) = addr.ty else {
+            return Err(CompileError::new(
+                format!("'load' requires a pointer, got {:?}", addr.ty),
+                Location::default(),
+                "E341",
+            ));
+        };
+        if code == 0x50 {
+            return Err(CompileError::new(
+                "cannot 'load' through a pointer to an unknown type",
+                Location::default(),
+                "E341",
+            ));
+        }
+        let pointee = elem_ty(code);
+        let val = b.ins().load(
+            pointee.clty(self.ptr_type),
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            addr.value,
+            0,
+        );
+        stack.push(Slot {
+            value: val,
+            ty: pointee,
+            own: Own::Trivial,
+        });
         Ok(())
     }
 
@@ -3099,7 +3244,7 @@ impl Compiler {
             .map_err(|m| CompileError::new(m, Location::default(), "E363"))?
             .len() as i64;
         let len = b.ins().iconst(irtypes::I64, len);
-        let out = self.rt_call(b, st, "yarrow_str_new", vec![addr, len])?;
+        let out = self.rt_call(b, st, "str_new", vec![addr, len])?;
         self.claim(st, out[0], Ty::String);
         stack.push(Slot {
             value: out[0],
@@ -3169,7 +3314,7 @@ impl Compiler {
         elem: Ty,
     ) -> CResult<Value> {
         let size = b.ins().iconst(irtypes::I64, elem.elem_size() as i64);
-        let out = self.rt_call(b, st, "yarrow_list_new", vec![size])?;
+        let out = self.rt_call(b, st, "list_new", vec![size])?;
         Ok(out[0])
     }
 
@@ -3195,7 +3340,7 @@ impl Compiler {
                     own: Own::Trivial,
                 },
             )?;
-            self.rt_call(b, st, "yarrow_list_push", vec![handle, arg])?;
+            self.rt_call(b, st, "list_push", vec![handle, arg])?;
             if self.is_heap(elem) {
                 // The list stores the element's handle and now owns it; the
                 // temporary must not free it.
@@ -3273,7 +3418,7 @@ impl Compiler {
         let keys_string = b
             .ins()
             .iconst(irtypes::I64, if kt == Ty::String { 1 } else { 0 });
-        let out = self.rt_call(b, st, "yarrow_map_new", vec![keys_string])?;
+        let out = self.rt_call(b, st, "map_new", vec![keys_string])?;
         let handle = out[0];
         for (k, v) in pairs {
             self.compile_expr(b, st, stack, k)?;
@@ -3298,7 +3443,7 @@ impl Compiler {
                     own: Own::Trivial,
                 },
             )?;
-            self.rt_call(b, st, "yarrow_map_insert", vec![handle, karg, varg])?;
+            self.rt_call(b, st, "map_insert", vec![handle, karg, varg])?;
             // The map stores the key/value handles directly and owns any heap
             // storage they point to; the temporaries must not free them.
             if self.is_heap(kt) {
@@ -3319,10 +3464,38 @@ impl Compiler {
         st: &mut FnState,
         stack: &mut Vec<Slot>,
         name: &str,
-    ) -> CResult<()> {
+    ) -> CResult<bool> {
         match name {
+            // Raw memory words (inlined, not host calls): `addr @load` reads a
+            // 64-bit word, `addr value @store` writes one. Typed access goes
+            // through the `pointer<T>` layer (`load`, member access, `set`).
+            "load" => {
+                let addr = self.pop_slot(stack, "'@load'")?;
+                let val = b.ins().load(
+                    irtypes::I64,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    addr.value,
+                    0,
+                );
+                stack.push(Slot {
+                    value: val,
+                    ty: Ty::I64,
+                    own: Own::Trivial,
+                });
+            }
+            "store" => {
+                let value = self.pop_slot(stack, "'@store'")?;
+                let addr = self.pop_slot(stack, "'@store'")?;
+                let val = coerce(b, value.value, value.ty, Ty::I64, self.ptr_type)?;
+                b.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    val,
+                    addr.value,
+                    0,
+                );
+            }
             "make_region" => {
-                let out = self.rt_call(b, st, "yarrow_region_new", vec![])?;
+                let out = self.rt_call(b, st, "region_new", vec![])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
@@ -3331,7 +3504,7 @@ impl Compiler {
             }
             "free_region" => {
                 let region = self.pop_slot(stack, "'@free_region'")?;
-                self.rt_call(b, st, "yarrow_region_free", vec![region.value])?;
+                self.rt_call(b, st, "region_free", vec![region.value])?;
             }
             "put_region" => {
                 let region = self.pop_slot(stack, "'@put_region'")?;
@@ -3350,7 +3523,7 @@ impl Compiler {
                 self.rt_call(
                     b,
                     st,
-                    "yarrow_region_register",
+                    "region_register",
                     vec![value.value, kind, region.value],
                 )?;
                 // The region now owns the value; the stack must not free it.
@@ -3375,9 +3548,8 @@ impl Compiler {
                         ));
                     }
                 }
-                let joined = self.rt_call(b, st, "yarrow_str_join", vec![left.value, sep.value])?;
-                let joined =
-                    self.rt_call(b, st, "yarrow_str_join", vec![joined[0], right.value])?;
+                let joined = self.rt_call(b, st, "str_join", vec![left.value, sep.value])?;
+                let joined = self.rt_call(b, st, "str_join", vec![joined[0], right.value])?;
                 self.consume(b, st, left)?;
                 self.consume(b, st, sep)?;
                 self.consume(b, st, right)?;
@@ -3397,7 +3569,7 @@ impl Compiler {
                         "E372",
                     ));
                 }
-                let out = self.rt_call(b, st, "yarrow_str_len", vec![s.value])?;
+                let out = self.rt_call(b, st, "str_len", vec![s.value])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
@@ -3425,7 +3597,7 @@ impl Compiler {
                         own: Own::Trivial,
                     },
                 )?;
-                self.rt_call(b, st, "yarrow_list_push", vec![list.value, arg])?;
+                self.rt_call(b, st, "list_push", vec![list.value, arg])?;
                 stack.push(list);
             }
             "list_len" => {
@@ -3437,7 +3609,7 @@ impl Compiler {
                         "E372",
                     ));
                 }
-                let out = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                let out = self.rt_call(b, st, "list_len", vec![list.value])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
@@ -3456,7 +3628,7 @@ impl Compiler {
                 };
                 let elem_ty = elem_ty(elem);
                 let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
-                let len = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                let len = self.rt_call(b, st, "list_len", vec![list.value])?;
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
                 b.ins().trapz(inb, TrapCode::unwrap_user(1));
                 let base = b.ins().load(
@@ -3492,7 +3664,7 @@ impl Compiler {
                 };
                 let elem_ty = elem_ty(elem);
                 let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
-                let len = self.rt_call(b, st, "yarrow_list_len", vec![list.value])?;
+                let len = self.rt_call(b, st, "list_len", vec![list.value])?;
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
                 b.ins().trapz(inb, TrapCode::unwrap_user(1));
                 let base = b.ins().load(
@@ -3540,8 +3712,7 @@ impl Compiler {
                     0,
                 ));
                 let found_ptr = b.ins().stack_addr(self.ptr_type, slot, 0);
-                let out =
-                    self.rt_call(b, st, "yarrow_map_get", vec![map.value, karg, found_ptr])?;
+                let out = self.rt_call(b, st, "map_get", vec![map.value, karg, found_ptr])?;
                 let val = out[0];
                 let found = b.ins().load(
                     irtypes::I8,
@@ -3600,7 +3771,7 @@ impl Compiler {
                         own: Own::Trivial,
                     },
                 )?;
-                self.rt_call(b, st, "yarrow_map_insert", vec![map.value, karg, varg])?;
+                self.rt_call(b, st, "map_insert", vec![map.value, karg, varg])?;
                 stack.push(map);
             }
             "map_len" => {
@@ -3612,7 +3783,7 @@ impl Compiler {
                         "E372",
                     ));
                 }
-                let out = self.rt_call(b, st, "yarrow_map_len", vec![map.value])?;
+                let out = self.rt_call(b, st, "map_len", vec![map.value])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::I64,
@@ -3629,20 +3800,20 @@ impl Compiler {
                         "E372",
                     ));
                 }
-                self.rt_call(b, st, "yarrow_print_str", vec![s.value])?;
+                self.rt_call(b, st, "print_str", vec![s.value])?;
             }
             "print_int" => {
                 let v = self.pop_slot(stack, "'@print_int'")?;
                 let arg = coerce(b, v.value, v.ty, Ty::I64, self.ptr_type)?;
-                self.rt_call(b, st, "yarrow_print_int", vec![arg])?;
+                self.rt_call(b, st, "print_int", vec![arg])?;
             }
             "print_float" => {
                 let v = self.pop_slot(stack, "'@print_float'")?;
                 let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
-                self.rt_call(b, st, "yarrow_print_float", vec![arg])?;
+                self.rt_call(b, st, "print_float", vec![arg])?;
             }
             "print_newline" => {
-                self.rt_call(b, st, "yarrow_print_newline", Vec::new())?;
+                self.rt_call(b, st, "print_newline", Vec::new())?;
             }
 
             "sqrt" => {
@@ -3655,7 +3826,7 @@ impl Compiler {
                     ));
                 }
                 let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
-                let out = self.rt_call(b, st, "yarrow_sqrt", vec![arg])?;
+                let out = self.rt_call(b, st, "sqrt", vec![arg])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::F64,
@@ -3663,15 +3834,9 @@ impl Compiler {
                 });
             }
 
-            _ => {
-                return Err(CompileError::unsupported(
-                    format!("builtin '{name}' is not yet supported"),
-                    Location::default(),
-                    "E301",
-                ));
-            }
+            _ => return Ok(false),
         }
-        Ok(())
+        Ok(true)
     }
 
     fn emit_call(
@@ -3725,12 +3890,20 @@ impl Compiler {
                 ));
             }
         };
-        let (param_tys, return_tys) = self.sig_tys.get(&name).cloned().ok_or_else(|| {
-            CompileError::new(
+        // Undefined function names fall back to the host registry: the call
+        // is lowered generically from the table's signature.
+        if !self.sig_tys.contains_key(&name) {
+            if crate::runtime::HOST_FNS.iter().any(|h| h.name == name) {
+                return self.emit_host_call(b, st, stack, &name);
+            }
+            return Err(CompileError::new(
                 format!("unknown function '{name}'"),
                 Location::default(),
                 "E330",
-            )
+            ));
+        }
+        let (param_tys, return_tys) = self.sig_tys.get(&name).cloned().ok_or_else(|| {
+            CompileError::new("missing function signature", Location::default(), "E330")
         })?;
         let n = param_tys.len();
         if stack.len() < n {
@@ -4049,6 +4222,41 @@ impl Compiler {
         r: Slot,
     ) -> CResult<()> {
         use BinOp::*;
+
+        // Pointer arithmetic: `pointer<T> n +` (and `pointer<T> n -`) advance
+        // the address by a byte offset. The result keeps the pointee type.
+        let ptr_math = match (op, &l.ty, &r.ty) {
+            (Plus, Ty::Ptr(_), _) if r.ty.is_int() => Some((&l, &r, false)),
+            (Plus, _, Ty::Ptr(_)) if l.ty.is_int() => Some((&r, &l, false)),
+            (Minus, Ty::Ptr(_), _) if r.ty.is_int() => Some((&l, &r, true)),
+            _ => None,
+        };
+        if let Some((ptr, off, sub)) = ptr_math {
+            let off = coerce(b, off.value, off.ty, Ty::I64, self.ptr_type)?;
+            let addr = if sub {
+                b.ins().isub(ptr.value, off)
+            } else {
+                b.ins().iadd(ptr.value, off)
+            };
+            stack.push(Slot {
+                value: addr,
+                ty: ptr.ty,
+                own: Own::Trivial,
+            });
+            return Ok(());
+        }
+        if l.ty.is_pointer() || r.ty.is_pointer() {
+            return Err(CompileError::new(
+                format!(
+                    "operand type {:?} cannot be used with '{:?}' (only address +/- byte offset is defined on pointers)",
+                    if l.ty.is_pointer() { l.ty } else { r.ty },
+                    op
+                ),
+                Location::default(),
+                "E333",
+            ));
+        }
+
         let common = common_type(l.ty, r.ty).ok_or_else(|| {
             CompileError::new(
                 format!(
@@ -4062,7 +4270,7 @@ impl Compiler {
 
         match op {
             Plus if common == Ty::String => {
-                let out = self.rt_call(b, st, "yarrow_str_join", vec![l.value, r.value])?;
+                let out = self.rt_call(b, st, "str_join", vec![l.value, r.value])?;
                 stack.push(Slot {
                     value: out[0],
                     ty: Ty::String,
@@ -4166,7 +4374,7 @@ impl Compiler {
 
             Eq | Ne | Gt | Gte | Lt | Lte => {
                 if common == Ty::String {
-                    let out = self.rt_call(b, st, "yarrow_str_cmp", vec![l.value, r.value])?;
+                    let out = self.rt_call(b, st, "str_cmp", vec![l.value, r.value])?;
                     let cmp = out[0];
                     let zero = b.ins().iconst(irtypes::I64, 0);
                     let cc = match op {
@@ -4321,68 +4529,6 @@ const LIST_DATA_OFFSET: i32 = 24;
 const UNION_TAG_OFFSET: i32 = 0;
 /// Byte offset of a union block's inline payload.
 const UNION_PAYLOAD_OFFSET: i32 = 8;
-
-/// Host runtime functions imported by compiled code: (symbol, params, returns).
-/// Pointers, integers and floats are passed by value in a single register.
-const RUNTIME_SIGS: &[(&str, &[CLType], &[CLType])] = &[
-    ("yarrow_alloc", &[irtypes::I64], &[irtypes::I64]),
-    ("yarrow_free", &[irtypes::I64], &[]),
-    (
-        "yarrow_str_new",
-        &[irtypes::I64, irtypes::I64],
-        &[irtypes::I64],
-    ),
-    ("yarrow_str_len", &[irtypes::I64], &[irtypes::I64]),
-    (
-        "yarrow_str_join",
-        &[irtypes::I64, irtypes::I64],
-        &[irtypes::I64],
-    ),
-    (
-        "yarrow_str_cmp",
-        &[irtypes::I64, irtypes::I64],
-        &[irtypes::I64],
-    ),
-    ("yarrow_list_new", &[irtypes::I64], &[irtypes::I64]),
-    ("yarrow_list_len", &[irtypes::I64], &[irtypes::I64]),
-    ("yarrow_list_push", &[irtypes::I64, irtypes::I64], &[]),
-    ("yarrow_list_free", &[irtypes::I64], &[]),
-    ("yarrow_map_new", &[irtypes::I64], &[irtypes::I64]),
-    (
-        "yarrow_map_insert",
-        &[irtypes::I64, irtypes::I64, irtypes::I64],
-        &[],
-    ),
-    (
-        "yarrow_map_get",
-        &[irtypes::I64, irtypes::I64, irtypes::I64],
-        &[irtypes::I64],
-    ),
-    ("yarrow_map_len", &[irtypes::I64], &[irtypes::I64]),
-    ("yarrow_print_str", &[irtypes::I64], &[]),
-    ("yarrow_print_int", &[irtypes::I64], &[]),
-    ("yarrow_print_float", &[irtypes::F64], &[]),
-    ("yarrow_print_newline", &[], &[]),
-    ("yarrow_sqrt", &[irtypes::F64], &[irtypes::F64]),
-    ("yarrow_free_value", &[irtypes::I64, irtypes::I64], &[]),
-    (
-        "yarrow_register_struct_descs",
-        &[irtypes::I64, irtypes::I64, irtypes::I64],
-        &[],
-    ),
-    (
-        "yarrow_register_union_descs",
-        &[irtypes::I64, irtypes::I64, irtypes::I64],
-        &[],
-    ),
-    ("yarrow_region_new", &[], &[irtypes::I64]),
-    (
-        "yarrow_region_register",
-        &[irtypes::I64, irtypes::I64, irtypes::I64],
-        &[],
-    ),
-    ("yarrow_region_free", &[irtypes::I64], &[]),
-];
 
 /// Collect every distinct string literal appearing in a statement list.
 fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {

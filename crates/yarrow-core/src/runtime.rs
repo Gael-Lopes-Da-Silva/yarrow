@@ -713,76 +713,184 @@ pub extern "C" fn yarrow_sqrt(v: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// Symbol registration
+// Host function registry
 // ---------------------------------------------------------------------------
 
-/// Register every runtime function as a JIT-visible symbol.
+/// Scalar kind codes used in host-function signatures; they match
+/// `scalar_code`/`scalar_ty` in the compiler (and the runtime `tag()` cut-off
+/// at 16 keeps them distinct from heap value kinds).
+pub const KIND_I64: u64 = 4;
+pub const KIND_F64: u64 = 14;
+
+/// A host function callable from Yarrow: its C ABI signature encoded with
+/// scalar kind codes plus the symbol's address. The compiler resolves `@name`
+/// words and calls to undefined functions against this table, so adding a host
+/// function needs no compiler changes (the generic lowering reads the
+/// signature here).
+pub struct HostFn {
+    pub name: &'static str,
+    pub params: &'static [u64],
+    pub returns: &'static [u64],
+    pub address: usize,
+}
+
+/// The tiny host surface: raw memory only (`alloc`/`free`) plus the scalar
+/// helpers the compiler still inlines around until Stage 5 moves them into
+/// Yarrow's std library. Signatures are all 64-bit. Built lazily because the
+/// symbol addresses are only known at runtime.
+pub static HOST_FNS: std::sync::LazyLock<Vec<HostFn>> = std::sync::LazyLock::new(|| {
+    vec![
+        HostFn {
+            name: "alloc",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_alloc as *const () as usize,
+        },
+        HostFn {
+            name: "free",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_free as *const () as usize,
+        },
+        HostFn {
+            name: "str_new",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_new as *const () as usize,
+        },
+        HostFn {
+            name: "str_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_len as *const () as usize,
+        },
+        HostFn {
+            name: "str_join",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_join as *const () as usize,
+        },
+        HostFn {
+            name: "str_cmp",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_cmp as *const () as usize,
+        },
+        HostFn {
+            name: "list_new",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_list_new as *const () as usize,
+        },
+        HostFn {
+            name: "list_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_list_len as *const () as usize,
+        },
+        HostFn {
+            name: "list_push",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_list_push as *const () as usize,
+        },
+        HostFn {
+            name: "map_new",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_new as *const () as usize,
+        },
+        HostFn {
+            name: "map_insert",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_map_insert as *const () as usize,
+        },
+        HostFn {
+            name: "map_get",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_get as *const () as usize,
+        },
+        HostFn {
+            name: "map_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_len as *const () as usize,
+        },
+        HostFn {
+            name: "print_str",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_print_str as *const () as usize,
+        },
+        HostFn {
+            name: "print_int",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_print_int as *const () as usize,
+        },
+        HostFn {
+            name: "print_float",
+            params: &[KIND_F64],
+            returns: &[],
+            address: yarrow_print_float as *const () as usize,
+        },
+        HostFn {
+            name: "print_newline",
+            params: &[],
+            returns: &[],
+            address: yarrow_print_newline as *const () as usize,
+        },
+        HostFn {
+            name: "sqrt",
+            params: &[KIND_F64],
+            returns: &[KIND_F64],
+            address: yarrow_sqrt as *const () as usize,
+        },
+        HostFn {
+            name: "free_value",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: free_value as *const () as usize,
+        },
+        HostFn {
+            name: "register_struct_descs",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_register_struct_descs as *const () as usize,
+        },
+        HostFn {
+            name: "register_union_descs",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_register_union_descs as *const () as usize,
+        },
+        HostFn {
+            name: "region_new",
+            params: &[],
+            returns: &[KIND_I64],
+            address: yarrow_region_new as *const () as usize,
+        },
+        HostFn {
+            name: "region_register",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_region_register as *const () as usize,
+        },
+        HostFn {
+            name: "region_free",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_region_free as *const () as usize,
+        },
+    ]
+});
+
+/// Register every host symbol with the JIT builder so `Linkage::Import`
+/// declarations resolve at link time. Single source of truth: [`HOST_FNS`].
 pub fn install_runtime(builder: &mut JITBuilder) {
-    let sym = |f: usize| f as *const u8;
-    builder.symbol("yarrow_alloc", sym(yarrow_alloc as *const () as usize));
-    builder.symbol("yarrow_free", sym(yarrow_free as *const () as usize));
-    builder.symbol("yarrow_str_new", sym(yarrow_str_new as *const () as usize));
-    builder.symbol("yarrow_str_len", sym(yarrow_str_len as *const () as usize));
-    builder.symbol(
-        "yarrow_str_join",
-        sym(yarrow_str_join as *const () as usize),
-    );
-    builder.symbol("yarrow_str_cmp", sym(yarrow_str_cmp as *const () as usize));
-    builder.symbol(
-        "yarrow_list_new",
-        sym(yarrow_list_new as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_list_len",
-        sym(yarrow_list_len as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_list_push",
-        sym(yarrow_list_push as *const () as usize),
-    );
-    builder.symbol("yarrow_map_new", sym(yarrow_map_new as *const () as usize));
-    builder.symbol(
-        "yarrow_map_insert",
-        sym(yarrow_map_insert as *const () as usize),
-    );
-    builder.symbol("yarrow_map_get", sym(yarrow_map_get as *const () as usize));
-    builder.symbol("yarrow_map_len", sym(yarrow_map_len as *const () as usize));
-    builder.symbol(
-        "yarrow_print_str",
-        sym(yarrow_print_str as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_print_int",
-        sym(yarrow_print_int as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_print_float",
-        sym(yarrow_print_float as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_print_newline",
-        sym(yarrow_print_newline as *const () as usize),
-    );
-    builder.symbol("yarrow_sqrt", sym(yarrow_sqrt as *const () as usize));
-    builder.symbol("yarrow_free_value", sym(free_value as *const () as usize));
-    builder.symbol(
-        "yarrow_register_struct_descs",
-        sym(yarrow_register_struct_descs as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_register_union_descs",
-        sym(yarrow_register_union_descs as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_region_new",
-        sym(yarrow_region_new as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_region_register",
-        sym(yarrow_region_register as *const () as usize),
-    );
-    builder.symbol(
-        "yarrow_region_free",
-        sym(yarrow_region_free as *const () as usize),
-    );
+    for h in HOST_FNS.iter() {
+        builder.symbol(h.name, h.address as *const u8);
+    }
 }

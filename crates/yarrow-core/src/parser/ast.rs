@@ -201,6 +201,15 @@ pub enum Expr {
     Borrow {
         inner: Box<Expr>,
     },
+    /// `pointer<T> load`: reads the pointee from the address.
+    Load {
+        inner: Box<Expr>,
+    },
+    /// `pointer<T> value store`: writes the value at the address.
+    Store {
+        addr: Box<Expr>,
+        value: Box<Expr>,
+    },
     /// A binary operator whose operands come from the runtime stack.
     ApplyBin(BinOp),
     /// An unary operator whose operand comes from the runtime stack.
@@ -209,6 +218,12 @@ pub enum Expr {
     ApplyTypeof,
     /// `borrow` applied to the top of the runtime stack.
     ApplyBorrow,
+    /// `load` applied to the top of the runtime stack.
+    ApplyLoad,
+    /// `@name`: a raw builtin word (`@alloc`, `@list_push`, ...).
+    Builtin {
+        name: String,
+    },
     StackOp(StackOp),
     Array(Vec<Expr>),
     List(Vec<Expr>),
