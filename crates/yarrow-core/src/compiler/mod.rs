@@ -40,6 +40,10 @@ use types::{
     layout, primitive_ty, resolve, scalar_ty,
 };
 
+/// A variable binding that a `for` loop clobbered, so it can be restored at
+/// loop end: the name plus the previous binding (if any).
+type SavedLoopVar = (String, Option<(Variable, Ty, Own)>);
+
 /// The result of running a program's `main`, in a driver-displayable form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunResult {
@@ -2584,13 +2588,12 @@ impl Compiler {
             // own results share the payload value only as non-borrow copies
             // (variable reads), so comparing the borrow slot catches exactly
             // the unconsumed reference.
-            if let Some(r) = case_ref {
-                if stack.len() > sub_stack.len()
-                    && stack[sub_stack.len()].value == r.value
-                    && stack[sub_stack.len()].own == Own::Borrow
-                {
-                    stack.remove(sub_stack.len());
-                }
+            if let Some(r) = case_ref
+                && stack.len() > sub_stack.len()
+                && stack[sub_stack.len()].value == r.value
+                && stack[sub_stack.len()].own == Own::Borrow
+            {
+                stack.remove(sub_stack.len());
             }
             let results = stack.split_off(sub_stack.len());
             self.match_merge(b, merge, &mut results_ty, results)?;
@@ -2734,7 +2737,7 @@ impl Compiler {
         b.switch_to_block(body_blk);
         *stack = pre.clone();
         let idx = b.use_var(idx_v);
-        let mut saved: Vec<(String, Option<(cranelift_frontend::Variable, Ty, Own)>)> = Vec::new();
+        let mut saved: Vec<SavedLoopVar> = Vec::new();
         if let Some(name) = index
             && name != "_"
         {

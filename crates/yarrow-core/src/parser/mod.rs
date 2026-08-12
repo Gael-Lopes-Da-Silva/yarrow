@@ -340,16 +340,16 @@ impl Parser {
             // immediately (`reference<i32> case`), otherwise the tokens are an
             // ordinary condition expression and we rewind.
             let save = self.current;
-            if let Ok(ty) = self.parse_type() {
-                if self.match_kind(TokenKind::Case) {
-                    let body = self.body(&[TokenKind::End])?;
-                    self.expect(TokenKind::End, "expected 'end' after case block")?;
-                    cases.push(MatchCase {
-                        kind: MatchCaseKind::Type(ty),
-                        body,
-                    });
-                    continue;
-                }
+            if let Ok(ty) = self.parse_type()
+                && self.match_kind(TokenKind::Case)
+            {
+                let body = self.body(&[TokenKind::End])?;
+                self.expect(TokenKind::End, "expected 'end' after case block")?;
+                cases.push(MatchCase {
+                    kind: MatchCaseKind::Type(ty),
+                    body,
+                });
+                continue;
             }
             self.current = save;
 
