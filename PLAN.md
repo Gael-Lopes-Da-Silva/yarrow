@@ -348,6 +348,12 @@ host surface can shrink. **Done** (ownership checks deferred, see below).
   lookup, with an ambiguity warning when both match; `register_module_bindings`
   exposes only the item for item imports.
 - Author the modules in new syntax on top of the memory-access words:
+  - `std.mem` — `alloc`, `free`, `load`, `store`: wraps the raw memory words
+    (`@alloc`, `@free`, raw `@load`/`@store`) so end users never write `@`-
+    builtins directly. `alloc`/`free` are thin wrappers over the `@alloc`/
+    `@free` words; `load`/`store` expose the raw 64-bit word access. The raw
+    words themselves stay only as the compiler-level substrate `std.mem` is
+    built on.
   - `std.io` — `write_line`, `print`, `print_int`, `print_float` (over
     `write(1, ...)`; formatting loops in Yarrow).
   - `std.string` — `string_len`, `string_join`, comparisons.
@@ -361,7 +367,10 @@ host surface can shrink. **Done** (ownership checks deferred, see below).
   need them.
 - Honor `require` alias-vs-main-scope semantics everywhere.
 - Delete `emit_builtin` and the now-redundant runtime container/string/print
-  helpers; keep only the tiny host surface.
+  helpers; keep only the tiny host surface. The raw memory words
+  (`@alloc`/`@free`, raw `@load`/`@store`) are not deleted: `std.mem` is built
+  on them, and they are the only `@`-builtins that survive in user-visible
+  form behind `std.mem`.
 - Files: `compiler/modules.rs` (+ new `build.rs`, `lib/std/`),
   `compiler/mod.rs`, `runtime.rs`.
 - Gate: the full docs example program (`docs/syntax.yar`) compiles and runs.

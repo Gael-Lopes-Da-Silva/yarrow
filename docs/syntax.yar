@@ -318,6 +318,51 @@ memory_function function do
     # Region freed, dropping myListRegion
 end
 
+# Raw Memory Access: Pointers
+# pointer<T> is a typed raw address; the type is compile-time only, at runtime
+# it is just an address. This is how the std library reads and writes heap
+# headers directly (see Stage 4 of PLAN.md).
+Cell struct
+    i32 value
+end
+
+pointer_function function do
+    "std.mem" require mem # Import the manual memory management library
+
+    # mem.alloc n: allocate n raw bytes and push the address (a plain i64). The
+    # address coerces to pointer<T> when stored in a typed variable.
+    16 mem.alloc p mutable pointer<i32>
+
+    # Typed store: `pointer value store` writes the value at the address
+    p 42 store
+    # Typed load: `pointer load` reads the pointee back
+    p load  # 42
+    drop
+
+    # Pointer arithmetic: `pointer + int` keeps the pointer type (byte offset)
+    p 4 + q const pointer<i32> # An i32 slot 4 bytes further into the block
+    q 99 store
+    q load  # 99
+    drop
+
+    # Raw memory words: `addr value mem.store` writes a 64-bit word, `addr mem.load`
+    # reads one (no type checking, the address is a plain i64)
+    p 123 mem.store
+    p mem.load # 123
+    drop
+
+    # Member access auto-derefs through pointers: `cp.value` reads the pointee
+    # field, `cp.value 7 set` writes through the pointer
+    32 mem.alloc cp mutable pointer<Cell>
+    cp.value 7 set
+    cp.value # 7
+    drop
+
+    # mem.free returns the block to the allocator
+    cp mem.free
+    p mem.free
+end
+
 # Error Handling: Errors as values with unwrap and handle
 error_function function do
     risky_operation function do
@@ -419,6 +464,7 @@ main function do
     union_function call
     defer_function call
     memory_function call
+    pointer_function call
     error_function call
     example_function call
 
