@@ -1,27 +1,36 @@
 # Yarrow Implementation Plan
 
-Status of the language as specified in `docs/syntax.yar` versus the implemented pipeline in `crates/yarrow-core` (tokenizer → parser → compiler → Cranelift JIT).
+This plan tracks the Yarrow language as specified in `docs/syntax.yar` — the **source of truth** — against the implemented pipeline in `crates/yarrow-core` (tokenizer → parser → compiler → Cranelift JIT). It is written to be executed by a coding agent: each stage lists concrete tasks, the files involved, and an explicit pass/fail gate.
 
-`docs/syntax.yar` is the source of truth.
+## How to read this plan
 
-The compiler uses a stack/ownership/region model rather than explicit user-visible lifetime parameters. Safe references are validated through ownership, borrow, scope, and region information. Raw pointers are explicitly unsafe and do not participate in the safe borrow/lifetime model.
+- **Part 1 — Architecture**: the language's design model (ownership, safe references, modules).
+- **Part 2 — Unsafe memory model**: the safety boundary every unsafe feature must honor.
+- **Part 3 — Stages**: ordered implementation work, each with a **gate** (code that must compile, code that must fail).
+- **Parts 4–6**: open questions, definition of done, build commands.
 
----
+Whenever a section says "spec" it means `docs/syntax.yar`; where the implementation and the spec diverge, that divergence is called out explicitly and a task is listed to close it.
+
+## Memory model in one sentence
+
+Yarrow uses a **stack/ownership/region model rather than explicit user-visible lifetime parameters**. Safe references are validated through ownership, borrow, scope, and region information. Raw pointers are explicitly unsafe and do **not** participate in the safe borrow/lifetime model.
 
 ## Pipeline status
 
-- **Tokenizer** — complete for the current spec.
-- **Parser** — complete for the current AST.
-- **Compiler** — Stages 0–4 implemented; Stage 5 is the next major step.
-- **Runtime** — complete for the current host heap and runtime objects.
-- **Std library** — migration to pure-Yarrow source files is pending.
-- **Unsafe memory model** — syntax and compiler enforcement must be completed as part of the memory/stdlib work described below.
+| Component           | Status                                                    | Notes                                                                                           |
+| ------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Tokenizer           | ✅ Complete for the current spec                          | `crates/yarrow-core/src/tokenizer/`                                                             |
+| Parser              | ✅ Mostly complete                                        | One divergence from spec: `require` argument order (see [1.4](#14-modules-and-require-syntax)). |
+| Compiler            | 🟡 Stages 0–4 implemented                                 | Stage 5 is the next major step; unsafe enforcement (Stage 4) is not yet wired in.               |
+| Runtime             | ✅ Complete for the current host heap and runtime objects | `crates/yarrow-core/src/runtime.rs`                                                             |
+| Std library         | ⬜ Migration to pure-Yarrow source files pending          | Stage 5                                                                                         |
+| Unsafe memory model | ⬜ Syntax and compiler enforcement must be completed      | Stage 4                                                                                         |
 
 ---
 
-# Architecture notes
+# Part 1 — Architecture
 
-## Values and memory
+## 1.1 Values and memory
 
 Scalars live in registers.
 
@@ -41,9 +50,7 @@ Structs, arrays, lists, maps, and unions are heap-managed values.
 
 `pointer<T>` is a typed raw address. The pointer value itself is non-owning and does not cause automatic destruction.
 
----
-
-# Ownership model
+## 1.2 Ownership model
 
 Yarrow's safe memory model is based on **ownership scopes rather than explicit lifetime parameters**.
 
@@ -68,15 +75,11 @@ reference<'a, T>
 
 unless a future concrete use case proves that the structural ownership/region model is insufficient.
 
----
-
-# Safe references vs raw pointers
+## 1.3 Safe references vs raw pointers
 
 These are deliberately different concepts.
 
-## `reference<T>`
-
-A safe borrow.
+### `reference<T>` — a safe borrow
 
 The compiler tracks:
 
@@ -90,9 +93,7 @@ reference<T>
 
 and ensures the reference cannot outlive the owner or its region.
 
-## `pointer<T>`
-
-A raw, non-owning address.
+### `pointer<T>` — a raw, non-owning address
 
 The compiler knows its static pointee type but does **not** promise that the address:
 
@@ -107,37 +108,119 @@ Those guarantees are the programmer's responsibility inside an `unsafe` context.
 
 This deliberately avoids recreating Rust's complete lifetime/provenance system for raw pointers.
 
+## 1.4 Modules and `require` syntax
+
+### Spec syntax (current)
+
+`require` imports a dotted module path. The keyword comes **last**; an optional scope name sits between the path and the keyword:
+
+```yarrow
+"std.io" io require        # Import everything from io into a scope named io
+"std.math.sqrt" require    # Import a function into the main scope
+"std.math" require         # Import everything from math into main scope
+```
+
+General form:
+
+```text
+"<dotted.path>" [<scope>] require
+```
+
+| Form                      | Meaning                                         | Call site            |
+| ------------------------- | ----------------------------------------------- | -------------------- |
+| `"std.io" io require`     | Module imported into a named scope              | `io.write_line call` |
+| `"std.math.sqrt" require` | A single item (function) imported by plain name | `sqrt call`          |
+| `"std.math" require`      | Whole module imported into the main scope       | `sqrt call`          |
+
+A `require` may appear at top level or inside a function body (then scoped to that function). Modules load depth-first into the same JIT module, in dependency order, so `require` really imports code, not just symbols.
+
+### Path resolution rules
+
+1. `a.b.c` resolves module `a.b` first; if it defines function `c`, only `c` is imported (by plain name, or under the given scope). If both `a/b/c.yar` and function `c` exist, the **function wins** and the compiler warns about the ambiguity.
+2. Otherwise `a/b/c.yar` is imported as a module.
+3. If there is no parent module file (e.g. `std.io`), the full path is a module file (`std/io.yar`).
+
+### Current implementation and required change
+
+The AST node is already correct — `Stmt::Require { path, alias }` (`crates/yarrow-core/src/parser/ast.rs`). The tokenizer already has `require` as a keyword (`crates/yarrow-core/src/tokenizer/tokenize.rs`).
+
+The **parser** still accepts the _old_ argument order — `"std.io" require io` — in `parse_require` (`crates/yarrow-core/src/parser/mod.rs`): it pops the path off the operand stack and then reads the scope from the token _after_ the keyword. The spec now requires `"std.io" io require`, where the scope (if any) is pushed on the operand stack **before** the `require` keyword.
+
+**Task — align `parse_require` with the new order:**
+
+1. When `require` is seen, the top of the operand stack (`ops`) is either:
+   - `Expr::Variable { name }` → a scope name, with the path string below it; or
+   - `Expr::String { .. }` → the path directly (no scope).
+2. Rewrite `parse_require` to:
+   - if the top of `ops` is `Expr::Variable { name }`, pop it as the scope;
+   - pop the next value and require it to be the `Expr::String` path (else error `E207`, "'require' expects a string module path");
+   - build `Stmt::Require { path, alias }`.
+3. The `peek_after_is_structural` ambiguity helper (`parser/mod.rs`) is then only used by `parse_require`; remove it if it becomes dead code.
+
+**Gate:**
+
+```yarrow
+"std.io" io require        # must compile; io.write_line call works
+"std.math.sqrt" require    # must compile; sqrt call works (module file part of Stage 5)
+```
+
+```yarrow
+"std.io" require io        # old order: must be a syntax error
+```
+
+The compiler side (`crates/yarrow-core/src/compiler/mod.rs`) already matches the scope semantics: `load_one` records `RequiredModule { path, alias, program }`, and `register_module_bindings` binds functions under the alias (`scope.func`) or by plain name when there is no alias. Item imports (`"std.math.sqrt" require`) are currently approximated as single-function module files in `STD_MODULES` (`crates/yarrow-core/src/compiler/modules.rs`); the parent-module item resolution of rule 1 is completed in [Stage 5](#stage-5--std-library-in-pure-yarrow).
+
+## 1.5 The resulting memory architecture
+
+The key design decision behind the plan:
+
+```text
+                         Yarrow memory
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+          SAFE MEMORY                     UNSAFE MEMORY
+              │                               │
+      ┌───────┴────────┐             ┌────────┴─────────┐
+      │                │             │                  │
+    Stack            Regions     pointer<T>         raw memory
+      │                │             │                  │
+    Own/Borrow       Own/Drop     non-owning        programmer
+      │                │             address         responsibility
+      └───────┬────────┘             │                  │
+              │                      └────────┬─────────┘
+        reference<T>                          │
+              │                          unsafe block
+              │                              │
+       compiler proves                 compiler checks
+          validity                     acknowledgement
+```
+
+This is the **central architectural principle**: Yarrow's compiler does the hard lifetime reasoning for structured ownership, while raw memory is deliberately moved behind an explicit unsafe boundary rather than attempting to reproduce Rust's general lifetime machinery.
+
 ---
 
-# Unsafe memory model
+# Part 2 — The unsafe memory model
 
-Yarrow is safe by default.
+Yarrow is safe by default. Operations that bypass the normal ownership/borrow guarantees require an explicit unsafe context.
 
-Operations that bypass the normal ownership/borrow guarantees require an explicit unsafe context.
+## 2.1 Two separate concepts
 
-The language uses two separate concepts:
-
-```yarrow
-foo unsafe function
-```
-
-and:
+The language uses two distinct constructs with different meanings:
 
 ```yarrow
-unsafe
-    ...
-end
+foo unsafe function   # API contract: callers must use an unsafe block
+unsafe ... end        # lexical unsafe region inside a body
 ```
 
-They have different meanings.
+- `unsafe function` marks an API as requiring explicit acknowledgement from its caller.
+- `unsafe ... end` creates a lexical unsafe context for the operations in its body.
 
-## `unsafe function`
+## 2.2 `unsafe function`
 
 Marks an API as requiring explicit acknowledgement from its caller.
 
 An unsafe function may only be called while compiling inside an `unsafe` block.
-
-Example:
 
 ```yarrow
 pointer_function unsafe function do
@@ -151,9 +234,7 @@ A normal call:
 pointer_function call
 ```
 
-is a compile-time error.
-
-The caller must write:
+is a compile-time error. The caller must write:
 
 ```yarrow
 unsafe
@@ -161,11 +242,9 @@ unsafe
 end
 ```
 
-## `unsafe ... end`
+## 2.3 `unsafe ... end`
 
 Creates a lexical unsafe context.
-
-Example:
 
 ```yarrow
 unsafe
@@ -174,13 +253,9 @@ unsafe
 end
 ```
 
-Leaving `end` immediately restores the previous safe context.
+Leaving `end` immediately restores the previous safe context. `unsafe` is not a runtime operation.
 
-`unsafe` is not a runtime operation.
-
----
-
-# Unsafe does not disable safety checking
+## 2.4 Unsafe does not disable safety checking
 
 An unsafe block **must not** disable:
 
@@ -201,9 +276,7 @@ unsafe
     raw pointer operation
 ```
 
-is allowed.
-
-But:
+is allowed, but:
 
 ```text
 unsafe
@@ -220,9 +293,7 @@ It does **not** mean:
 
 > Turn off Yarrow's safety checker.
 
----
-
-# Unsafe operations
+## 2.5 Unsafe operations — safety metadata
 
 Unsafe operations are represented internally as operations/functions requiring an unsafe context.
 
@@ -238,23 +309,16 @@ Operation {
 
 or equivalent metadata.
 
-The compiler maintains an unsafe context while compiling a function body.
-
-Conceptually:
+The compiler maintains an unsafe context while compiling a function body:
 
 ```text
-unsafe_depth == 0
-    → safe context
-
-unsafe_depth > 0
-    → unsafe context
+unsafe_depth == 0  → safe context
+unsafe_depth > 0   → unsafe context
 ```
 
 An unsafe operation encountered while `unsafe_depth == 0` produces a compile-time error.
 
----
-
-# Unsafe functions
+## 2.6 Unsafe functions — calls
 
 Function metadata gains an unsafe flag:
 
@@ -265,11 +329,13 @@ Function {
 }
 ```
 
-A call to an unsafe function is rejected unless the current compilation context is unsafe.
+At every call:
 
-The unsafe requirement does **not** automatically propagate to the caller.
+```text
+callee.is_unsafe && !unsafe_context  → compile-time error
+```
 
-For example:
+The unsafe requirement does **not** automatically propagate to the caller:
 
 ```yarrow
 foo unsafe function do
@@ -283,13 +349,9 @@ bar function do
 end
 ```
 
-`bar` remains a normal safe function.
+`bar` remains a normal safe function. This keeps unsafe API boundaries explicit at call sites.
 
-This keeps unsafe API boundaries explicit at call sites.
-
----
-
-# Unsafe function bodies
+## 2.7 Unsafe function bodies
 
 Declaring a function `unsafe` does not automatically make its entire body unsafe.
 
@@ -321,9 +383,7 @@ end
 
 This keeps unsafe implementation regions auditable.
 
----
-
-# Raw pointers
+## 2.8 Raw pointers
 
 `pointer<T>` remains a typed raw address.
 
@@ -339,9 +399,7 @@ Properties:
 
 The compiler does **not** attempt to make arbitrary raw pointers participate in the safe borrow/lifetime system.
 
----
-
-# Unsafe pointer operations
+## 2.9 Unsafe pointer operations
 
 The following are unsafe:
 
@@ -355,9 +413,7 @@ The following are unsafe:
 - manually allocating untyped/raw memory;
 - unsafe functions exposing these capabilities.
 
-Pointer member access and write-through operations through `pointer<T>` are also unsafe.
-
-Example:
+Pointer member access and write-through operations through `pointer<T>` are also unsafe:
 
 ```yarrow
 unsafe
@@ -366,22 +422,16 @@ unsafe
 end
 ```
 
----
+## 2.10 Allocation and deallocation
 
-# Allocation and deallocation
-
-Raw allocation and deallocation are unsafe.
-
-Therefore:
+Raw allocation and deallocation are unsafe:
 
 ```text
 alloc → UNSAFE
 free  → UNSAFE
 ```
 
-The compiler must not allow ordinary safe code to manually allocate/free raw memory.
-
-For example:
+The compiler must not allow ordinary safe code to manually allocate/free raw memory. For example:
 
 ```yarrow
 32 mem.alloc
@@ -391,9 +441,7 @@ outside an unsafe block is a compile-time error.
 
 This does not prevent safe allocation APIs from being built later. A safe abstraction may internally use unsafe memory management and expose only a safe interface.
 
----
-
-# Raw memory host primitives
+## 2.11 Raw memory host primitives
 
 The compiler-level primitives:
 
@@ -404,9 +452,7 @@ The compiler-level primitives:
 @store
 ```
 
-are themselves unsafe.
-
-They cannot be used to bypass the unsafe mechanism.
+are themselves unsafe. They cannot be used to bypass the unsafe mechanism.
 
 For example:
 
@@ -416,9 +462,7 @@ foo function do
 end
 ```
 
-must fail.
-
-Whereas:
+must fail, whereas:
 
 ```yarrow
 foo function do
@@ -432,9 +476,7 @@ is permitted.
 
 The eventual standard library should hide these compiler-level primitives from normal user code where practical.
 
----
-
-# Host registry
+## 2.12 Host registry
 
 The host registry remains generic:
 
@@ -465,17 +507,15 @@ Safe host functions remain `Safe`.
 
 ---
 
-# Stage 0 — Restore the build ✅
+# Part 3 — Implementation stages
+
+## Stage 0 — Restore the build ✅
 
 Port the compiler to the new AST.
 
-**Done.**
+**Done.** No changes required.
 
-No changes required.
-
----
-
-# Stage 1 — New operators ✅
+## Stage 1 — New operators ✅
 
 **Done.**
 
@@ -488,47 +528,31 @@ No changes required.
 
 The existing ownership infrastructure remains the basis for safe references.
 
----
+## Stage 2 — Control flow ✅
 
-# Stage 2 — Control flow ✅
+**Done.** No changes required.
 
-**Done.**
+## Stage 3 — Unions ✅
 
-No changes required.
-
----
-
-# Stage 3 — Unions ✅
-
-**Done.**
-
-No changes required.
+**Done.** No changes required.
 
 Union member borrows continue to use the normal safe `reference<T>` model.
 
----
-
-# Stage 4 — Memory access and unsafe operations
+## Stage 4 — Memory access and unsafe operations
 
 This stage establishes the complete boundary between Yarrow's safe ownership model and its raw memory facilities.
 
-## 4.1 `pointer<T>`
+### 4.1 `pointer<T>`
 
-Enable:
+Enable `pointer<T>` as a typed raw address.
 
-```text
-pointer<T>
-```
-
-as a typed raw address.
-
-`Ty::Ptr(...)` carries compile-time pointee information.
+`Ty::Ptr(...)` carries compile-time pointee information (`crates/yarrow-core/src/compiler/types.rs`).
 
 `pointer<void>` / unknown pointee representations cannot be loaded/stored through typed operations unless explicitly using the permitted raw-memory form.
 
----
+> Already in place: `Ty::Ptr(u32)` exists, `pointer<T>` parses, and `pointer<void>` (code `0x50`) is recognized as a "generic pointer" that rejects typed `load`/`store`.
 
-## 4.2 Unsafe context
+### 4.2 Unsafe context
 
 Add parser/compiler support for:
 
@@ -540,16 +564,17 @@ end
 
 Implementation:
 
-- add an unsafe context to `FnState` / compiler context;
+- add an `unsafe` block form to the parser/AST (currently absent — the tokenizer/parser have no `unsafe` keyword);
+- add an unsafe context to `FnState` / the compiler context;
 - enter unsafe context when compiling an `unsafe` block;
 - restore the previous context after the block;
 - nested unsafe blocks are harmless;
 - unsafe context is lexical;
 - unsafe context never survives the block's `end`.
 
----
+Files: `crates/yarrow-core/src/tokenizer/tokenize.rs` (keyword), `parser/mod.rs`, `parser/ast.rs`, `compiler/mod.rs`.
 
-## 4.3 Unsafe function modifier
+### 4.3 Unsafe function modifier
 
 Add:
 
@@ -559,17 +584,10 @@ foo unsafe function
 
 to the parser/AST/function representation.
 
-Function metadata records:
+Function metadata records `is_unsafe`. At every call:
 
 ```text
-is_unsafe
-```
-
-At every call:
-
-```text
-callee.is_unsafe && !unsafe_context
-    → compile-time error
+callee.is_unsafe && !unsafe_context  → compile-time error
 ```
 
 The caller must explicitly enter:
@@ -580,9 +598,9 @@ unsafe
 end
 ```
 
----
+Files: `parser/mod.rs` (function parsing), `parser/ast.rs` (`Function`), `compiler/mod.rs` (function metadata + call check).
 
-## 4.4 Unsafe operation metadata
+### 4.4 Unsafe operation metadata
 
 Introduce a safety classification for compiler operations and host functions:
 
@@ -591,13 +609,11 @@ Safe
 Unsafe
 ```
 
-Unsafe operations are rejected outside an unsafe context.
+Unsafe operations are rejected outside an unsafe context. This must be implemented centrally so that future unsafe primitives cannot accidentally bypass the check.
 
-This must be implemented centrally so that future unsafe primitives cannot accidentally bypass the check.
+Currently the raw words `@load`/`@store` (in `emit_builtin`, `compiler/mod.rs`) and the typed `load`/`store` (`emit_load`, and the `Expr::Store` arm in `compile_expr`) compile unconditionally, and the `HostFn` registry (`runtime.rs`) carries no `safety` field. Add `safety: Safe | Unsafe` to `HostFn` and gate every unsafe word/host call on the compiler's unsafe context.
 
----
-
-## 4.5 Pointer load/store
+### 4.5 Pointer load/store
 
 Implement:
 
@@ -615,9 +631,9 @@ p.field value set
 
 These operations require unsafe context.
 
----
+> Already in place: `Expr::Load`/`Expr::Store` and their lowering exist (`emit_load` in `compiler/mod.rs`; the `Expr::Store` arm in `compile_expr`); member access through `Ty::Ptr` resolves in `base_struct`. What is missing is the unsafe-context gate (4.2 + 4.4).
 
-## 4.6 Pointer arithmetic
+### 4.6 Pointer arithmetic
 
 Implement:
 
@@ -629,9 +645,9 @@ as byte-offset arithmetic while preserving the pointer type.
 
 Pointer arithmetic requires unsafe context.
 
----
+> Already in place: `emit_bin` (`compiler/mod.rs`) lowers `pointer ± int` as byte-offset arithmetic and keeps the pointer type; `pointer<void>` and non-integer offsets are rejected. Missing: the unsafe gate.
 
-## 4.7 Raw memory access
+### 4.7 Raw memory access
 
 Raw operations:
 
@@ -640,13 +656,11 @@ Raw operations:
 @store
 ```
 
-require unsafe context.
+require unsafe context. They must not provide a safe-code escape hatch.
 
-They must not provide a safe-code escape hatch.
+> Already in place: `@load`/`@store` are lowered inline in `emit_builtin` (raw 64-bit word access). Missing: the unsafe gate.
 
----
-
-## 4.8 Allocation and free
+### 4.8 Allocation and free
 
 Expose:
 
@@ -661,9 +675,9 @@ Both require unsafe context.
 
 Pointers themselves remain non-owning values and are excluded from automatic scope destruction.
 
----
+> Already in place: the host functions `yarrow_alloc`/`yarrow_free` are registered in `HOST_FNS` (`runtime.rs`) and reachable through the generic host-call path. Missing: `safety: Unsafe` metadata and the gate.
 
-## 4.9 Raw pointer lifetime/alias rules
+### 4.9 Raw pointer lifetime/alias rules
 
 Do **not** implement a Rust-style raw-pointer lifetime/alias checker.
 
@@ -683,15 +697,11 @@ The compiler continues to enforce the normal ownership/borrow/region rules for *
 
 This is a deliberate design decision, not a deferred feature.
 
----
-
-## 4.10 Safety invariants
+### 4.10 Safety invariants
 
 The following must hold:
 
-### Safe code
-
-Cannot:
+**Safe code** cannot:
 
 ```text
 raw load
@@ -703,13 +713,9 @@ raw free
 call unsafe function
 ```
 
-### Unsafe code
+**Unsafe code** can perform those operations.
 
-Can perform those operations.
-
-### Both safe and unsafe code
-
-Must still obey:
+**Both safe and unsafe code** must still obey:
 
 ```text
 type checking
@@ -720,11 +726,7 @@ ordinary move checking
 control-flow checking
 ```
 
----
-
-## Stage 4 files
-
-Expected files:
+### Stage 4 files
 
 ```text
 docs/syntax.yar
@@ -745,9 +747,7 @@ compiler/context.rs
 
 depending on the final compiler organization.
 
----
-
-## Stage 4 gate
+### Stage 4 gate
 
 The following must compile:
 
@@ -783,9 +783,7 @@ when outside an unsafe block.
 
 An unsafe block must **not** allow an otherwise-invalid borrow or ownership operation.
 
----
-
-# Stage 5 — Std library in pure Yarrow
+## Stage 5 — Std library in pure Yarrow
 
 Move the std library to:
 
@@ -793,15 +791,18 @@ Move the std library to:
 crates/yarrow-core/lib/std/
 ```
 
-using the existing `build.rs`/`STD_MODULES` architecture.
+using the `build.rs`/`STD_MODULES` architecture.
 
----
+### 5.1 Build infrastructure
 
-## `std.mem`
+- Create `crates/yarrow-core/build.rs` that globs `lib/std/**/*.yar`, maps each file to its dotted module name (`io.yar` → `std.io`), embeds the sources (`include_str!`), and generates the `STD_MODULES` table currently hand-written in `compiler/modules.rs`.
+- Delete the inline `const STD_IO = r#"..."#` literals from `compiler/modules.rs`; keep `ModuleLoader` reading from the generated table.
+- Author the modules in the new Yarrow syntax on top of the memory-access words from Stage 4.
+- Layout is flat: one file per module (`io.yar`, `math.yar` with `sqrt` inside); sub-folder module files remain possible but std does not need them.
+
+### 5.2 `std.mem`
 
 `std.mem` exposes the raw memory API, but its functions are explicitly unsafe.
-
-Conceptually:
 
 ```yarrow
 alloc unsafe function
@@ -810,9 +811,7 @@ load unsafe function
 store unsafe function
 ```
 
-Their implementation uses the compiler-level raw primitives inside unsafe blocks.
-
-For example:
+Their implementation uses the compiler-level raw primitives inside unsafe blocks:
 
 ```yarrow
 alloc unsafe function do
@@ -834,43 +833,28 @@ instead of silently entering manual memory management.
 
 The compiler-level raw primitives remain an implementation substrate and cannot bypass unsafe checking.
 
----
+> Note: the current `docs/syntax.yar` example uses `mem.alloc` returning a plain `i64` address that coerces to `pointer<T>` when stored in a typed variable (`16 mem.alloc p mutable pointer<i32>`). Confirm this coercion is implemented or list it as a sub-task.
 
-## Other standard modules
+### 5.3 Item-import resolution (completes rule 1 of `require`)
 
-### `std.io`
+- `RequiredModule` may need an `item: Option<String>` (importing a single function from a parent module instead of a whole module file).
+- Parent-first resolver: parse the parent module, check the last path segment as a function, fall back to the module file, warn on ambiguity.
+- `register_module_bindings` exposes only the item for item imports.
+- Verify the scope form (`"std.io" io require`) and the plain form (`"std.math.sqrt" require`) both behave per [1.4](#14-modules-and-require-syntax).
 
-Safe where the API can preserve Yarrow's safety guarantees.
+### 5.4 Other standard modules
 
-Low-level OS pointer/syscall interfaces remain unsafe where appropriate.
+| Module       | Safety                                                     | Contents                                                                                                                   |
+| ------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `std.io`     | Safe where the API can preserve Yarrow's safety guarantees | `write_line`, `print`, `print_int`, `print_float`; low-level OS pointer/syscall interfaces remain unsafe where appropriate |
+| `std.string` | Safe                                                       | `len`, `join`, comparisons                                                                                                 |
+| `std.list`   | Safe                                                       | `push`, `get`, `set`, `len`                                                                                                |
+| `std.map`    | Safe                                                       | `get`, `set`, `len`                                                                                                        |
+| `std.region` | Safe                                                       | `make_region`, `put_region`, `free_region` where the compiler can establish ownership                                      |
+| `std.math`   | Safe                                                       | `sqrt` and friends (pure arithmetic)                                                                                       |
+| `std.fs`     | Safe high-level file ops                                   | `open_file`, `close_file`, `read_line`; low-level raw OS interfaces may be unsafe internally                               |
 
-### `std.string`
-
-Safe abstractions over strings.
-
-### `std.list`
-
-Safe list operations.
-
-### `std.map`
-
-Safe map operations.
-
-### `std.region`
-
-Safe region-management abstractions where the compiler can establish ownership.
-
-### `std.math`
-
-Safe arithmetic.
-
-### `std.fs`
-
-Safe high-level file operations; low-level raw OS interfaces may be unsafe internally.
-
----
-
-# Safe abstractions over unsafe code
+### 5.5 Safe abstractions over unsafe code
 
 The standard library and future libraries should be encouraged to use this pattern:
 
@@ -896,9 +880,27 @@ The user should not need `unsafe` merely because an implementation internally us
 
 This is an important part of keeping the language pleasant while still allowing systems-level programming.
 
----
+### 5.6 Host surface cleanup
 
-# Stage 6 — Remaining spec conformance
+- Delete `emit_builtin` and the now-redundant runtime container/string/print helpers where the pure-Yarrow std replaces them; keep only the tiny host surface.
+- The raw memory words (`@alloc`/`@free`, raw `@load`/`@store`) are **not** deleted: `std.mem` is built on them, and they are the only `@`-builtins that survive in user-visible form behind `std.mem`.
+- Honor `require` alias-vs-main-scope semantics everywhere.
+
+### Stage 5 files
+
+```text
+crates/yarrow-core/build.rs          (new)
+crates/yarrow-core/lib/std/          (new .yar sources)
+crates/yarrow-core/src/compiler/modules.rs
+crates/yarrow-core/src/compiler/mod.rs
+crates/yarrow-core/src/runtime.rs
+```
+
+### Stage 5 gate
+
+`docs/syntax.yar` compiles and runs end-to-end, including the `unsafe` regions and `mem.*` calls in `pointer_function`.
+
+## Stage 6 — Remaining spec conformance
 
 Continue with:
 
@@ -912,9 +914,7 @@ Continue with:
 
 Also verify that unsafe constructs are included in the final conformance suite.
 
----
-
-# Stage 6 ownership/borrow validation
+## Stage 6 — Ownership/borrow validation
 
 Before calling the ownership system complete, explicitly test:
 
@@ -947,7 +947,7 @@ Raw pointer validity is not checked by the safe borrow system; misuse is the res
 
 ---
 
-# Open design questions
+# Part 4 — Open design questions
 
 The previous pointer alias/lifetime question is **resolved**:
 
@@ -967,7 +967,7 @@ These should not expand into a general raw-pointer lifetime system.
 
 ---
 
-# Definition of done
+# Part 5 — Definition of done
 
 The compiler is feature-complete when:
 
@@ -993,12 +993,13 @@ end
 13. The std library is pure Yarrow except for the deliberately tiny host surface.
 14. Unsafe host/compiler primitives cannot bypass the unsafe boundary.
 15. Safe abstractions can encapsulate unsafe implementations.
-16. `docs/syntax.yar` compiles and runs.
-17. `cargo check` and `cargo clippy` remain green.
+16. `require` uses the current syntax `"<path>" [<scope>] require` and its resolution rules (see 1.4).
+17. `docs/syntax.yar` compiles and runs.
+18. `cargo check` and `cargo clippy` remain green.
 
 ---
 
-# Building and running
+# Part 6 — Building and running
 
 ```text
 cargo check
@@ -1008,32 +1009,4 @@ cargo run -- <file.yar>
 
 must remain green after every stage.
 
----
-
-## The resulting memory architecture
-
-The key design decision behind the updated plan is:
-
-```text
-                         Yarrow memory
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-          SAFE MEMORY                     UNSAFE MEMORY
-              │                               │
-      ┌───────┴────────┐             ┌────────┴─────────┐
-      │                │             │                  │
-    Stack            Regions     pointer<T>         raw memory
-      │                │             │                  │
-    Own/Borrow       Own/Drop     non-owning        programmer
-      │                │             address         responsibility
-      └───────┬────────┘             │                  │
-              │                      └────────┬─────────┘
-        reference<T>                          │
-              │                          unsafe block
-              │                              │
-       compiler proves                 compiler checks
-          validity                     acknowledgement
-```
-
-This is the part I would consider the **central architectural principle of the implementation plan**: Yarrow's compiler does the hard lifetime reasoning for structured ownership, while raw memory is deliberately moved behind an explicit unsafe boundary rather than attempting to reproduce Rust's general lifetime machinery.
+The driver lives at `src/main.rs` (the `yarrow-cli` crate is an empty stub); modules required from user files resolve relative to the source file's directory.
