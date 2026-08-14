@@ -533,12 +533,11 @@ crates/yarrow-core/lib/std/
 
 using the `build.rs`/`STD_MODULES` architecture.
 
-### 5.1 Build infrastructure
+### 5.1 Build infrastructure ✅
 
-- Create `crates/yarrow-core/build.rs` that globs `lib/std/**/*.yar`, maps each file to its dotted module name (`io.yar` → `std.io`), embeds the sources (`include_str!`), and generates the `STD_MODULES` table currently hand-written in `compiler/modules.rs`.
-- Delete the inline `const STD_IO = r#"..."#` literals from `compiler/modules.rs`; keep `ModuleLoader` reading from the generated table.
-- Author the modules in the new Yarrow syntax on top of the memory-access words from Stage 4.
-- Layout is flat: one file per module (`io.yar`, `math.yar` with `sqrt` inside); sub-folder module files remain possible but std does not need them.
+> **Done.** `crates/yarrow-core/build.rs` recursively globs `lib/std/**/*.yar`, maps each file to its dotted module name (`io.yar` → `std.io`, `a/b.yar` → `std.a.b`), and emits `STD_MODULES` into `OUT_DIR` using `include_str!`. `compiler/modules.rs` now `include!`s that generated table; the hand-written `const STD_IO`/`STD_MATH_SQRT`/etc. literals are deleted. The std modules (`io`, `math` with `sqrt` inside, `string`, `list`, `map`) are authored as flat `.yar` files under `lib/std/`. `cargo:rerun-if-changed` rebuilds on std-source edits. Verified: `"std.io" io require`, `"std.string" str require`, `"std.math" require` all load and run end-to-end.
+>
+> Note: `std.math.sqrt` (the old single-function item-import approximation) is now the module `std.math` containing `sqrt`; true item-import resolution is 5.3.
 
 ### 5.2 `std.mem`
 
