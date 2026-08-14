@@ -142,7 +142,7 @@ A `require` may appear at top level or inside a function body (then scoped to th
 
 ### Implementation status
 
-The compiler side (`crates/yarrow-core/src/compiler/mod.rs`) already matches the scope semantics: `load_one` records `RequiredModule { path, alias, program }`, and `register_module_bindings` binds functions under the alias (`scope.func`) or by plain name when there is no alias. Item imports (`"std.math.sqrt" require`) are currently approximated as single-function module files in `STD_MODULES` (`crates/yarrow-core/src/compiler/modules.rs`); the parent-module item resolution of rule 1 is completed in [Stage 5](#stage-5--std-library-in-pure-yarrow).
+All three forms now work as specified. The compiler side (`crates/yarrow-core/src/compiler/mod.rs`) records `RequiredModule { path, alias, item, program }` and binds functions under the alias (`scope.func`), by plain name for whole-module imports, or as a single item for `"std.math.sqrt" require` (parent-first resolution, per [5.3](#53-item-import-resolution-completes-rule-1-of-require)).
 
 ## 1.5 The resulting memory architecture
 
@@ -547,12 +547,9 @@ using the `build.rs`/`STD_MODULES` architecture.
 >
 > Verified: `mem.alloc`/`mem.store`/`mem.load`/`mem.free` round-trip (alloc → raw word store → raw word load → free) and typed `pointer<T>` access via an `alloc` result; all four functions reject safe-context calls with E370; existing typed-word and Stage 4 tests still pass.
 
-### 5.3 Item-import resolution (completes rule 1 of `require`)
+### 5.3 Item-import resolution (completes rule 1 of `require`) ✅
 
-- `RequiredModule` may need an `item: Option<String>` (importing a single function from a parent module instead of a whole module file).
-- Parent-first resolver: parse the parent module, check the last path segment as a function, fall back to the module file, warn on ambiguity.
-- `register_module_bindings` exposes only the item for item imports.
-- Verify the scope form (`"std.io" io require`) and the plain form (`"std.math.sqrt" require`) both behave per [1.4](#14-modules-and-require-syntax).
+**Done.** `RequiredModule` gained `item: Option<String>` (a single function imported from a parent module instead of a whole module file). `load_one` resolves via a parent-first resolver (`resolve_require`): `a.b.c` parses module `a.b` and, if it defines a top-level function `c`, imports only that function; otherwise the full path loads as a module file (`a/b/c.yar`). When both exist the function wins and the compiler warns (E-stderr) about the ambiguity. `register_module_bindings` binds only the item for item imports (plain name, or the single member under an item scope via `item_aliases`, which rejects other members with E330), and whole-module imports widen a previously item-only import. `ModuleLoader` gained `try_load` for probing. Both forms verified per [1.4](#14-modules-and-require-syntax): `"std.io" io require` (`io.write_line call`) and `"std.math.sqrt" require` (`sqrt call`); `std_smoke`, mem/gate, and Stage 4 regressions unchanged; clippy clean.
 
 ### 5.4 Other standard modules
 

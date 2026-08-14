@@ -1038,7 +1038,10 @@ impl Parser {
     /// `std.mem` functions used as `mem.load`/`mem.store`).
     fn expect_member_name(&mut self, message: &str) -> ParseResult<String> {
         let kind = self.peek_kind();
-        if matches!(kind, TokenKind::Identifier | TokenKind::Load | TokenKind::Store) {
+        if matches!(
+            kind,
+            TokenKind::Identifier | TokenKind::Load | TokenKind::Store
+        ) {
             Ok(self.advance().lexeme.clone())
         } else {
             Err(ParseError::new(message, self.peek_location(), "E217"))

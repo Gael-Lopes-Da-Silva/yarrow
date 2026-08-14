@@ -194,10 +194,15 @@ pub struct Compiler {
     /// Module alias -> module path (e.g. `io` -> `std.io`).
     aliases: HashMap<String, String>,
     /// Plain function name -> fully-qualified name for alias-less requires
-    /// (e.g. `sqrt` -> `std.math.sqrt::sqrt`).
+    /// (e.g. `sqrt` -> `std.math::sqrt`).
     plain_funcs: HashMap<String, String>,
-    /// Module paths already loaded, so a `require` is processed once.
-    loaded: std::collections::HashSet<String>,
+    /// Module path -> item imported from it, for each module already loaded, so
+    /// a `require` is processed once. `None` means the whole module was
+    /// imported.
+    loaded: HashMap<String, Option<String>>,
+    /// Module alias -> the single item it exposes, for item imports under a
+    /// scope (`"std.math.sqrt" s require` -> only `s.sqrt` resolves).
+    item_aliases: HashMap<String, String>,
     /// Error kind name (`CustomError`, `OutOfMemory`, ...) -> program-unique
     /// tag. Tags are interned once per program so `error.X ==` comparisons
     /// and `with T or Error` propagation agree across functions.
@@ -239,7 +244,8 @@ impl Compiler {
             modules: Vec::new(),
             aliases: HashMap::new(),
             plain_funcs: HashMap::new(),
-            loaded: std::collections::HashSet::new(),
+            loaded: HashMap::new(),
+            item_aliases: HashMap::new(),
             error_ids: HashMap::new(),
             unsafe_funcs: std::collections::HashSet::new(),
             finalized: false,
@@ -260,6 +266,7 @@ impl Compiler {
         self.aliases.clear();
         self.plain_funcs.clear();
         self.loaded.clear();
+        self.item_aliases.clear();
         self.enum_ids.clear();
         self.enums.clear();
         self.enum_consts.clear();
@@ -532,33 +539,77 @@ impl Compiler {
         Ok(())
     }
 
+    /// Load one module referenced by a `require` statement, deduplicated by the
+    /// resolved module path (not the require path).
+    ///
+    /// Path resolution follows rule 1 of the `require` spec: `a.b.c` first
+    /// tries module `a.b`; if it defines a function `c`, only `c` is imported
+    /// (the `item`). Otherwise the full path is a module file.
     fn load_one(
         &mut self,
         path: &str,
         alias: &Option<String>,
         out: &mut Vec<RequiredModule>,
     ) -> CResult<()> {
-        if self.loaded.contains(path) {
+        let (module_path, item) = self.resolve_require(path)?;
+        if let Some(existing_item) = self.loaded.get(&module_path) {
+            // Already loaded. If the previous import was only an item and this
+            // one imports the whole module, widen the existing entry.
+            if existing_item.is_some() && item.is_none() {
+                if let Some(existing) = out.iter_mut().find(|m| m.path == module_path) {
+                    existing.item = None;
+                }
+                self.loaded.insert(module_path, None);
+            }
             return Ok(());
         }
-        self.loaded.insert(path.to_string());
-        let source = self.loader.load(path)?;
+        self.loaded.insert(module_path.clone(), item.clone());
+        let source = self.loader.load(&module_path)?;
         let tokens = Tokenizer::new(source).tokenize()?;
         let sub = parse(tokens)?;
         self.load_requires(&sub, out)?;
         out.push(RequiredModule {
-            path: path.to_string(),
+            path: module_path,
             alias: alias.clone(),
+            item,
             program: sub,
         });
         Ok(())
     }
 
+    /// Resolve a `require` path per rule 1 of the spec: `a.b.c` first tries
+    /// module `a.b`; if it defines a function `c`, only `c` is imported.
+    /// Otherwise the full path is a module file. Warns (function wins) when
+    /// both a module file and the function exist.
+    fn resolve_require(&self, path: &str) -> CResult<(String, Option<String>)> {
+        if let Some((parent, last)) = path.rsplit_once('.')
+            && let Some(parent_source) = self.loader.try_load(parent)
+        {
+            let tokens = Tokenizer::new(parent_source).tokenize()?;
+            let parent_prog = parse(tokens)?;
+            if parent_prog
+                .items
+                .iter()
+                .any(|i| matches!(i, Stmt::Function(f) if f.name == last))
+            {
+                if self.loader.try_load(path).is_some() {
+                    eprintln!(
+                        "warning: '{}' is both a module and function '{}' of '{}'; importing the function",
+                        path, last, parent
+                    );
+                }
+                return Ok((parent.to_string(), Some(last.to_string())));
+            }
+        }
+        Ok((path.to_string(), None))
+    }
+
     /// Expose a loaded module's functions under their alias or plain names.
     ///
     /// With an alias (`"std.io" io require`), `io.func` resolves to the
-    /// module's `func`. Without an alias, every function is callable by its
-    /// plain name (`"std.math.sqrt" require` makes `sqrt call` work).
+    /// module's `func`. Without an alias, a whole-module import binds every
+    /// function by its plain name, and an item import (`"std.math.sqrt"
+    /// require`) binds only that single function.
     fn register_module_bindings(&mut self) -> CResult<()> {
         for m in &self.modules {
             if let Some(alias) = &m.alias {
@@ -573,6 +624,27 @@ impl Compiler {
                 } else {
                     self.aliases.insert(alias.clone(), m.path.clone());
                 }
+                // An item import under a scope exposes only that item
+                // (`"std.math.sqrt" s require` -> only `s.sqrt` resolves).
+                if let Some(item) = &m.item {
+                    self.item_aliases.insert(alias.clone(), item.clone());
+                }
+            } else if let Some(item) = &m.item {
+                // Item import by plain name: bind only the single function.
+                let fq = format!("{}::{}", m.path, item);
+                if let Some(prev) = self.plain_funcs.get(item)
+                    && prev != &fq
+                {
+                    return Err(CompileError::new(
+                        format!(
+                            "function '{item}' is exported by both '{}' and '{fq}'",
+                            prev
+                        ),
+                        Location::default(),
+                        "E380",
+                    ));
+                }
+                self.plain_funcs.insert(item.clone(), fq);
             } else {
                 for item in &m.program.items {
                     if let Stmt::Function(f) = item {
@@ -3984,6 +4056,19 @@ impl Compiler {
             Expr::Member { base, member } => {
                 if let Expr::Variable { name } = base.as_ref() {
                     if let Some(path) = self.aliases.get(name) {
+                        // An item import under a scope exposes only that item.
+                        if let Some(item) = self.item_aliases.get(name)
+                            && item != member
+                        {
+                            return Err(CompileError::new(
+                                format!(
+                                    "module '{}' only exports '{}' (not '{member}')",
+                                    path, item
+                                ),
+                                Location::default(),
+                                "E330",
+                            ));
+                        }
                         let fq = format!("{path}::{member}");
                         if !self.func_ids.contains_key(&fq) {
                             return Err(CompileError::new(
