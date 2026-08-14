@@ -534,7 +534,7 @@ impl Compiler {
 
     /// Expose a loaded module's functions under their alias or plain names.
     ///
-    /// With an alias (`"std.io" require io`), `io.func` resolves to the
+    /// With an alias (`"std.io" io require`), `io.func` resolves to the
     /// module's `func`. Without an alias, every function is callable by its
     /// plain name (`"std.math.sqrt" require` makes `sqrt call` work).
     fn register_module_bindings(&mut self) -> CResult<()> {

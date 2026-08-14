@@ -390,9 +390,25 @@ impl Parser {
         let location = self.peek_location();
         self.advance();
 
-        let path_expr = ops.pop().ok_or_else(|| {
-            ParseError::new("'require' expects a module path string", location, "E207")
-        })?;
+        // In the `"<path>" [<scope>] require` form, the scope name (if any)
+        // is pushed on the operand stack before the `require` keyword, above
+        // the path string. So the top of the stack is either the scope name
+        // or the path directly.
+        let (path_expr, alias) = match ops.pop() {
+            Some(Expr::Variable { name }) => {
+                let path = ops.pop().ok_or_else(|| {
+                    ParseError::new("'require' expects a module path string", location, "E207")
+                })?;
+                (path, Some(name))
+            }
+            other => (
+                other.ok_or_else(|| {
+                    ParseError::new("'require' expects a module path string", location, "E207")
+                })?,
+                None,
+            ),
+        };
+
         let path = match path_expr {
             Expr::String { value } => {
                 let bytes = literals::decode_string_literal(&value)
@@ -408,17 +424,6 @@ impl Parser {
                     "E207",
                 ));
             }
-        };
-
-        let alias = if self.peek_kind() == TokenKind::Identifier && !self.peek_after_is_structural()
-        {
-            // With no newline tokens the parser cannot tell an inline alias
-            // from the next statement, so `require io` binds `io` unless the
-            // identifier starts a declaration/statement (`main function`,
-            // `myVar mutable`, ...).
-            Some(self.advance().lexeme.clone())
-        } else {
-            None
         };
 
         Ok(Stmt::Require { path, alias })
@@ -966,38 +971,6 @@ impl Parser {
 
     fn peek_kind(&self) -> TokenKind {
         self.tokens[self.current].kind
-    }
-
-    /// Whether the token after the next one is a declaration/statement keyword
-    /// (used to tell an inline `require` alias from the next statement).
-    fn peek_after_is_structural(&self) -> bool {
-        let Some(tok) = self.tokens.get(self.current + 1) else {
-            return false;
-        };
-        matches!(
-            tok.kind,
-            TokenKind::Function
-                | TokenKind::Struct
-                | TokenKind::Enum
-                | TokenKind::Union
-                | TokenKind::Implement
-                | TokenKind::Mutable
-                | TokenKind::Const
-                | TokenKind::Static
-                | TokenKind::Set
-                | TokenKind::If
-                | TokenKind::For
-                | TokenKind::Match
-                | TokenKind::Defer
-                | TokenKind::Handle
-                | TokenKind::Return
-                | TokenKind::Break
-                | TokenKind::Continue
-                | TokenKind::End
-                | TokenKind::Else
-                | TokenKind::Case
-                | TokenKind::Require
-        )
     }
 
     fn peek_location(&self) -> Location {

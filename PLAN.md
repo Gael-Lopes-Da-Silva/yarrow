@@ -17,14 +17,14 @@ Yarrow uses a **stack/ownership/region model rather than explicit user-visible l
 
 ## Pipeline status
 
-| Component           | Status                                                    | Notes                                                                                           |
-| ------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Tokenizer           | ✅ Complete for the current spec                          | `crates/yarrow-core/src/tokenizer/`                                                             |
-| Parser              | ✅ Mostly complete                                        | One divergence from spec: `require` argument order (see [1.4](#14-modules-and-require-syntax)). |
-| Compiler            | 🟡 Stages 0–4 implemented                                 | Stage 5 is the next major step; unsafe enforcement (Stage 4) is not yet wired in.               |
-| Runtime             | ✅ Complete for the current host heap and runtime objects | `crates/yarrow-core/src/runtime.rs`                                                             |
-| Std library         | ⬜ Migration to pure-Yarrow source files pending          | Stage 5                                                                                         |
-| Unsafe memory model | ⬜ Syntax and compiler enforcement must be completed      | Stage 4                                                                                         |
+| Component           | Status                                                    | Notes                                                                             |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Tokenizer           | ✅ Complete for the current spec                          | `crates/yarrow-core/src/tokenizer/`                                               |
+| Parser              | ✅ Complete for the current AST                           | Includes the current `require` argument order (`"<path>" [<scope>] require`).     |
+| Compiler            | 🟡 Stages 0–4 implemented                                 | Stage 5 is the next major step; unsafe enforcement (Stage 4) is not yet wired in. |
+| Runtime             | ✅ Complete for the current host heap and runtime objects | `crates/yarrow-core/src/runtime.rs`                                               |
+| Std library         | ⬜ Migration to pure-Yarrow source files pending          | Stage 5                                                                           |
+| Unsafe memory model | ⬜ Syntax and compiler enforcement must be completed      | Stage 4                                                                           |
 
 ---
 
@@ -140,33 +140,7 @@ A `require` may appear at top level or inside a function body (then scoped to th
 2. Otherwise `a/b/c.yar` is imported as a module.
 3. If there is no parent module file (e.g. `std.io`), the full path is a module file (`std/io.yar`).
 
-### Current implementation and required change
-
-The AST node is already correct — `Stmt::Require { path, alias }` (`crates/yarrow-core/src/parser/ast.rs`). The tokenizer already has `require` as a keyword (`crates/yarrow-core/src/tokenizer/tokenize.rs`).
-
-The **parser** still accepts the _old_ argument order — `"std.io" require io` — in `parse_require` (`crates/yarrow-core/src/parser/mod.rs`): it pops the path off the operand stack and then reads the scope from the token _after_ the keyword. The spec now requires `"std.io" io require`, where the scope (if any) is pushed on the operand stack **before** the `require` keyword.
-
-**Task — align `parse_require` with the new order:**
-
-1. When `require` is seen, the top of the operand stack (`ops`) is either:
-   - `Expr::Variable { name }` → a scope name, with the path string below it; or
-   - `Expr::String { .. }` → the path directly (no scope).
-2. Rewrite `parse_require` to:
-   - if the top of `ops` is `Expr::Variable { name }`, pop it as the scope;
-   - pop the next value and require it to be the `Expr::String` path (else error `E207`, "'require' expects a string module path");
-   - build `Stmt::Require { path, alias }`.
-3. The `peek_after_is_structural` ambiguity helper (`parser/mod.rs`) is then only used by `parse_require`; remove it if it becomes dead code.
-
-**Gate:**
-
-```yarrow
-"std.io" io require        # must compile; io.write_line call works
-"std.math.sqrt" require    # must compile; sqrt call works (module file part of Stage 5)
-```
-
-```yarrow
-"std.io" require io        # old order: must be a syntax error
-```
+### Implementation status
 
 The compiler side (`crates/yarrow-core/src/compiler/mod.rs`) already matches the scope semantics: `load_one` records `RequiredModule { path, alias, program }`, and `register_module_bindings` binds functions under the alias (`scope.func`) or by plain name when there is no alias. Item imports (`"std.math.sqrt" require`) are currently approximated as single-function module files in `STD_MODULES` (`crates/yarrow-core/src/compiler/modules.rs`); the parent-module item resolution of rule 1 is completed in [Stage 5](#stage-5--std-library-in-pure-yarrow).
 
