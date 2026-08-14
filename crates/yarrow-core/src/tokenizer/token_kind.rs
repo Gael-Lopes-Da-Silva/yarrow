@@ -62,6 +62,7 @@ pub enum TokenKind {
     Static,
     Mutable,
     Set,
+    Unsafe,
 
     Struct,
     Implement,

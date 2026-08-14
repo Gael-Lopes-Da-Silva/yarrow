@@ -94,8 +94,25 @@ impl Parser {
 
                 TokenKind::Function => {
                     let name = self.pop_name(&mut ops)?;
-                    let func = self.parse_function(name)?;
+                    let func = self.parse_function(name, false)?;
                     stmts.push(Stmt::Function(func));
+                }
+
+                TokenKind::Unsafe => {
+                    if self.peek_next_kind() == TokenKind::Function {
+                        // `name unsafe function`: a function declared unsafe so
+                        // its body may use unsafe operations.
+                        let name = self.pop_name(&mut ops)?;
+                        self.advance();
+                        let func = self.parse_function(name, true)?;
+                        stmts.push(Stmt::Function(func));
+                    } else {
+                        // `unsafe ... end`: an unsafe block.
+                        self.advance();
+                        let body = self.body(&[TokenKind::End])?;
+                        self.expect(TokenKind::End, "expected 'end' after unsafe block")?;
+                        stmts.push(Stmt::Unsafe { body });
+                    }
                 }
 
                 TokenKind::Struct => {
@@ -433,7 +450,7 @@ impl Parser {
     // Declarations
     // ------------------------------------------------------------------
 
-    fn parse_function(&mut self, name: String) -> ParseResult<Function> {
+    fn parse_function(&mut self, name: String, is_unsafe: bool) -> ParseResult<Function> {
         self.expect(TokenKind::Function, "expected 'function'")?;
 
         let mut params = Vec::new();
@@ -456,6 +473,7 @@ impl Parser {
             params,
             body,
             returns,
+            is_unsafe,
         })
     }
 
@@ -530,7 +548,7 @@ impl Parser {
                 ));
             }
             let name = self.advance().lexeme.clone();
-            functions.push(self.parse_function(name)?);
+            functions.push(self.parse_function(name, false)?);
         }
         self.expect(TokenKind::End, "expected 'end' to close implement")?;
 
@@ -971,6 +989,13 @@ impl Parser {
 
     fn peek_kind(&self) -> TokenKind {
         self.tokens[self.current].kind
+    }
+
+    fn peek_next_kind(&self) -> TokenKind {
+        self.tokens
+            .get(self.current + 1)
+            .map(|t| t.kind)
+            .unwrap_or(TokenKind::Eof)
     }
 
     fn peek_location(&self) -> Location {

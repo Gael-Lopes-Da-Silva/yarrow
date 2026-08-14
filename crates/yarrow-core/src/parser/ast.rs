@@ -253,6 +253,9 @@ pub struct Function {
     pub params: Vec<Type>,
     pub body: Vec<Stmt>,
     pub returns: Vec<Type>,
+    /// `name unsafe function`: marks the function as unsafe, so its body may
+    /// use unsafe operations and calls to it require an unsafe context.
+    pub is_unsafe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,4 +375,9 @@ pub enum Stmt {
     },
     Break,
     Continue,
+    /// `unsafe ... end`: an unsafe block. Statements inside may perform
+    /// operations that are normally restricted (pointer access, host calls).
+    Unsafe {
+        body: Vec<Stmt>,
+    },
 }

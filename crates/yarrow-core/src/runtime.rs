@@ -910,6 +910,14 @@ pub extern "C" fn yarrow_print_hashmap(m: u64, kind: u64) {
 pub const KIND_I64: u64 = 4;
 pub const KIND_F64: u64 = 14;
 
+/// Whether a host function is only callable from an unsafe context (an
+/// `unsafe` block or an unsafe function). Safe functions are always callable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Safety {
+    Safe,
+    Unsafe,
+}
+
 /// A host function callable from Yarrow: its C ABI signature encoded with
 /// scalar kind codes plus the symbol's address. The compiler resolves `@name`
 /// words and calls to undefined functions against this table, so adding a host
@@ -920,6 +928,8 @@ pub struct HostFn {
     pub params: &'static [u64],
     pub returns: &'static [u64],
     pub address: usize,
+    /// Whether calling this function requires an unsafe context.
+    pub safety: Safety,
 }
 
 /// The tiny host surface: raw memory only (`alloc`/`free`) plus the scalar
@@ -933,156 +943,182 @@ pub static HOST_FNS: std::sync::LazyLock<Vec<HostFn>> = std::sync::LazyLock::new
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_alloc as *const () as usize,
+            safety: Safety::Unsafe,
         },
         HostFn {
             name: "free",
             params: &[KIND_I64],
             returns: &[],
             address: yarrow_free as *const () as usize,
+            safety: Safety::Unsafe,
         },
         HostFn {
             name: "str_new",
             params: &[KIND_I64, KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_str_new as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "str_len",
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_str_len as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "str_join",
             params: &[KIND_I64, KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_str_join as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "str_cmp",
             params: &[KIND_I64, KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_str_cmp as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "list_new",
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_list_new as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "list_len",
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_list_len as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "list_push",
             params: &[KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_list_push as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "map_new",
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_map_new as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "map_insert",
             params: &[KIND_I64, KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_map_insert as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "map_get",
             params: &[KIND_I64, KIND_I64, KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_map_get as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "map_len",
             params: &[KIND_I64],
             returns: &[KIND_I64],
             address: yarrow_map_len as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_str",
             params: &[KIND_I64],
             returns: &[],
             address: yarrow_print_str as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_int",
             params: &[KIND_I64],
             returns: &[],
             address: yarrow_print_int as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_float",
             params: &[KIND_F64],
             returns: &[],
             address: yarrow_print_float as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_newline",
             params: &[],
             returns: &[],
             address: yarrow_print_newline as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_array",
             params: &[KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_print_array as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_list",
             params: &[KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_print_list as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "print_hashmap",
             params: &[KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_print_hashmap as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "free_value",
             params: &[KIND_I64, KIND_I64],
             returns: &[],
             address: free_value as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "register_struct_descs",
             params: &[KIND_I64, KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_register_struct_descs as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "register_union_descs",
             params: &[KIND_I64, KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_register_union_descs as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "region_new",
             params: &[],
             returns: &[KIND_I64],
             address: yarrow_region_new as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "region_register",
             params: &[KIND_I64, KIND_I64, KIND_I64],
             returns: &[],
             address: yarrow_region_register as *const () as usize,
+            safety: Safety::Safe,
         },
         HostFn {
             name: "region_free",
             params: &[KIND_I64],
             returns: &[],
             address: yarrow_region_free as *const () as usize,
+            safety: Safety::Safe,
         },
     ]
 });

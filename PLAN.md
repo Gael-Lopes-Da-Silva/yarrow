@@ -17,14 +17,14 @@ Yarrow uses a **stack/ownership/region model rather than explicit user-visible l
 
 ## Pipeline status
 
-| Component           | Status                                                    | Notes                                                                             |
-| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Tokenizer           | ✅ Complete for the current spec                          | `crates/yarrow-core/src/tokenizer/`                                               |
-| Parser              | ✅ Complete for the current AST                           | Includes the current `require` argument order (`"<path>" [<scope>] require`).     |
-| Compiler            | 🟡 Stages 0–4 implemented                                 | Stage 5 is the next major step; unsafe enforcement (Stage 4) is not yet wired in. |
-| Runtime             | ✅ Complete for the current host heap and runtime objects | `crates/yarrow-core/src/runtime.rs`                                               |
-| Std library         | ⬜ Migration to pure-Yarrow source files pending          | Stage 5                                                                           |
-| Unsafe memory model | ⬜ Syntax and compiler enforcement must be completed      | Stage 4                                                                           |
+| Component           | Status                                                    | Notes                                                                         |
+| ------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Tokenizer           | ✅ Complete for the current spec                          | `crates/yarrow-core/src/tokenizer/`                                           |
+| Parser              | ✅ Complete for the current AST                           | Includes the current `require` argument order (`"<path>" [<scope>] require`). |
+| Compiler            | 🟡 Stages 0–4 implemented                                 | Stage 5 is the next major step.                                               |
+| Runtime             | ✅ Complete for the current host heap and runtime objects | `crates/yarrow-core/src/runtime.rs`; host fns carry `Safety` metadata.        |
+| Std library         | ⬜ Migration to pure-Yarrow source files pending          | Stage 5                                                                       |
+| Unsafe memory model | ✅ Completed (syntax + compiler enforcement)              | Stage 4                                                                       |
 
 ---
 
@@ -512,9 +512,20 @@ The existing ownership infrastructure remains the basis for safe references.
 
 Union member borrows continue to use the normal safe `reference<T>` model.
 
-## Stage 4 — Memory access and unsafe operations
+## Stage 4 — Memory access and unsafe operations ✅
 
 This stage establishes the complete boundary between Yarrow's safe ownership model and its raw memory facilities.
+
+**Done.** The unsafe machinery is fully wired through tokenizer → parser → AST → compiler:
+
+- `unsafe` keyword (tokenizer), `Stmt::Unsafe { body }` (AST), `Function.is_unsafe` (AST).
+- `unsafe ... end` block and `name unsafe function` both parse.
+- `FnState.unsafe_depth` tracks lexical unsafe context; `unsafe function` bodies start at depth 1.
+- `Safety { Safe, Unsafe }` on `HostFn` (`runtime.rs`); only `@alloc`/`@free` are `Unsafe`.
+- Every unsafe operation gates on `unsafe_depth == 0` → compile-time error `E370 "'{what}' requires an unsafe context"`:
+  - typed `load`/`store`, `@load`/`@store`, pointer arithmetic, member access / `set` through `pointer<T>`, `@alloc`/`@free`, calls to `unsafe function`s.
+- Unsafe does not disable any normal checking (types, stack, ownership, borrow, move, control flow).
+- Bonus fix: `with void` functions trapped at the end of their body (the `Void` return slot leaked into `st.returns`); now filtered, matching the signature handling in `declare_function`.
 
 ### 4.1 `pointer<T>`
 
@@ -546,6 +557,8 @@ Implementation:
 - unsafe context is lexical;
 - unsafe context never survives the block's `end`.
 
+> ✅ Implemented (`tokenize.rs`, `parser/mod.rs`, `parser/ast.rs`, `compiler/mod.rs`). The block sets `st.unsafe_depth` around its body; nested blocks increment/decrement safely.
+
 Files: `crates/yarrow-core/src/tokenizer/tokenize.rs` (keyword), `parser/mod.rs`, `parser/ast.rs`, `compiler/mod.rs`.
 
 ### 4.3 Unsafe function modifier
@@ -574,6 +587,8 @@ end
 
 Files: `parser/mod.rs` (function parsing), `parser/ast.rs` (`Function`), `compiler/mod.rs` (function metadata + call check).
 
+> ✅ Implemented. `Function.is_unsafe` is parsed by `parse_function`; the compiler registers unsafe function names (including the plain `Type::method` form for method calls) and `emit_call` rejects them outside an unsafe context with `E370`.
+
 ### 4.4 Unsafe operation metadata
 
 Introduce a safety classification for compiler operations and host functions:
@@ -586,6 +601,8 @@ Unsafe
 Unsafe operations are rejected outside an unsafe context. This must be implemented centrally so that future unsafe primitives cannot accidentally bypass the check.
 
 Currently the raw words `@load`/`@store` (in `emit_builtin`, `compiler/mod.rs`) and the typed `load`/`store` (`emit_load`, and the `Expr::Store` arm in `compile_expr`) compile unconditionally, and the `HostFn` registry (`runtime.rs`) carries no `safety` field. Add `safety: Safe | Unsafe` to `HostFn` and gate every unsafe word/host call on the compiler's unsafe context.
+
+> ✅ Implemented. `HostFn.safety: Safety` with `Safety { Safe, Unsafe }`; `@alloc`/`@free` are `Unsafe`, everything else `Safe`. `require_unsafe` is the single central gate (`E370`) used by every unsafe path: `emit_load`/`Expr::Store`, member access and field `set` through pointers, `@load`/`@store`, pointer arithmetic, `emit_host_call` (by `safety`), and `emit_call` (by unsafe function registration).
 
 ### 4.5 Pointer load/store
 
@@ -605,7 +622,7 @@ p.field value set
 
 These operations require unsafe context.
 
-> Already in place: `Expr::Load`/`Expr::Store` and their lowering exist (`emit_load` in `compiler/mod.rs`; the `Expr::Store` arm in `compile_expr`); member access through `Ty::Ptr` resolves in `base_struct`. What is missing is the unsafe-context gate (4.2 + 4.4).
+> Already in place: `Expr::Load`/`Expr::Store` and their lowering exist (`emit_load` in `compiler/mod.rs`; the `Expr::Store` arm in `compile_expr`); member access through `Ty::Ptr` resolves in `base_struct`. ✅ Unsafe-context gate added (4.2 + 4.4); `base_is_pointer` gates member access through pointer bases.
 
 ### 4.6 Pointer arithmetic
 
@@ -619,7 +636,7 @@ as byte-offset arithmetic while preserving the pointer type.
 
 Pointer arithmetic requires unsafe context.
 
-> Already in place: `emit_bin` (`compiler/mod.rs`) lowers `pointer ± int` as byte-offset arithmetic and keeps the pointer type; `pointer<void>` and non-integer offsets are rejected. Missing: the unsafe gate.
+> Already in place: `emit_bin` (`compiler/mod.rs`) lowers `pointer ± int` as byte-offset arithmetic and keeps the pointer type; `pointer<void>` and non-integer offsets are rejected. ✅ Unsafe gate added.
 
 ### 4.7 Raw memory access
 
@@ -632,7 +649,7 @@ Raw operations:
 
 require unsafe context. They must not provide a safe-code escape hatch.
 
-> Already in place: `@load`/`@store` are lowered inline in `emit_builtin` (raw 64-bit word access). Missing: the unsafe gate.
+> Already in place: `@load`/`@store` are lowered inline in `emit_builtin` (raw 64-bit word access). ✅ Unsafe gate added.
 
 ### 4.8 Allocation and free
 
@@ -649,7 +666,7 @@ Both require unsafe context.
 
 Pointers themselves remain non-owning values and are excluded from automatic scope destruction.
 
-> Already in place: the host functions `yarrow_alloc`/`yarrow_free` are registered in `HOST_FNS` (`runtime.rs`) and reachable through the generic host-call path. Missing: `safety: Unsafe` metadata and the gate.
+> Already in place: the host functions `yarrow_alloc`/`yarrow_free` are registered in `HOST_FNS` (`runtime.rs`) and reachable through the generic host-call path. ✅ `safety: Unsafe` metadata and the gate added.
 
 ### 4.9 Raw pointer lifetime/alias rules
 
@@ -757,6 +774,8 @@ when outside an unsafe block.
 
 An unsafe block must **not** allow an otherwise-invalid borrow or ownership operation.
 
+> ✅ Gate verified against the compiled binary: unsafe-function-in-unsafe-block and caller-in-unsafe-block compile and run; bare `pointer_function call`, bare `p load`/`p store`, bare `@load`/`@store`, pointer arithmetic, member access through a pointer, and bare `@alloc` all fail with `E370` outside an unsafe context; `with void` bodies no longer trap.
+
 ## Stage 5 — Std library in pure Yarrow
 
 Move the std library to:
@@ -807,7 +826,7 @@ instead of silently entering manual memory management.
 
 The compiler-level raw primitives remain an implementation substrate and cannot bypass unsafe checking.
 
-> Note: the current `docs/syntax.yar` example uses `mem.alloc` returning a plain `i64` address that coerces to `pointer<T>` when stored in a typed variable (`16 mem.alloc p mutable pointer<i32>`). Confirm this coercion is implemented or list it as a sub-task.
+> Note: the current `docs/syntax.yar` example uses `mem.alloc` returning a plain `i64` address that coerces to `pointer<T>` when stored in a typed variable (`16 mem.alloc p mutable pointer<i32>`). ✅ Confirmed implemented: an `i64` address coerces to `pointer<T>` in a typed variable declaration (exercised via `64 @alloc p mutable pointer<i64>`).
 
 ### 5.3 Item-import resolution (completes rule 1 of `require`)
 
@@ -929,12 +948,12 @@ The previous pointer alias/lifetime question is **resolved**:
 
 Remaining questions should be limited to implementation/spec details such as:
 
-- exact diagnostics for unsafe operations;
-- whether nested `unsafe` blocks are allowed;
-- whether `unsafe` is permitted in all block positions where ordinary blocks are permitted;
-- exact metadata representation for `Safe | Unsafe`;
+- exact diagnostics for unsafe operations → **resolved**: `E370 "'{what}' requires an unsafe context"`.
+- whether nested `unsafe` blocks are allowed → **resolved**: yes, harmless (depth counter).
+- whether `unsafe` is permitted in all block positions where ordinary blocks are permitted → **resolved**: `unsafe` is a statement form usable anywhere a statement is.
+- exact metadata representation for `Safe | Unsafe` → **resolved**: `Safety { Safe, Unsafe }` on `HostFn`; `unsafe_depth: u32` on `FnState`; `is_unsafe: bool` on `Function`.
 - whether low-level OS functions should be unsafe or whether safe wrappers should be the only public interface;
-- whether `pointer<void>` may be used with raw word operations;
+- whether `pointer<void>` may be used with raw word operations → **resolved**: `@load`/`@store` take plain `i64` addresses, so `pointer<void>` is not needed for raw words.
 - exact integer/pointer conversion rules.
 
 These should not expand into a general raw-pointer lifetime system.

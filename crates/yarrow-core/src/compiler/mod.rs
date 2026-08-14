@@ -120,6 +120,10 @@ struct FnState {
     /// Payload type of this function's `with T or Error` return envelope, if
     /// it returns an error. `None` means the function cannot error.
     error_value: Option<Ty>,
+    /// Number of active `unsafe ... end` blocks around the current statement.
+    /// `> 0` (or an unsafe function body) permits pointer access, raw memory
+    /// words and unsafe host functions.
+    unsafe_depth: u32,
     /// Whether the current block flow already ended with an explicit `return`
     /// (so the implicit fallthrough return must not be emitted on an empty
     /// compile-time stack). Reset after each compound statement whose merge
@@ -198,6 +202,9 @@ pub struct Compiler {
     /// tag. Tags are interned once per program so `error.X ==` comparisons
     /// and `with T or Error` propagation agree across functions.
     error_ids: HashMap<String, u32>,
+    /// Fully-qualified names of functions declared `unsafe`; calling them from
+    /// a non-unsafe context is rejected.
+    unsafe_funcs: std::collections::HashSet<String>,
     finalized: bool,
 }
 
@@ -234,6 +241,7 @@ impl Compiler {
             plain_funcs: HashMap::new(),
             loaded: std::collections::HashSet::new(),
             error_ids: HashMap::new(),
+            unsafe_funcs: std::collections::HashSet::new(),
             finalized: false,
         })
     }
@@ -258,6 +266,8 @@ impl Compiler {
         self.union_ids.clear();
         self.unions.clear();
         self.union_desc_ids.clear();
+        self.error_ids.clear();
+        self.unsafe_funcs.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
@@ -402,12 +412,23 @@ impl Compiler {
             for item in &prog.items {
                 match item {
                     Stmt::Function(f) => {
-                        self.declare_function(f, &self.item_name(path.as_deref(), &f.name))?;
+                        let name = self.item_name(path.as_deref(), &f.name);
+                        if f.is_unsafe {
+                            self.unsafe_funcs.insert(name.clone());
+                        }
+                        self.declare_function(f, &name)?;
                     }
                     Stmt::Implement(imp) => {
                         for f in &imp.functions {
                             let name = self
                                 .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
+                            if f.is_unsafe {
+                                self.unsafe_funcs.insert(name.clone());
+                                // Method calls resolve to `Type::method` without
+                                // the module prefix.
+                                self.unsafe_funcs
+                                    .insert(format!("{}::{}", imp.target, f.name));
+                            }
                             self.declare_function(f, &name)?;
                         }
                     }
@@ -495,6 +516,7 @@ impl Compiler {
                 Stmt::Defer { body } | Stmt::Handle { body, .. } => {
                     self.load_requires_stmts(body, out)?
                 }
+                Stmt::Unsafe { body } => self.load_requires_stmts(body, out)?,
                 Stmt::For { body, .. } => self.load_requires_stmts(body, out)?,
                 Stmt::Match {
                     cases, else_branch, ..
@@ -877,6 +899,34 @@ impl Compiler {
         }
     }
 
+    /// Whether a member access's base chain crosses a `pointer<T>` at any
+    /// level (a pointer-typed variable or a field that is itself a pointer).
+    /// Such access dereferences memory and requires an unsafe context.
+    fn base_is_pointer(&self, st: &FnState, base: &Expr) -> bool {
+        match base {
+            Expr::Variable { name } => {
+                matches!(st.vars.get(name).map(|(_, ty, _)| ty), Some(Ty::Ptr(_)))
+            }
+            Expr::Member {
+                base: inner,
+                member,
+            } => {
+                let field_is_ptr = self
+                    .base_struct(st, inner)
+                    .ok()
+                    .map(|sid| {
+                        self.struct_layout(sid)
+                            .fields
+                            .iter()
+                            .any(|f| f.name == *member && matches!(f.ty, Ty::Ptr(_)))
+                    })
+                    .unwrap_or(false);
+                field_is_ptr || self.base_is_pointer(st, inner)
+            }
+            _ => false,
+        }
+    }
+
     fn find_field(&self, sid: u32, member: &str) -> CResult<types::FieldLayout> {
         let lay = self.struct_layout(sid);
         lay.fields
@@ -1148,12 +1198,18 @@ impl Compiler {
             .iter()
             .map(|r| self.resolve_ty(r))
             .collect::<CResult<Vec<_>>>()?;
+        // `void` means "no value"; it contributes no return slot (matching
+        // `declare_function`, which skips it in the signature).
+        let returns: Vec<Ty> = returns.into_iter().filter(|t| *t != Ty::Void).collect();
         let error_value = error_return(&returns)?;
+        // An unsafe function's whole body is an unsafe context.
+        let unsafe_depth = u32::from(f.is_unsafe);
         let mut st = FnState {
             vars: HashMap::new(),
             loops: Vec::new(),
             returns,
             error_value,
+            unsafe_depth,
             frefs: HashMap::new(),
             rt: HashMap::new(),
             module: module.map(str::to_string),
@@ -1573,6 +1629,9 @@ impl Compiler {
                     st.vars.insert(name.clone(), (var, t, var_own));
                 }
                 Expr::Member { base, member } => {
+                    if self.base_is_pointer(st, base) {
+                        self.require_unsafe(st, "field 'set' through a pointer")?;
+                    }
                     let sid = self.base_struct(st, base)?;
                     let field = self.find_field(sid, member)?.clone();
                     self.compile_expr(b, st, stack, base)?;
@@ -1714,6 +1773,14 @@ impl Compiler {
             }
 
             Stmt::Move { target, source } => self.emit_move(b, st, stack, target, source)?,
+
+            Stmt::Unsafe { body } => {
+                // Compile the body with an active unsafe context.
+                st.unsafe_depth += 1;
+                let result = self.compile_body(b, st, stack, body);
+                st.unsafe_depth -= 1;
+                result?;
+            }
 
             // The parser extracts `fallback` out of `handle` bodies into
             // `Handle.fallback`, so a bare `Fallback` statement is unreachable
@@ -2017,6 +2084,19 @@ impl Compiler {
         Ok(b.inst_results(inst).to_vec())
     }
 
+    /// Reject an unsafe operation outside an `unsafe` block or unsafe
+    /// function. `what` names the operation for the error message.
+    fn require_unsafe(&self, st: &FnState, what: &str) -> CResult<()> {
+        if st.unsafe_depth == 0 {
+            return Err(CompileError::new(
+                format!("'{what}' requires an unsafe context"),
+                Location::default(),
+                "E370",
+            ));
+        }
+        Ok(())
+    }
+
     /// Coerce `slot` to the 64-bit type runtime functions expect (pointers and
     /// ≤ 8-byte scalars round-trip through the low bytes).
     fn rt_arg(&self, b: &mut FunctionBuilder, slot: Slot) -> CResult<Value> {
@@ -2047,6 +2127,9 @@ impl Compiler {
                     "E372",
                 )
             })?;
+        if host.safety == crate::runtime::Safety::Unsafe {
+            self.require_unsafe(st, &format!("@{name}"))?;
+        }
         let n = host.params.len();
         if stack.len() < n {
             return Err(CompileError::new(
@@ -2967,6 +3050,11 @@ impl Compiler {
                     });
                     return Ok(());
                 }
+                // Member access through a `pointer<T>` base dereferences
+                // memory, which requires an unsafe context.
+                if self.base_is_pointer(st, base) {
+                    self.require_unsafe(st, "member access through a pointer")?;
+                }
                 let sid = self.base_struct(st, base)?;
                 let field = self.find_field(sid, member)?;
                 let fty = field.ty;
@@ -3145,9 +3233,10 @@ impl Compiler {
             }
             Expr::Load { inner } => {
                 self.compile_expr(b, st, stack, inner)?;
-                self.emit_load(b, stack)?;
+                self.emit_load(b, st, stack)?;
             }
             Expr::Store { addr, value } => {
+                self.require_unsafe(st, "store through a pointer")?;
                 self.compile_expr(b, st, stack, addr)?;
                 self.compile_expr(b, st, stack, value)?;
                 let value = self.pop_slot(stack, "'store'")?;
@@ -3177,7 +3266,7 @@ impl Compiler {
             }
             Expr::ApplyTypeof => self.emit_typeof(b, st, stack)?,
             Expr::ApplyBorrow => self.emit_borrow(b, st, stack)?,
-            Expr::ApplyLoad => self.emit_load(b, stack)?,
+            Expr::ApplyLoad => self.emit_load(b, st, stack)?,
             Expr::Builtin { name } => {
                 // Per-name words (`@map_get`, `@string_len`, the raw memory
                 // words ...) first; anything not defined inline falls through
@@ -3193,7 +3282,13 @@ impl Compiler {
     /// Lower `pointer<T> load`: pop an address and push the pointee read from
     /// it. Handles are passed through as trivial values, matching `@list_get`
     /// (the runtime guards double frees).
-    fn emit_load(&mut self, b: &mut FunctionBuilder, stack: &mut Vec<Slot>) -> CResult<()> {
+    fn emit_load(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+    ) -> CResult<()> {
+        self.require_unsafe(st, "load through a pointer")?;
         let addr = self.pop_slot(stack, "'load'")?;
         let Ty::Ptr(code) = addr.ty else {
             return Err(CompileError::new(
@@ -3473,6 +3568,7 @@ impl Compiler {
             // 64-bit word, `addr value @store` writes one. Typed access goes
             // through the `pointer<T>` layer (`load`, member access, `set`).
             "load" => {
+                self.require_unsafe(st, "@load")?;
                 let addr = self.pop_slot(stack, "'@load'")?;
                 let val = b.ins().load(
                     irtypes::I64,
@@ -3487,6 +3583,7 @@ impl Compiler {
                 });
             }
             "store" => {
+                self.require_unsafe(st, "@store")?;
                 let value = self.pop_slot(stack, "'@store'")?;
                 let addr = self.pop_slot(stack, "'@store'")?;
                 let val = coerce(b, value.value, value.ty, Ty::I64, self.ptr_type)?;
@@ -3911,6 +4008,10 @@ impl Compiler {
                 ));
             }
         };
+        // Calling an `unsafe` function requires an unsafe context.
+        if self.unsafe_funcs.contains(&name) {
+            self.require_unsafe(st, &format!("call to '{name}'"))?;
+        }
         // Undefined function names fall back to the host registry: the call
         // is lowered generically from the table's signature.
         if !self.sig_tys.contains_key(&name) {
@@ -4253,6 +4354,7 @@ impl Compiler {
             _ => None,
         };
         if let Some((ptr, off, sub)) = ptr_math {
+            self.require_unsafe(st, "pointer arithmetic")?;
             let off = coerce(b, off.value, off.ty, Ty::I64, self.ptr_type)?;
             let addr = if sub {
                 b.ins().isub(ptr.value, off)
@@ -4624,6 +4726,7 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
             Stmt::Return { value: Some(v) } => walk_expr(v, out),
             Stmt::Return { value: None } => {}
             Stmt::Defer { body } => collect_strings(body, out),
+            Stmt::Unsafe { body } => collect_strings(body, out),
             Stmt::Handle { body, fallback } => {
                 collect_strings(body, out);
                 if let Some(fb) = fallback {

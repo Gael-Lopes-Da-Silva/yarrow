@@ -60,6 +60,7 @@ impl Tokenizer {
         keywords.insert("move".to_string(), TokenKind::Move);
         keywords.insert("load".to_string(), TokenKind::Load);
         keywords.insert("store".to_string(), TokenKind::Store);
+        keywords.insert("unsafe".to_string(), TokenKind::Unsafe);
         keywords.insert("fallback".to_string(), TokenKind::Fallback);
         keywords.insert("true".to_string(), TokenKind::True);
         keywords.insert("false".to_string(), TokenKind::False);
