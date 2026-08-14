@@ -3,7 +3,7 @@
 # Let's dive in with examples! Everything is evaluated on a stack.
 
 # Modules: Import with require
-"std.io" require io        # Import everything from io into a scope named io
+"std.io" io require        # Import everything from io into a scope named io
 # "std.math.sqrt" require  # Import a function into the main scope
 # "std.math" require       # Would import everything from math into main scope
 
@@ -266,7 +266,7 @@ end
 
 # Defer: Run at scope exit
 defer_function function do
-    "std.fs" require fs # Import only for this function scope
+    "std.fs" fs require # Import only for this function scope
 
     "myfile.txt" 'r' fs.open_file call unwrap # Will return a reference to the file
     file const reference<File>
@@ -282,8 +282,8 @@ end
 # Yarrow manages memory using stack ownership, explicit variable ownership,
 # borrowing, region-based heap management, and compile-time checks.
 memory_function function do
-    "std.list" require list      # Import functions like list_push
-    "std.region" require region  # Import functions like make_region, put_region or free_region
+    "std.list" list require      # Import functions like list_push
+    "std.region" region require  # Import functions like make_region, put_region or free_region
 
     # Stack Ownership: Stack owns temporary values, dropped when popped
     "temp"  # Pushes string, owned by stack
@@ -319,56 +319,60 @@ memory_function function do
 end
 
 # Raw Memory Access: Pointers
-# pointer<T> is a typed raw address; the type is compile-time only, at runtime
-# it is just an address. This is how the std library reads and writes heap
-# headers directly (see Stage 4 of PLAN.md).
+# pointer<T> is a typed raw address; the type is compile-time only, at runtime it is just an address
+# This is how the std library reads and writes heap headers directly
 Cell struct
     i32 value
 end
 
-pointer_function function do
-    "std.mem" require mem # Import the manual memory management library
+# Yarrow is safe by default, and every escape from that safety model is syntactically visible both where it is implemented and where it is consumed
+# The function is unsafe to call; callers must explicitly enter an unsafe block
+# Unsafe does not disable the borrow checker
+pointer_function unsafe function do
+    "std.mem" mem require # Import the manual memory management library
 
-    # mem.alloc n: allocate n raw bytes and push the address (a plain i64). The
-    # address coerces to pointer<T> when stored in a typed variable.
-    16 mem.alloc p mutable pointer<i32>
+    # We still need to use the unsafe block inside an unsafe function to mark where the unsafe operations are done in it's body
+    unsafe
+        # mem.alloc n: allocate n raw bytes and push the address (a plain i64). The
+        # address coerces to pointer<T> when stored in a typed variable.
+        16 mem.alloc p mutable pointer<i32>
 
-    # Typed store: `pointer value store` writes the value at the address
-    p 42 store
-    # Typed load: `pointer load` reads the pointee back
-    p load  # 42
-    drop
+        # Typed store: `pointer value store` writes the value at the address
+        p 42 store
+        # Typed load: `pointer load` reads the pointee back
+        p load  # 42
+        drop
 
-    # Pointer arithmetic: `pointer + int` keeps the pointer type (byte offset)
-    p 4 + q const pointer<i32> # An i32 slot 4 bytes further into the block
-    q 99 store
-    q load  # 99
-    drop
+        # Pointer arithmetic: `pointer + int` keeps the pointer type (byte offset)
+        p 4 + q const pointer<i32> # An i32 slot 4 bytes further into the block
+        q 99 store
+        q load  # 99
+        drop
 
-    # Raw memory words: `addr value mem.store` writes a 64-bit word, `addr mem.load`
-    # reads one (no type checking, the address is a plain i64)
-    p 123 mem.store
-    p mem.load # 123
-    drop
+        # Raw memory words: `addr value mem.store` writes a 64-bit word, `addr mem.load`
+        # reads one (no type checking, the address is a plain i64)
+        p 123 mem.store
+        p mem.load # 123
+        drop
 
-    # Member access auto-derefs through pointers: `cp.value` reads the pointee
-    # field, `cp.value 7 set` writes through the pointer
-    32 mem.alloc cp mutable pointer<Cell>
-    cp.value 7 set
-    cp.value # 7
-    drop
+        # Member access auto-derefs through pointers: `cp.value` reads the pointee
+        # field, `cp.value 7 set` writes through the pointer
+        32 mem.alloc cp mutable pointer<Cell>
+        cp.value 7 set
+        cp.value # 7
+        drop
 
-    # mem.free returns the block to the allocator
-    cp mem.free
-    p mem.free
+        # mem.free returns the block to the allocator
+        cp mem.free
+        p mem.free
+    end
 end
 
 # Error Handling: Errors as values with unwrap and handle
 error_function function do
     risky_operation function do
-        error.CustomError # create new error value
-        return
-    end with i32 or error
+        error.CustomError return # create new error value and returns it
+    end with void or error
 
     # risky_operation call unwrap # Pushes the i32 on success; on error, propagates error.CustomError (returned from this function since it can return an error). In a function that cannot error, unwrap would crash the program instead.
     # io.write_line call
@@ -402,7 +406,7 @@ Person implement
         reference<Person> # The reference needs to point to a mutable value
         i32
     do
-        "std.list" require list # Also works in a struct implementation function
+        "std.list" list require # Also works in a struct implementation function
 
         # Current stack: [reference<Person>, <i32>]
         score const i32
@@ -423,7 +427,7 @@ Person implement
 end
 
 example_function function do
-    "std.region" require region
+    "std.region" region require
 
     myRegion region.make_region call
     defer myRegion region.free_region call end
@@ -464,9 +468,12 @@ main function do
     union_function call
     defer_function call
     memory_function call
-    pointer_function call
     error_function call
     example_function call
+
+    unsafe # Unsafe functions need to be called in an unsafe block, else the compiler will do an error at compile time
+        pointer_function call
+    end
 
     "Hello, Yarrow!" io.write_line call # Here's how to write a line
 end # May or may not return something

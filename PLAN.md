@@ -1,438 +1,1039 @@
 # Yarrow Implementation Plan
 
-Status of the language as-specified in `docs/syntax.yar` versus the implemented
-pipeline in `crates/yarrow-core` (tokenizer -> parser -> compiler -> Cranelift JIT).
+Status of the language as specified in `docs/syntax.yar` versus the implemented pipeline in `crates/yarrow-core` (tokenizer → parser → compiler → Cranelift JIT).
 
-`docs/syntax.yar` is the source of truth. The front-end was rewritten in
-commits `1c236a4` (tokenizer) and `c56c1f7` (parser); the compiler port is
-**in progress** — the build is restored (Stage 0), the new operators are in
-(Stage 1), control flow is back (Stage 2: `for` over arrays/lists,
-`handle` + `fallback`, `match`, `break`/`continue`), unions now resolve,
-wrap and dispatch in `match` (Stage 3), and memory access is in the language
-(Stage 4: `pointer<T>` load/store/arithmetic + the `HOST_FNS` host bridge).
-Next: the std library as pure-Yarrow source files (Stage 5).
+`docs/syntax.yar` is the source of truth.
+
+The compiler uses a stack/ownership/region model rather than explicit user-visible lifetime parameters. Safe references are validated through ownership, borrow, scope, and region information. Raw pointers are explicitly unsafe and do not participate in the safe borrow/lifetime model.
+
+---
 
 ## Pipeline status
 
-- **Tokenizer** — complete for the new spec (`tokenizer/token_kind.rs`,
-  `tokenize.rs`). Dropped tokens: `DotDot Question Exclamation Ampersand Bar
-Colon SemiColon Comma At Arrow Equal Boolean Type While Default As Over`.
-  Added tokens/keywords: `typeof`, `unrot`, `borrow`, `move`, `fallback`,
-  `load`, `store` (`>=`/`<=` and `//` exist). There is no `while` keyword
-  anymore. The `@` token was reintroduced in Stage 4 for builtin words
-  (`@alloc`, `@print_int`, ...); `@name` lexes as a single token so the name
-  never collides with keywords.
-- **Parser** — complete for the new AST (`parser/mod.rs`, `ast.rs`,
-  `literals.rs`). No `Stmt::While`; `for` is the only loop and comes in three
-  forms; `match` cases dispatch either on a boolean condition or on a union
-  member type; `handle` carries a `fallback`; types can be used as values
-  (`typeof`); `move`/`borrow` are statements/operators, not `@` builtins.
-- **Compiler** — **builds** (Stage 0 done: `cargo check` green). The old
-  `While`/`Builtin`/`Over` variants are gone; `for` handles the three new
-  shapes (`emit_for` + `emit_cond_for`, `_` discards), `handle` patterns carry
-  `fallback`, and `match` dispatches on `MatchCaseKind` (both `Condition` and
-  `Type` work now). Stage 1 done: `typeof` (type values as runtime kind
-  codes, `Expr::TypeValue`/`Typeof`/`ApplyTypeof`), `borrow`
-  (`Expr::Borrow`/`ApplyBorrow` via `emit_borrow`), and `move`
-  (`Stmt::Move`/`emit_move`, use-after-move tracking limited to skip-free).
-  Stage 2 done: `for` iterates **lists** as well as arrays (list length via
-  `yarrow_list_len`, elements through `List.data` at `LIST_DATA_OFFSET`);
-  `handle` lowers its extracted `fallback` on the error path (the one-line
-  form works, error values matched with `error.X ==`, success payloads pass
-  through); the implicit function fallthrough return is skipped after an
-  explicit `return` (`FnState.terminated`, saved/restored around compound
-  statements); `collect_strings` walks `Handle.fallback`.
-  Stage 3 done: unions are tagged heap blocks (tag + inline payload); member
-  types must be distinct and ≤ 8 bytes; `Ty::Union(id)` resolves through
-  `union_ids`/`unions`; `coerce_or_wrap` wraps a raw value into a fresh union
-  block (the old member is freed on `set`); `match` type dispatch compares the
-  subject's tag against each case member index in order, each branch receives
-  the member as a `reference<Type>` (an auto-deref borrow) released at the end
-  of the case body, and the union is left untouched; variables track an `Own`
-  flag so borrowed case-body bindings are not freed at scope exit.
-  Stage 4 done: `pointer<T>` (a typed raw address) with `load`/`store` words,
-  byte-offset arithmetic (`pointer + int`), member auto-deref through pointers
-  and `set` write-through; raw memory via `@alloc`/`@free`; host functions are
-  resolved from a data table (`HOST_FNS`) through one generic host-call path
-  (`emit_host_call`) instead of per-name `extern` imports (`RUNTIME_SIGS`
-  deleted). The embedded std library still uses `@`-builtins, which now lex
-  again; `sqrt` is implemented in pure Yarrow (`std.math.sqrt`, a 32-iteration
-  Newton's method that binds its parameter to a variable); a few per-name
-  compiler arms (`@map_get`, `@string_len`, raw `@load`/`@store`, the container
-  printers) remain alongside the host fallback until Stage 5.
-- **Runtime** — complete for the current host heap (strings/lists/maps/
-  structs/arrays/unions, regions, kind codes). Stage 4 shrank the surface to a
-  data-registered `HOST_FNS` table (26 entries) that both `install_runtime`
-  and the compiler's generic host-call path iterate; per-name helpers
-  (string/list/map/print) remain until Stage 5 rewrites the std in Yarrow.
-  Container printing is a set of `@print_array`/`@print_list`/`@print_hashmap`
-  builtins (inlined kind-code arms + runtime printers); container element
-  kinds now **recurse** (`elem_code` encodes nested containers as full kind
-  codes, `elem_ty` decodes them), so nested containers print their contents
-  and are freed recursively. The kind-code format limits nesting depth: list
-  elements to 56 bits, hashmap keys to 32 bits, hashmap values to 24 bits —
-  deeper nesting (e.g. `hashmap<i64 hashmap<i64 i64>>`) is rejected with E344.
-- **Std library** — embedded Yarrow modules in `compiler/modules.rs`
-  (`std.io`, `std.math.sqrt`, `std.string`, `std.list`, `std.map`) written in
-  the old `@`-builtin syntax; must be rewritten as pure-Yarrow **source files**
-  in `crates/yarrow-core/lib/std/` (auto-discovered by a `build.rs`) and
-  extended with `std.math`, `std.region`, `std.fs`. `require` resolves a
-  dotted path as a _function in the parent module_ with a module-file
-  fallback (function wins on ambiguity, with a warning).
+- **Tokenizer** — complete for the current spec.
+- **Parser** — complete for the current AST.
+- **Compiler** — Stages 0–4 implemented; Stage 5 is the next major step.
+- **Runtime** — complete for the current host heap and runtime objects.
+- **Std library** — migration to pure-Yarrow source files is pending.
+- **Unsafe memory model** — syntax and compiler enforcement must be completed as part of the memory/stdlib work described below.
 
-### Current build
+---
 
-```
-cargo check    # green
-cargo clippy   # 3 pre-existing warnings, none in Stage 4 code: two
-               #   collapsible-if (compiler match/case, parser case) and one
-               #   very-complex-type (compiler for-index)
-cargo run -- <file.yar>   # runs new-syntax programs; @-builtin std modules
-                          #   lex again but still carry the old syntax
+# Architecture notes
+
+## Values and memory
+
+Scalars live in registers.
+
+Heap values are opaque `u64` handles pointing at runtime headers tagged by a kind code:
+
+```text
+KIND_STRING = 0x10
+KIND_LIST   = 0x20
+KIND_MAP    = 0x30
+KIND_STRUCT = 0x40
+KIND_PTR    = 0x50
+KIND_ARRAY  = 0x60
+KIND_UNION  = 0x70
 ```
 
-## Architecture notes
+Structs, arrays, lists, maps, and unions are heap-managed values.
 
-### Values and memory today
+`pointer<T>` is a typed raw address. The pointer value itself is non-owning and does not cause automatic destruction.
 
-Scalars live in registers. Heap values are opaque `u64` handles pointing at
-runtime headers tagged by a kind code (`runtime.rs`: `KIND_STRING = 0x10`,
-`KIND_LIST = 0x20`, `KIND_MAP = 0x30`, `KIND_STRUCT = 0x40`, `KIND_PTR = 0x50`,
-`KIND_ARRAY = 0x60`, `KIND_UNION = 0x70`). Structs are heap blocks whose fields
-are laid out with
-their own kind-code bytes (`compiler/mod.rs:527`); unions are heap blocks with
-a u64 member-index tag at byte 0 and the member payload inline at byte 8
-(`UNION_TAG_OFFSET`/`UNION_PAYLOAD_OFFSET`, `free_union` reads the payload by
-byte-addressed offsets). The compiler already emits
-the loads/stores that build and read these headers — but **Yarrow-level code
-cannot**: `pointer<T>` types are rejected (`compiler/types.rs:364`, `E307`)
-and there is no load/store/address-arithmetic word. That is the single biggest
-gap for the std library.
+---
 
-### Ownership model
+# Ownership model
 
-Stack values are dropped when popped; variables own their values and drop
-them at scope exit; `borrow` pushes a borrow reference (released on pop);
-`move` transfers ownership and marks the source moved; `defer` runs in reverse
-order; heap regions own registered values and free them as a unit; structs and
-arrays free their fields recursively. Compile-time checks reject use-after-move
-and popping/`set`-ing while borrowed.
+Yarrow's safe memory model is based on **ownership scopes rather than explicit lifetime parameters**.
 
-### Host bridge (target design)
+- Stack values are dropped when popped.
+- Variables own their values and release them at scope exit.
+- `move` transfers ownership.
+- `borrow` creates a `reference<T>` tied to the owning value's validity.
+- A value cannot be popped or mutated in ways prohibited while it is borrowed.
+- `defer` runs in reverse order.
+- Heap regions own registered values and free them as a unit.
+- Structs, arrays, unions, and other owning containers release their owned contents recursively.
+- Safe references cannot outlive their owning value or region.
+- The compiler should infer validity from these ownership relationships rather than expose Rust-style lifetime parameters.
 
-The language has **no named builtins and no per-name compiler code**. The
-compiler's call lowering is generic: an undefined function name falls back to a
-data table of host functions. The irreducible host surface is kept tiny —
-memory and OS I/O only:
+### Important principle
 
-- `alloc(size) -> ptr` (today: `yarrow_alloc`)
-- `free(ptr)` (today: `yarrow_free_value`)
-- OS syscalls for `std.io`/`std.fs`: `write(fd, ptr, len)`, `open(ptr, len,
-mode)`, `read(fd, ...)`, `close(fd)`
+Yarrow does **not** introduce explicit user-visible lifetime syntax such as:
 
-Everything else — strings, lists, maps, regions, formatting, I/O
-wrappers (`print` = `write(1, ...)`), and `sqrt` (already rewritten as a
-pure-Yarrow Newton's method in `std.math.sqrt`, no longer a host function) —
-is **implemented in Yarrow** in the std library, which requires the
-memory-access capability from Stage 4.
-
-### Libraries and `require`
-
-Language-source libraries live under `crates/yarrow-core/lib/`:
-
-- `lib/std/` — the embedded std library, authored as `.yar` source files and
-  embedded into the binary by a `build.rs` that globs `lib/std/**/*.yar`,
-  maps each file to its dotted module name (`math.yar` -> `std.math`), and
-  generates the `STD_MODULES` table consumed by `compiler/modules.rs`.
-- `lib/vendor/` — future: wrappers/rewrites of third-party libraries (e.g.
-  raylib).
-- `lib/core/` — future: the compiler's own non-user Yarrow code.
-
-`require` resolves a dotted path through the module tree; the last segment is
-an item lookup in the parent module with a module-file fallback:
-
-1. `a.b.c` resolves module `a.b` first; if it defines function `c`, only `c`
-   is imported (by plain name, or under an alias). If `a/b/c.yar` exists too,
-   the function wins and the compiler warns about the ambiguity.
-2. Otherwise `a/b/c.yar` is imported as a module.
-3. No parent module file (`std.io`) -> the full path is a module file
-   (`std/io.yar`).
-
-## Implemented so far
-
-Written against the old spec (as of commit `184218c`); all of this must be
-kept working through the port. Details are historical and will be validated
-again during Stage 0.
-
-- **Numeric/control core** — int `+ - * // % ^` (pow via inline loop), float
-  `/`, comparisons `== != > >= < <=`, logical/bitwise `and or xor not`,
-  `lshift`/`rshift`; `if`/`else`; stack ops `dup swap rot pop` (new: `unrot`,
-  `over` removed).
-- **Structs, field access, methods, `self`** — real layouts
-  (`layout`/`FieldLayout`/`StructLayout`, heap blocks via `yarrow_alloc`);
-  `{x 5 y 20}` literals (nested recursion, missing fields zeroed); `point.x`
-  loads / `10 point.x set` stores; `Point implement distance function` lowers
-  to `Point::distance`; `self` auto-bound to the receiver; auto-deref on
-  member reads.
-- **Match (value form)** — subject evaluated once and kept on the stack
-  (conditions `dup` it); first truthy case wins, else `else`; subject dropped
-  at the end; bare `match` runs conditions against the current stack.
-- **`for`** — over fixed-size arrays (`numbers value for`, `[a b c] i for`),
-  `break`/`continue`, nested loops. Will be reworked for the three new forms.
-- **Fixed-size arrays** — `array<T n>` with `[a b c]` literals, size inferred
-  when omitted, scalar-only elements (`E344` otherwise), heap blocks.
-- **Strings/lists/hashmaps** — literals and types, host handles, `+`
-  concatenation, `@string_*`/`@list_*`/`@map_*` builtins (all `@` builtins are
-  scheduled for deletion in favor of pure-Yarrow std).
-- **Modules/`require`** — `ModuleLoader` resolves dotted paths to embedded
-  std modules or `path/to/module.yar`; loads depth-first into the same JIT
-  module; alias vs. main-scope binding; CLI adds the source directory to the
-  search path.
-- **Error handling as values** — `error`/`Error` types, `with T or Error`
-  return unions, `error.X` creation, `unwrap` (propagate if the function can
-  error, else trap), `handle ... end` with `error.X == case` matching; error
-  kind names interned per program.
-- **Ownership** — stack/variable ownership, `move`/`borrow` operators
-  (`Stmt::Move`, `Expr::Borrow`/`ApplyBorrow`), reverse-order `defer`, heap
-  regions, recursive drops. `moved` is consulted to skip double frees, but a
-  _compile-time use-after-move error_ is still not enforced (matches the old
-  compiler).
-- **`typeof` / type values** — type values (`i32`, `string`, ...) push their
-  runtime kind code as an `I64`; `value typeof` pops the value (releasing heap
-  borrows) and pushes its static type code, so `myVar typeof i32 ==` is code
-  equality. References report their pointee type (`reference<T>` has physical
-  type `T`).
-- **Flexible `run_main`** — `RunResult` (`Void`/`Int`/`Bool`/`Float`/`Str`);
-  still rejects struct/container/pointer results, `with T or Error` mains and
-  128-bit/`F16` results (`E360`).
-- **Enums** — named constants with implicit/explicit ordinals, `Color.RED` and
-  bare `RED` push the value, `Color` resolves as a type, physical `I64`.
-
-## Roadmap
-
-Each stage ends with a green `cargo check` and, where noted, a runnable
-example from `docs/syntax.yar`.
-
-### Stage 0 — Restore the build ✅
-
-Port the compiler to the new AST. Purely mechanical. **Done.**
-
-- Fix the 14 pattern errors in `compiler/mod.rs`: remove `While` handling and
-  `emit_while` (the conditional loop becomes `for` with a bool `source`);
-  adapt `Stmt::For { source, value, index }`; add `fallback` to
-  `Stmt::Handle` patterns; match on `MatchCaseKind` (start with `Condition`);
-  rename `Expr::Builtin` → `Expr::TypeValue`; replace `StackOp::Over` with
-  `Unrot`.
-- Update the `load_requires_stmts` traversal for the new shapes.
-- Files: `compiler/mod.rs`.
-- Gate: `cargo check` green; core numeric/control programs run again. (`@`
-  std modules still fail to lex at runtime — expected until Stage 5.)
-
-### Stage 1 — New operators ✅
-
-**Done.** All gates pass.
-
-- `StackOp::Unrot` — `[1 2 3]` → `[3 1 2]` (landed in Stage 0).
-- **`typeof`** — `Expr::TypeValue`/`Typeof`/`ApplyTypeof`. Type values are
-  pushed as kind codes. `typeof` pops a value and pushes its _static_ type;
-  heap values arrive as borrows which `typeof` releases (leaving the data
-  owned); references report their pointee type. `==` on type values is code
-  equality (`myVar typeof i32 ==`).
-- **`borrow`** — `Expr::Borrow`/`ApplyBorrow` replace the `@borrow` path in
-  `emit_builtin`; keep borrow tracking.
-- **`move`** — `Stmt::Move { target, source }` replaces `@move`; keep
-  use-after-move errors.
-- Remove the dead `@borrow`/`@move` arms from `emit_builtin`.
-- Files: `compiler/mod.rs`, `compiler/types.rs` (type-value representation).
-- Gate: `typeof`/`borrow`/`move` examples from the docs compile and run.
-
-### Stage 2 — Control flow ✅
-
-- **`for`**, three forms: condition (`counter 5 < for` — the former `while`),
-  value (`numbers value for`), value+index (`numbers value index for`);
-  `_` discard bindings; arrays and lists as iterables; `break`/`continue`.
-- **`handle` + `fallback`** — `Stmt::Fallback` lowered via the extracted
-  `Handle.fallback` (incl. the one-line `risky call handle "x" fallback end`).
-- **`match` (value form)** — rework to `MatchCaseKind::Condition`.
-- Files: `compiler/mod.rs`.
-- Gate: docs `for`/`match`/`handle` examples run.
-- Verified: condition/value/index `for` over arrays and lists; `handle` with
-  fallback on error, payload pass-through on success, `error.X ==` match cases
-  with `else`; `unwrap` error propagation; string payloads/fallbacks; `break`/
-  `continue`; explicit `return` in `with T or Error` functions (no bogus
-  fallthrough re-return).
-
-### Stage 3 — Unions ✅
-
-- `UnionDecl` → a **tagged one-of type**: a member kind
-  code tag plus an inline payload sized to the largest member. Add
-  `Ty::Union`; `val`/`set` hold and switch the active member (old one
-  dropped).
-- **`match` type dispatch** — `MatchCaseKind::Type`: compare the tag against
-  each case type's kind code in order, `else` branch; each branch receives the
-  member as a `reference<Type>` that auto-derefs on read; the borrow is
-  released at the end of the match, leaving the union untouched. Validate:
-  member types distinct, case type must be a member.
-- Files: `compiler/mod.rs`, `compiler/types.rs`, `runtime.rs`.
-- Gate: docs `union_function` example compiles and runs.
-- **Done.** Unions lower to tagged heap blocks: `Ty::Union(id)` (kind code
-  `0x70 | (id << 8)`), union/desc tables in the compiler, `coerce_or_wrap`
-  wraps raw values (VarDecl, `set`, field stores, call args/returns) and frees
-  the previous member on `set`; `match` dispatch compares the loaded tag
-  against member indices, pushes the payload as a borrow, and removes the
-  unconsumed borrow before merging branches (verified against an empty-case
-  edge case where the parser folds `dup * drop` away); `reference<T>` resolves
-  transparently, so variables now carry an `Own` flag in `FnState.vars` to
-  avoid freeing borrowed case-body bindings at scope exit; `free_union`
-  registered and called through `KIND_UNION` (payload read is byte-addressed).
-- Verified: empty-case union match, `dup *` on the auto-deref member, string
-  concat through `reference<string>`, `set` switching the active member and
-  re-matching, structs/`self`/`for`/borrow+move regression, error cases
-  (duplicate member, empty union, non-member case type, Type-case on non-union
-  subject), `cargo check` green.
-
-### Stage 4 — Memory access in the language (largest stage) ✅
-
-Gives the std library the ability to manipulate heap headers directly, so the
-host surface can shrink. **Done** (ownership checks deferred, see below).
-
-- Enable `pointer<T>` (remove `E307`): a typed raw pointer, represented as an
-  address; type information is compile-time. `Ty::Ptr(u32)` carries the
-  pointee's container element code (`0x50` = generic/unknown pointee, from
-  `pointer<void>` or unencodable pointees; loading/storing through `0x50` is
-  rejected).
-- Typed **load** (auto-deref reads, as `reference<T>` already does) and
-  **store** through pointers (extend `set`), plus **address arithmetic**
-  (pointer + byte offset; integer/pointer conversions as needed).
-  - `p load` → `Expr::Load` (word, or postfix `p load`-style via
-    `Expr::ApplyLoad`); `addr value store` → `Expr::Store`; `pointer + int`
-    keeps the pointer type, pointers are rejected for non-address ops.
-  - `set`/member reads auto-deref through `Ty::Ptr` (`cp.value` reads the
-    pointee field; `cp.value 123 set` writes through it).
-  - Pointers are trivial (not heap): excluded from `is_heap`, never freed by
-    scope drops.
-- Expose `alloc`/`free` to Yarrow through the generic host bridge.
-- Extend the ownership/borrow/region compile-time checks so raw pointers
-  cannot alias a borrowed value or outlive their region. **Deferred**: not
-  enforced; pointers are treated as trivial values (matching the old
-  compiler's laxness). Left as an open design question.
-- **Host registry + generic lowering** — a data table
-  `{name, signature, extern "C" fn}` in `runtime.rs` and one generic
-  host-call path in the compiler (no per-name match arms). Replace the
-  ad-hoc `extern` symbol imports with it. `HOST_FNS` (a `LazyLock<Vec<HostFn>>`
-  table of 24 entries) drives both `install_runtime` and
-  `declare_runtime_imports`; `emit_host_call` lowers any `@name` or
-  undefined-function call generically (pop params in order, coerce, call, push
-  returns, claim ownership for heap results). `RUNTIME_SIGS` deleted; a few
-  per-name `emit_builtin` arms (`@map_get`, `@string_*`/`@list_*` getters, raw
-  `@load`/`@store`) remain and fall back to the registry via a bool return.
-- Files: `docs/syntax.yar` (spec), tokenizer/parser (`At` token + `load`/
-  `store` keywords, `Expr::Load`/`Store`/`Builtin`), `compiler/mod.rs`,
-  `compiler/types.rs`, `runtime.rs`.
-- Gate: hand-written Yarrow functions can allocate, read/write headers and
-  build/free heap values (e.g. a list push by hand). Verified with a Stage 4
-  demo: `@alloc`/`@free` raw memory, `pointer<i32>` load/store, pointer +
-  offset, raw `@load`/`@store`, `pointer<Cell>` auto-deref read and
-  write-through `set`.
-
-### Stage 5 — Std library in pure Yarrow
-
-- Move the std to real source files: create `crates/yarrow-core/lib/std/`,
-  add a `build.rs` that globs `lib/std/**/*.yar` into the generated
-  `STD_MODULES` table (`include_str!` per entry, `rerun-if-changed` on the
-  directory), and delete the inline `const STD_IO = r#"..."#` literals from
-  `compiler/modules.rs`.
-- Rework `require` resolution: `RequiredModule` gains `item: Option<String>`;
-  a parent-first resolver (parse the parent module, check the last segment as
-  a function, fall back to the module file) replaces the one-path-one-file
-  lookup, with an ambiguity warning when both match; `register_module_bindings`
-  exposes only the item for item imports.
-- Author the modules in new syntax on top of the memory-access words:
-  - `std.mem` — `alloc`, `free`, `load`, `store`: wraps the raw memory words
-    (`@alloc`, `@free`, raw `@load`/`@store`) so end users never write `@`-
-    builtins directly. `alloc`/`free` are thin wrappers over the `@alloc`/
-    `@free` words; `load`/`store` expose the raw 64-bit word access. The raw
-    words themselves stay only as the compiler-level substrate `std.mem` is
-    built on.
-  - `std.io` — `write_line`, `print`, `print_int`, `print_float` (over
-    `write(1, ...)`; formatting loops in Yarrow).
-  - `std.string` — `string_len`, `string_join`, comparisons.
-  - `std.list` — `list_push`, `list_get`, `list_set`, `list_len`.
-  - `std.map` — `map_get`, `map_set`, `map_len`.
-  - `std.region` — `make_region`, `put_region`, `free_region`.
-  - `std.math` — `sqrt` and friends (pure arithmetic).
-  - `std.fs` — `open_file`, `close_file`, `read_line`.
-- Layout is flat: one file per module (`io.yar`, `math.yar` with `sqrt`
-  inside, ...); sub-folder module files remain possible but std does not
-  need them.
-- Honor `require` alias-vs-main-scope semantics everywhere.
-- Delete `emit_builtin` and the now-redundant runtime container/string/print
-  helpers; keep only the tiny host surface. The raw memory words
-  (`@alloc`/`@free`, raw `@load`/`@store`) are not deleted: `std.mem` is built
-  on them, and they are the only `@`-builtins that survive in user-visible
-  form behind `std.mem`.
-- Files: `compiler/modules.rs` (+ new `build.rs`, `lib/std/`),
-  `compiler/mod.rs`, `runtime.rs`.
-- Gate: the full docs example program (`docs/syntax.yar`) compiles and runs.
-
-### Stage 6 — Remaining spec conformance
-
-Remaining old milestones reviewed against the new spec:
-
-- **Literal smallest-fit typing** — `42 → u8`, `-900 → i16`, `1_000 → u16`,
-  `3.14 → f16` (the tokenizer/parser already keep lexemes lossless; the
-  compiler currently pins ints to `I64` and floats to `F64`).
-- **`drop` semantics** — the spec: `pop` removes one value, `drop` empties the
-  whole stack and releases every borrow; they currently lower identically.
-- **128-bit numbers** — `i128/u128/f128` arithmetic, comparisons and
-  float conversions (removes `E310`).
-- **Float `%`/`^`** — removes `E334`.
-- **`run_main` coverage** — decide which remaining result kinds to support.
-- **Fixed-array indexing** — **dropped**: the new spec has no indexing syntax
-  (iteration is via `for`).
-- Gate: the full docs example runs; no `E301`–`E308` remnants for spec
-  features; build green with the std library fully in Yarrow except the tiny
-  host surface.
-
-## Open design questions
-
-To be settled during Stage 4, not blocking earlier stages:
-
-- How pointer arithmetic is spelled (pointer + int ops vs. a dedicated offset
-  word) and whether `alloc` returns `pointer<void>` or a `u64`. **Decided**:
-  `pointer + int` byte-offset arithmetic keeps the pointer type (int/pointer
-  conversions remain via the pre-existing null/round-trip coercion); `@alloc`
-  returns a plain `i64` address (interchangeable with `pointer<void>` via
-  coercion, and store/load on it are the raw word forms). `alloc` is exposed
-  as the host function `alloc` (`@alloc`).
-- Alias rules: can a raw pointer alias a borrowed value without tripping the
-  compile-time checks, and how regions guard raw pointers. **Open**: raw
-  pointers are treated as trivial values today; the ownership checks are
-  deferred until the std rewrite (Stage 5) shows what is needed.
-- Whether `pointer<T>` load/store needs new syntax or reuses the
-  `reference<T>` auto-deref model with a store through it. **Decided**: both —
-  explicit `load`/`store` words for the raw forms, and the `reference<T>`
-  auto-deref model (member reads and `set` write-through) already applies to
-  pointers through `Ty::Ptr` resolution in `base_struct`.
-
-## Definition of done
-
-The compiler is feature-complete when `cargo check` is green, the new-front-end
-port (Stages 0–3) is in place, Yarrow has generic memory access with the tiny
-host surface (Stage 4), the std library is pure Yarrow authored as source
-files under `crates/yarrow-core/lib/std/`, embedded by `build.rs`, with
-`require` resolution matching the spec (Stage 5), the spec's full example
-program (`docs/syntax.yar`) compiles and runs, and the remaining
-spec-conformance items (Stage 6) match `docs/syntax.yar`.
-
-## Building and running
-
-```
-cargo check                       # must stay green after every stage
-cargo clippy                      # must stay green after every stage
-cargo run -- <file.yar>           # tokenize + parse + compile + run
+```text
+reference<'a, T>
 ```
 
-The driver lives at `src/main.rs` (the `yarrow-cli` crate is an empty stub);
-modules required from user files resolve relative to the source file's
-directory.
+unless a future concrete use case proves that the structural ownership/region model is insufficient.
+
+---
+
+# Safe references vs raw pointers
+
+These are deliberately different concepts.
+
+## `reference<T>`
+
+A safe borrow.
+
+The compiler tracks:
+
+```text
+owner
+  ↓
+borrow
+  ↓
+reference<T>
+```
+
+and ensures the reference cannot outlive the owner or its region.
+
+## `pointer<T>`
+
+A raw, non-owning address.
+
+The compiler knows its static pointee type but does **not** promise that the address:
+
+- is valid,
+- is aligned,
+- points to a live object,
+- is within its original allocation,
+- does not alias another pointer,
+- or remains valid after the allocation is freed.
+
+Those guarantees are the programmer's responsibility inside an `unsafe` context.
+
+This deliberately avoids recreating Rust's complete lifetime/provenance system for raw pointers.
+
+---
+
+# Unsafe memory model
+
+Yarrow is safe by default.
+
+Operations that bypass the normal ownership/borrow guarantees require an explicit unsafe context.
+
+The language uses two separate concepts:
+
+```yarrow
+foo unsafe function
+```
+
+and:
+
+```yarrow
+unsafe
+    ...
+end
+```
+
+They have different meanings.
+
+## `unsafe function`
+
+Marks an API as requiring explicit acknowledgement from its caller.
+
+An unsafe function may only be called while compiling inside an `unsafe` block.
+
+Example:
+
+```yarrow
+pointer_function unsafe function do
+    ...
+end
+```
+
+A normal call:
+
+```yarrow
+pointer_function call
+```
+
+is a compile-time error.
+
+The caller must write:
+
+```yarrow
+unsafe
+    pointer_function call
+end
+```
+
+## `unsafe ... end`
+
+Creates a lexical unsafe context.
+
+Example:
+
+```yarrow
+unsafe
+    p load
+    p 42 store
+end
+```
+
+Leaving `end` immediately restores the previous safe context.
+
+`unsafe` is not a runtime operation.
+
+---
+
+# Unsafe does not disable safety checking
+
+An unsafe block **must not** disable:
+
+- type checking,
+- stack-effect checking,
+- ownership checking,
+- borrow checking,
+- move checking,
+- region checking for safe references,
+- normal control-flow validation.
+
+It only permits operations explicitly classified as unsafe.
+
+Therefore:
+
+```text
+unsafe
+    raw pointer operation
+```
+
+is allowed.
+
+But:
+
+```text
+unsafe
+    invalid safe borrow
+```
+
+is still rejected.
+
+The meaning of `unsafe` is:
+
+> The programmer accepts responsibility for guarantees that the compiler cannot establish for the unsafe operation.
+
+It does **not** mean:
+
+> Turn off Yarrow's safety checker.
+
+---
+
+# Unsafe operations
+
+Unsafe operations are represented internally as operations/functions requiring an unsafe context.
+
+Conceptually:
+
+```text
+Operation {
+    name
+    signature
+    safety: Safe | Unsafe
+}
+```
+
+or equivalent metadata.
+
+The compiler maintains an unsafe context while compiling a function body.
+
+Conceptually:
+
+```text
+unsafe_depth == 0
+    → safe context
+
+unsafe_depth > 0
+    → unsafe context
+```
+
+An unsafe operation encountered while `unsafe_depth == 0` produces a compile-time error.
+
+---
+
+# Unsafe functions
+
+Function metadata gains an unsafe flag:
+
+```text
+Function {
+    ...
+    is_unsafe: bool
+}
+```
+
+A call to an unsafe function is rejected unless the current compilation context is unsafe.
+
+The unsafe requirement does **not** automatically propagate to the caller.
+
+For example:
+
+```yarrow
+foo unsafe function do
+    ...
+end
+
+bar function do
+    unsafe
+        foo call
+    end
+end
+```
+
+`bar` remains a normal safe function.
+
+This keeps unsafe API boundaries explicit at call sites.
+
+---
+
+# Unsafe function bodies
+
+Declaring a function `unsafe` does not automatically make its entire body unsafe.
+
+These are independent:
+
+```text
+unsafe function
+    → unsafe API contract
+
+unsafe
+    ...
+end
+    → unsafe implementation region
+```
+
+Therefore an unsafe function may contain both safe and unsafe regions:
+
+```yarrow
+foo unsafe function do
+    # safe operations
+
+    unsafe
+        # raw operations
+    end
+
+    # safe operations
+end
+```
+
+This keeps unsafe implementation regions auditable.
+
+---
+
+# Raw pointers
+
+`pointer<T>` remains a typed raw address.
+
+Properties:
+
+- represented as an address;
+- carries compile-time pointee type information;
+- is non-owning;
+- is not itself a heap-managed object;
+- is not automatically freed;
+- may be stored, copied, and passed as a value;
+- using it for raw memory operations requires `unsafe`.
+
+The compiler does **not** attempt to make arbitrary raw pointers participate in the safe borrow/lifetime system.
+
+---
+
+# Unsafe pointer operations
+
+The following are unsafe:
+
+- raw pointer dereference;
+- `load` through a raw pointer;
+- `store` through a raw pointer;
+- pointer arithmetic;
+- integer ↔ pointer conversion where applicable;
+- raw memory access;
+- manually freeing memory;
+- manually allocating untyped/raw memory;
+- unsafe functions exposing these capabilities.
+
+Pointer member access and write-through operations through `pointer<T>` are also unsafe.
+
+Example:
+
+```yarrow
+unsafe
+    cp.value
+    cp.value 123 set
+end
+```
+
+---
+
+# Allocation and deallocation
+
+Raw allocation and deallocation are unsafe.
+
+Therefore:
+
+```text
+alloc → UNSAFE
+free  → UNSAFE
+```
+
+The compiler must not allow ordinary safe code to manually allocate/free raw memory.
+
+For example:
+
+```yarrow
+32 mem.alloc
+```
+
+outside an unsafe block is a compile-time error.
+
+This does not prevent safe allocation APIs from being built later. A safe abstraction may internally use unsafe memory management and expose only a safe interface.
+
+---
+
+# Raw memory host primitives
+
+The compiler-level primitives:
+
+```text
+@alloc
+@free
+@load
+@store
+```
+
+are themselves unsafe.
+
+They cannot be used to bypass the unsafe mechanism.
+
+For example:
+
+```yarrow
+foo function do
+    32 @alloc
+end
+```
+
+must fail.
+
+Whereas:
+
+```yarrow
+foo function do
+    unsafe
+        32 @alloc
+    end
+end
+```
+
+is permitted.
+
+The eventual standard library should hide these compiler-level primitives from normal user code where practical.
+
+---
+
+# Host registry
+
+The host registry remains generic:
+
+```text
+{
+    name,
+    signature,
+    extern "C" fn,
+    safety
+}
+```
+
+The `safety` metadata allows the generic host-call path to enforce unsafe requirements without adding per-function compiler logic.
+
+For example:
+
+```text
+alloc:
+    signature: u64 -> pointer<void>
+    safety: Unsafe
+
+free:
+    signature: pointer<void> -> void
+    safety: Unsafe
+```
+
+Safe host functions remain `Safe`.
+
+---
+
+# Stage 0 — Restore the build ✅
+
+Port the compiler to the new AST.
+
+**Done.**
+
+No changes required.
+
+---
+
+# Stage 1 — New operators ✅
+
+**Done.**
+
+- `unrot`
+- `typeof`
+- `borrow`
+- `move`
+- ownership/borrow tracking
+- use-after-move tracking
+
+The existing ownership infrastructure remains the basis for safe references.
+
+---
+
+# Stage 2 — Control flow ✅
+
+**Done.**
+
+No changes required.
+
+---
+
+# Stage 3 — Unions ✅
+
+**Done.**
+
+No changes required.
+
+Union member borrows continue to use the normal safe `reference<T>` model.
+
+---
+
+# Stage 4 — Memory access and unsafe operations
+
+This stage establishes the complete boundary between Yarrow's safe ownership model and its raw memory facilities.
+
+## 4.1 `pointer<T>`
+
+Enable:
+
+```text
+pointer<T>
+```
+
+as a typed raw address.
+
+`Ty::Ptr(...)` carries compile-time pointee information.
+
+`pointer<void>` / unknown pointee representations cannot be loaded/stored through typed operations unless explicitly using the permitted raw-memory form.
+
+---
+
+## 4.2 Unsafe context
+
+Add parser/compiler support for:
+
+```yarrow
+unsafe
+    ...
+end
+```
+
+Implementation:
+
+- add an unsafe context to `FnState` / compiler context;
+- enter unsafe context when compiling an `unsafe` block;
+- restore the previous context after the block;
+- nested unsafe blocks are harmless;
+- unsafe context is lexical;
+- unsafe context never survives the block's `end`.
+
+---
+
+## 4.3 Unsafe function modifier
+
+Add:
+
+```yarrow
+foo unsafe function
+```
+
+to the parser/AST/function representation.
+
+Function metadata records:
+
+```text
+is_unsafe
+```
+
+At every call:
+
+```text
+callee.is_unsafe && !unsafe_context
+    → compile-time error
+```
+
+The caller must explicitly enter:
+
+```yarrow
+unsafe
+    foo call
+end
+```
+
+---
+
+## 4.4 Unsafe operation metadata
+
+Introduce a safety classification for compiler operations and host functions:
+
+```text
+Safe
+Unsafe
+```
+
+Unsafe operations are rejected outside an unsafe context.
+
+This must be implemented centrally so that future unsafe primitives cannot accidentally bypass the check.
+
+---
+
+## 4.5 Pointer load/store
+
+Implement:
+
+```yarrow
+p load
+addr value store
+```
+
+and pointer member auto-dereference/write-through:
+
+```yarrow
+p.field
+p.field value set
+```
+
+These operations require unsafe context.
+
+---
+
+## 4.6 Pointer arithmetic
+
+Implement:
+
+```text
+pointer + int
+```
+
+as byte-offset arithmetic while preserving the pointer type.
+
+Pointer arithmetic requires unsafe context.
+
+---
+
+## 4.7 Raw memory access
+
+Raw operations:
+
+```text
+@load
+@store
+```
+
+require unsafe context.
+
+They must not provide a safe-code escape hatch.
+
+---
+
+## 4.8 Allocation and free
+
+Expose:
+
+```text
+@alloc
+@free
+```
+
+through the generic host bridge.
+
+Both require unsafe context.
+
+Pointers themselves remain non-owning values and are excluded from automatic scope destruction.
+
+---
+
+## 4.9 Raw pointer lifetime/alias rules
+
+Do **not** implement a Rust-style raw-pointer lifetime/alias checker.
+
+Specifically, do not require the compiler to prove:
+
+```text
+pointer does not alias borrowed value
+pointer cannot outlive allocation
+pointer remains inside region
+```
+
+for arbitrary raw pointers.
+
+Those guarantees belong to unsafe code.
+
+The compiler continues to enforce the normal ownership/borrow/region rules for **safe references**.
+
+This is a deliberate design decision, not a deferred feature.
+
+---
+
+## 4.10 Safety invariants
+
+The following must hold:
+
+### Safe code
+
+Cannot:
+
+```text
+raw load
+raw store
+pointer dereference
+pointer arithmetic
+raw alloc
+raw free
+call unsafe function
+```
+
+### Unsafe code
+
+Can perform those operations.
+
+### Both safe and unsafe code
+
+Must still obey:
+
+```text
+type checking
+stack checking
+ordinary ownership checking
+ordinary borrow checking
+ordinary move checking
+control-flow checking
+```
+
+---
+
+## Stage 4 files
+
+Expected files:
+
+```text
+docs/syntax.yar
+tokenizer/
+parser/
+ast.rs
+compiler/mod.rs
+compiler/types.rs
+runtime.rs
+```
+
+Potentially:
+
+```text
+compiler/functions.rs
+compiler/context.rs
+```
+
+depending on the final compiler organization.
+
+---
+
+## Stage 4 gate
+
+The following must compile:
+
+```yarrow
+pointer_function unsafe function do
+    unsafe
+        ...
+    end
+end
+```
+
+and:
+
+```yarrow
+unsafe
+    pointer_function call
+end
+```
+
+The following must fail at compile time:
+
+```yarrow
+pointer_function call
+```
+
+and:
+
+```yarrow
+p load
+```
+
+when outside an unsafe block.
+
+An unsafe block must **not** allow an otherwise-invalid borrow or ownership operation.
+
+---
+
+# Stage 5 — Std library in pure Yarrow
+
+Move the std library to:
+
+```text
+crates/yarrow-core/lib/std/
+```
+
+using the existing `build.rs`/`STD_MODULES` architecture.
+
+---
+
+## `std.mem`
+
+`std.mem` exposes the raw memory API, but its functions are explicitly unsafe.
+
+Conceptually:
+
+```yarrow
+alloc unsafe function
+free unsafe function
+load unsafe function
+store unsafe function
+```
+
+Their implementation uses the compiler-level raw primitives inside unsafe blocks.
+
+For example:
+
+```yarrow
+alloc unsafe function do
+    unsafe
+        ...
+    end
+end
+```
+
+End users therefore must write:
+
+```yarrow
+unsafe
+    32 mem.alloc call
+end
+```
+
+instead of silently entering manual memory management.
+
+The compiler-level raw primitives remain an implementation substrate and cannot bypass unsafe checking.
+
+---
+
+## Other standard modules
+
+### `std.io`
+
+Safe where the API can preserve Yarrow's safety guarantees.
+
+Low-level OS pointer/syscall interfaces remain unsafe where appropriate.
+
+### `std.string`
+
+Safe abstractions over strings.
+
+### `std.list`
+
+Safe list operations.
+
+### `std.map`
+
+Safe map operations.
+
+### `std.region`
+
+Safe region-management abstractions where the compiler can establish ownership.
+
+### `std.math`
+
+Safe arithmetic.
+
+### `std.fs`
+
+Safe high-level file operations; low-level raw OS interfaces may be unsafe internally.
+
+---
+
+# Safe abstractions over unsafe code
+
+The standard library and future libraries should be encouraged to use this pattern:
+
+```text
+unsafe implementation
+        ↓
+establish invariant
+        ↓
+safe public API
+```
+
+For example:
+
+```text
+raw allocator
+    ↓
+unsafe arena implementation
+    ↓
+safe arena API
+```
+
+The user should not need `unsafe` merely because an implementation internally uses raw memory.
+
+This is an important part of keeping the language pleasant while still allowing systems-level programming.
+
+---
+
+# Stage 6 — Remaining spec conformance
+
+Continue with:
+
+- smallest-fit literal typing;
+- `drop` semantics;
+- 128-bit numbers;
+- float `%`/`^`;
+- `run_main` coverage;
+- remaining spec conformance;
+- full `docs/syntax.yar` execution.
+
+Also verify that unsafe constructs are included in the final conformance suite.
+
+---
+
+# Stage 6 ownership/borrow validation
+
+Before calling the ownership system complete, explicitly test:
+
+### Use-after-move
+
+```text
+move
+use moved value
+```
+
+must produce a compile-time error.
+
+The current plan contains a contradiction here: some sections say this is enforced while another says the compile-time error is still missing. That should be resolved in favor of the language specification: **safe use-after-move must be rejected at compile time.**
+
+### Borrowed mutation
+
+Mutation that violates the borrow rules must fail.
+
+### Borrowed pop
+
+Popping an owned value while it has an active safe borrow must fail.
+
+### Region escape
+
+A safe reference must not survive the region/owner from which it originates.
+
+### Unsafe pointer escape
+
+Raw pointer validity is not checked by the safe borrow system; misuse is the responsibility of the unsafe programmer.
+
+---
+
+# Open design questions
+
+The previous pointer alias/lifetime question is **resolved**:
+
+> Raw pointers are unsafe and are not subject to Rust-style lifetime/alias checking.
+
+Remaining questions should be limited to implementation/spec details such as:
+
+- exact diagnostics for unsafe operations;
+- whether nested `unsafe` blocks are allowed;
+- whether `unsafe` is permitted in all block positions where ordinary blocks are permitted;
+- exact metadata representation for `Safe | Unsafe`;
+- whether low-level OS functions should be unsafe or whether safe wrappers should be the only public interface;
+- whether `pointer<void>` may be used with raw word operations;
+- exact integer/pointer conversion rules.
+
+These should not expand into a general raw-pointer lifetime system.
+
+---
+
+# Definition of done
+
+The compiler is feature-complete when:
+
+1. `docs/syntax.yar` is the language source of truth.
+2. The new tokenizer/parser/compiler pipeline is complete.
+3. Stack ownership and safe borrowing are compile-time checked.
+4. Regions provide structured heap lifetime management.
+5. Safe references cannot escape their owner/region.
+6. No user-visible explicit lifetime parameters are required for the normal ownership model.
+7. `pointer<T>` provides raw-memory capability.
+8. Raw memory operations require `unsafe`.
+9. `unsafe function` declarations require callers to enter an unsafe block.
+10. Unsafe blocks use the syntax:
+
+```yarrow
+unsafe
+    ...
+end
+```
+
+11. Unsafe does not disable normal type, stack, ownership, or borrow checking.
+12. Raw pointers remain non-owning and are not subjected to a Rust-style lifetime/alias checker.
+13. The std library is pure Yarrow except for the deliberately tiny host surface.
+14. Unsafe host/compiler primitives cannot bypass the unsafe boundary.
+15. Safe abstractions can encapsulate unsafe implementations.
+16. `docs/syntax.yar` compiles and runs.
+17. `cargo check` and `cargo clippy` remain green.
+
+---
+
+# Building and running
+
+```text
+cargo check
+cargo clippy
+cargo run -- <file.yar>
+```
+
+must remain green after every stage.
+
+---
+
+## The resulting memory architecture
+
+The key design decision behind the updated plan is:
+
+```text
+                         Yarrow memory
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+          SAFE MEMORY                     UNSAFE MEMORY
+              │                               │
+      ┌───────┴────────┐             ┌────────┴─────────┐
+      │                │             │                  │
+    Stack            Regions     pointer<T>         raw memory
+      │                │             │                  │
+    Own/Borrow       Own/Drop     non-owning        programmer
+      │                │             address         responsibility
+      └───────┬────────┘             │                  │
+              │                      └────────┬─────────┘
+        reference<T>                          │
+              │                          unsafe block
+              │                              │
+       compiler proves                 compiler checks
+          validity                     acknowledgement
+```
+
+This is the part I would consider the **central architectural principle of the implementation plan**: Yarrow's compiler does the hard lifetime reasoning for structured ownership, while raw memory is deliberately moved behind an explicit unsafe boundary rather than attempting to reproduce Rust's general lifetime machinery.
