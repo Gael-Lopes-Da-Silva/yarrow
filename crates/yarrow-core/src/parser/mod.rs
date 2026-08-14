@@ -98,6 +98,23 @@ impl Parser {
                     stmts.push(Stmt::Function(func));
                 }
 
+                TokenKind::Load | TokenKind::Store => {
+                    // `load`/`store` are keywords (the typed pointer words),
+                    // but `std.mem` also exposes functions with these names.
+                    // When the next token is `function`/`unsafe function`, this
+                    // is a function declaration; otherwise it is the word.
+                    let next = self.peek_next_kind();
+                    let is_decl = next == TokenKind::Function
+                        || (next == TokenKind::Unsafe
+                            && self.peek_two_ahead() == TokenKind::Function);
+                    if is_decl {
+                        ops.push(Expr::variable(self.peek_lexeme()));
+                        self.advance();
+                    } else {
+                        self.process_expr_word(&mut ops)?;
+                    }
+                }
+
                 TokenKind::Unsafe => {
                     if self.peek_next_kind() == TokenKind::Function {
                         // `name unsafe function`: a function declared unsafe so
@@ -688,10 +705,7 @@ impl Parser {
                 let name = self.advance().lexeme.clone();
                 let mut expr = Expr::variable(&name);
                 while self.match_kind(TokenKind::Dot) {
-                    let member = self
-                        .expect(TokenKind::Identifier, "expected member name after '.'")?
-                        .lexeme
-                        .clone();
+                    let member = self.expect_member_name("expected member name after '.'")?;
                     expr = Expr::Member {
                         base: Box::new(expr),
                         member,
@@ -942,10 +956,7 @@ impl Parser {
                 let tok = self.advance();
                 let mut expr = Expr::variable(&tok.lexeme);
                 while self.match_kind(TokenKind::Dot) {
-                    let member = self
-                        .expect(TokenKind::Identifier, "expected member after '.'")?
-                        .lexeme
-                        .clone();
+                    let member = self.expect_member_name("expected member after '.'")?;
                     expr = Expr::Member {
                         base: Box::new(expr),
                         member,
@@ -998,6 +1009,17 @@ impl Parser {
             .unwrap_or(TokenKind::Eof)
     }
 
+    fn peek_two_ahead(&self) -> TokenKind {
+        self.tokens
+            .get(self.current + 2)
+            .map(|t| t.kind)
+            .unwrap_or(TokenKind::Eof)
+    }
+
+    fn peek_lexeme(&self) -> String {
+        self.tokens[self.current].lexeme.clone()
+    }
+
     fn peek_location(&self) -> Location {
         self.tokens[self.current].location
     }
@@ -1009,6 +1031,18 @@ impl Parser {
         let tok = &self.tokens[self.current];
         self.current += 1;
         tok
+    }
+
+    /// Consume a member name after `.`. `load`/`store` are keywords (typed
+    /// pointer words) but are also valid member/function names (e.g. the
+    /// `std.mem` functions used as `mem.load`/`mem.store`).
+    fn expect_member_name(&mut self, message: &str) -> ParseResult<String> {
+        let kind = self.peek_kind();
+        if matches!(kind, TokenKind::Identifier | TokenKind::Load | TokenKind::Store) {
+            Ok(self.advance().lexeme.clone())
+        } else {
+            Err(ParseError::new(message, self.peek_location(), "E217"))
+        }
     }
 
     fn match_kind(&mut self, kind: TokenKind) -> bool {

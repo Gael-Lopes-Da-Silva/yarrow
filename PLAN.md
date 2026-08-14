@@ -539,40 +539,13 @@ using the `build.rs`/`STD_MODULES` architecture.
 >
 > Note: `std.math.sqrt` (the old single-function item-import approximation) is now the module `std.math` containing `sqrt`; true item-import resolution is 5.3.
 
-### 5.2 `std.mem`
+### 5.2 `std.mem` ✅
 
-`std.mem` exposes the raw memory API, but its functions are explicitly unsafe.
-
-```yarrow
-alloc unsafe function
-free unsafe function
-load unsafe function
-store unsafe function
-```
-
-Their implementation uses the compiler-level raw primitives inside unsafe blocks:
-
-```yarrow
-alloc unsafe function do
-    unsafe
-        ...
-    end
-end
-```
-
-End users therefore must write:
-
-```yarrow
-unsafe
-    32 mem.alloc call
-end
-```
-
-instead of silently entering manual memory management.
-
-The compiler-level raw primitives remain an implementation substrate and cannot bypass unsafe checking.
-
-> Note: the current `docs/syntax.yar` example uses `mem.alloc` returning a plain `i64` address that coerces to `pointer<T>` when stored in a typed variable (`16 mem.alloc p mutable pointer<i32>`). ✅ Confirmed implemented: an `i64` address coerces to `pointer<T>` in a typed variable declaration (exercised via `64 @alloc p mutable pointer<i64>`).
+> **Done.** `crates/yarrow-core/lib/std/mem.yar` exposes `alloc`, `free`, `load`, `store` as `unsafe function`s, each wrapping the compiler-level primitive (`@alloc`/`@free`/`@load`/`@store`) inside an explicit `unsafe ... end` region. Callers must enter an unsafe block — `unsafe 32 mem.alloc call end` — and every function is gated by the Stage 4 machinery (`E370 'call to 'std.mem::alloc'' requires an unsafe context` outside unsafe).
+>
+> Parser change: `load`/`store` are keywords (the typed pointer words `p load` / `addr value store`), but `std.mem` needs them as function names and module member names. `parser/mod.rs` now disambiguates: a statement starting with `load`/`store` followed by `function`/`unsafe function` is a function declaration (via new `peek_two_ahead`/`peek_lexeme` helpers), and member names after `.` accept the `load`/`store` keyword lexemes (`expect_member_name`). So both `mem.load call` and `p load` (typed word) parse correctly.
+>
+> Verified: `mem.alloc`/`mem.store`/`mem.load`/`mem.free` round-trip (alloc → raw word store → raw word load → free) and typed `pointer<T>` access via an `alloc` result; all four functions reject safe-context calls with E370; existing typed-word and Stage 4 tests still pass.
 
 ### 5.3 Item-import resolution (completes rule 1 of `require`)
 
