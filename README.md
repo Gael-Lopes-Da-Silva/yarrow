@@ -54,6 +54,6 @@ cargo run -- <file.yar>
 ## Learn more
 
 - **Language tour** → [`docs/syntax.yar`](docs/syntax.yar)
-- **Core implementation plan** → [`crates/yarrow-core/PLAN.md`](PLAN.md)
-- **CLI implementation plan** → [`crates/yarrow-cli/PLAN.md`](PLAN.md)
+- **Core implementation plan** → [`crates/yarrow-core/PLAN.md`](crates/yarrow-core/PLAN.md)
+- **CLI implementation plan** → [`crates/yarrow-cli/PLAN.md`](crates/yarrow-cli/PLAN.md)
 - **Agent guidelines** → [`AGENTS.md`](AGENTS.md)
