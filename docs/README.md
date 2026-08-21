@@ -51,4 +51,5 @@ Yarrow
 - **Type system** → [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md)
 - **Memory model** → [`MEMORY_MODEL.md`](MEMORY_MODEL.md)
 - **Runtime** → [`RUNTIME.md`](RUNTIME.md)
+- **Style guide** → [`STYLE_GUIDE.md`](STYLE_GUIDE.md)
 - **Examples** → [`examples`](examples/README.md)

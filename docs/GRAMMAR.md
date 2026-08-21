@@ -11,7 +11,7 @@ Illustrative Yarrow program. Comments explain language rules; the code is the ru
 # push operands first, then the operator or keyword.
 #
 # Related docs: SYNTAX.md (EBNF), AST.md, TYPE_SYSTEM.md, MEMORY_MODEL.md,
-# RUNTIME.md.
+# RUNTIME.md, STYLE_GUIDE.md.
 
 # =============================================================================
 # Modules

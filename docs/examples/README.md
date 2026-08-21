@@ -54,6 +54,7 @@ docs/examples
 ## Related docs
 
 - [`GRAMMAR.md`](../GRAMMAR.md) - full annotated tour
+- [`STYLE_GUIDE.md`](../STYLE_GUIDE.md) - formatting and naming
 - [`TYPE_SYSTEM.md`](../TYPE_SYSTEM.md) - types, coercion, checking
 - [`MEMORY_MODEL.md`](../MEMORY_MODEL.md) - ownership, borrow, regions, unsafe
 - [`RUNTIME.md`](../RUNTIME.md) - stack, calls, errors, modules
