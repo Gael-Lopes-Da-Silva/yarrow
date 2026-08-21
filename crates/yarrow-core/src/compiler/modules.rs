@@ -8,8 +8,8 @@
 
 use std::path::PathBuf;
 
+use crate::diagnostics::Span;
 use crate::parser::ast::Program;
-use crate::tokenizer::token::Location;
 
 use super::errors::CompileError;
 use super::types::CResult;
@@ -48,11 +48,7 @@ impl ModuleLoader {
     /// Load the source of a module by its dotted path.
     pub fn load(&self, path: &str) -> CResult<String> {
         self.try_load(path).ok_or_else(|| {
-            CompileError::new(
-                format!("unknown module '{path}'"),
-                Location::default(),
-                "E380",
-            )
+            CompileError::new(format!("unknown module '{path}'"), Span::default(), "E380")
         })
     }
 

@@ -374,7 +374,8 @@ impl Tokenizer {
     fn add_token(&mut self, kind: TokenKind) {
         let lexeme = self.lexeme();
         let location = self.get_location_at(self.start);
-        self.tokens.push(Token::new(kind, lexeme, location));
+        self.tokens
+            .push(Token::new(kind, lexeme, location, self.current));
     }
 
     fn match_char(&mut self, expected: char) -> bool {

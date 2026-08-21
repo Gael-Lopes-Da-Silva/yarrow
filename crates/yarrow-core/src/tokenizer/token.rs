@@ -1,23 +1,32 @@
+use crate::diagnostics::Span;
 use crate::tokenizer::token_kind::TokenKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenKind,
     pub lexeme: String,
+    /// Start of the token (line / column / byte offset).
     pub location: Location,
+    /// Exclusive end byte offset into the source.
+    pub end_offset: usize,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, lexeme: String, location: Location) -> Self {
+    pub fn new(kind: TokenKind, lexeme: String, location: Location, end_offset: usize) -> Self {
         Self {
             kind,
             lexeme,
             location,
+            end_offset: end_offset.max(location.offset),
         }
     }
 
     pub fn eof(location: Location) -> Self {
-        Self::new(TokenKind::Eof, String::new(), location)
+        Self::new(TokenKind::Eof, String::new(), location, location.offset)
+    }
+
+    pub fn span(&self) -> Span {
+        Span::from_range(self.location, self.end_offset)
     }
 }
 

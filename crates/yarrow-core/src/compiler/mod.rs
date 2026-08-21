@@ -20,17 +20,16 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
+use crate::diagnostics::Span;
 use crate::parser::ast::{
     BinOp, Expr, Function, MatchCase, MatchCaseKind, ParamModifier, Primitive, Program, StackOp,
-    Stmt, UnOp, Visibility,
+    Stmt, StmtKind, UnOp, Visibility,
 };
 use crate::parser::literals::{
     decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
 };
 use crate::parser::parse;
 use crate::tokenizer::Tokenizer;
-use crate::tokenizer::token::Location;
-
 use modules::{ModuleLoader, RequiredModule};
 
 pub use errors::CompileError;
@@ -137,6 +136,12 @@ struct FnState {
     /// Nested functions declared in this body: short name → fully-qualified
     /// name (`demo::add`). Only callable from the enclosing function.
     local_funcs: HashMap<String, String>,
+    /// Span of the statement currently being lowered.
+    current_span: Span,
+    /// Variable name → span where it was moved from (for secondary labels).
+    move_sites: HashMap<String, Span>,
+    /// Borrowed SSA value → span of the `borrow` / region-put that created it.
+    borrow_sites: HashMap<Value, Span>,
 }
 
 struct LoopCtx {
@@ -241,12 +246,15 @@ pub struct Compiler {
     /// Function bodies already passed to `define_function` (nested helpers).
     defined_funcs: std::collections::HashSet<String>,
     finalized: bool,
+    source_path: String,
+    /// Best-effort span for program-level errors (e.g. missing `main`).
+    program_span: Span,
 }
 
 impl Compiler {
     pub fn new() -> CResult<Self> {
         let mut jb = JITBuilder::new(default_libcall_names())
-            .map_err(|e| CompileError::new(e.to_string(), Location::default(), "E350"))?;
+            .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
         crate::runtime::install_runtime(&mut jb);
         let module = JITModule::new(jb);
         let ptr_type = module.isa().pointer_type();
@@ -284,7 +292,13 @@ impl Compiler {
             public_funcs: std::collections::HashSet::new(),
             defined_funcs: std::collections::HashSet::new(),
             finalized: false,
+            source_path: String::new(),
+            program_span: Span::default(),
         })
+    }
+
+    pub fn set_source_path(&mut self, path: impl Into<String>) {
+        self.source_path = path.into();
     }
 
     /// Add a directory searched for user modules (`"a.b"` -> `a/b.yar`).
@@ -297,6 +311,21 @@ impl Compiler {
     /// modules loaded by `require` are declared and compiled alongside the
     /// main program's.
     pub fn compile(&mut self, program: &Program) -> CResult<()> {
+        self.program_span = program
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                StmtKind::Function(f) if f.name == "main" => Some(item.span),
+                _ => None,
+            })
+            .or_else(|| {
+                program.items.iter().find_map(|item| match &item.kind {
+                    StmtKind::Function(_) => Some(item.span),
+                    _ => None,
+                })
+            })
+            .or_else(|| program.items.first().map(|item| item.span))
+            .unwrap_or_default();
         self.modules.clear();
         self.aliases.clear();
         self.plain_funcs.clear();
@@ -331,7 +360,7 @@ impl Compiler {
         // Pass A: register every struct name.
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Struct(d) = item {
+                if let StmtKind::Struct(d) = &item.kind {
                     self.struct_ids
                         .entry(d.name.clone())
                         .or_insert(self.struct_layouts.len() as u32);
@@ -349,7 +378,7 @@ impl Compiler {
         // resolve before members are known.
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Union(d) = item {
+                if let StmtKind::Union(d) = &item.kind {
                     self.union_ids
                         .entry(d.name.clone())
                         .or_insert(self.unions.len() as u32);
@@ -365,23 +394,22 @@ impl Compiler {
         // at 0 unless an explicit value is given; both names are bound.
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Enum(d) = item {
+                if let StmtKind::Enum(d) = &item.kind {
                     let id = self.enums.len() as u32;
                     self.enum_ids.insert(d.name.clone(), id);
                     let mut members = Vec::with_capacity(d.members.len());
                     let mut next = 0i64;
                     for m in &d.members {
                         let v = if let Some(raw) = &m.value {
-                            let n = decode_int_literal(raw).map_err(|msg| {
-                                CompileError::new(msg, Location::default(), "E363")
-                            })?;
+                            let n = decode_int_literal(raw)
+                                .map_err(|msg| CompileError::new(msg, item.span, "E363"))?;
                             if n < i64::MIN as i128 || n > i64::MAX as i128 {
                                 return Err(CompileError::new(
                                     format!(
                                         "enum member '{}' value '{raw}' is out of range",
                                         m.name
                                     ),
-                                    Location::default(),
+                                    item.span,
                                     "E364",
                                 ));
                             }
@@ -405,7 +433,7 @@ impl Compiler {
         // so injection can copy tags from another error type).
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Error(d) = item {
+                if let StmtKind::Error(d) = &item.kind {
                     self.error_type_ids
                         .entry(d.name.clone())
                         .or_insert_with(|| {
@@ -421,7 +449,7 @@ impl Compiler {
         }
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Error(d) = item
+                if let StmtKind::Error(d) = &item.kind
                     && d.inject.is_none()
                 {
                     self.fill_error_type(d)?;
@@ -430,7 +458,7 @@ impl Compiler {
         }
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Error(d) = item
+                if let StmtKind::Error(d) = &item.kind
                     && d.inject.is_some()
                 {
                     self.fill_error_type(d)?;
@@ -442,7 +470,7 @@ impl Compiler {
         // before function signatures are declared, since those may use structs.
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Struct(d) = item {
+                if let StmtKind::Struct(d) = &item.kind {
                     let mut fields = Vec::with_capacity(d.fields.len());
                     for f in &d.fields {
                         let ty = self.resolve_ty(&f.ty)?;
@@ -459,12 +487,12 @@ impl Compiler {
         // pointer (the payload is inline).
         for (_, prog) in &units {
             for item in &prog.items {
-                if let Stmt::Union(d) = item {
+                if let StmtKind::Union(d) = &item.kind {
                     let id = self.union_ids[&d.name];
                     if d.types.is_empty() {
                         return Err(CompileError::new(
                             format!("union '{}' must have at least one member type", d.name),
-                            Location::default(),
+                            item.span,
                             "E346",
                         ));
                     }
@@ -474,14 +502,14 @@ impl Compiler {
                         if mt.elem_size() > 8 {
                             return Err(CompileError::new(
                                 format!("union member type '{mt:?}' is wider than 8 bytes",),
-                                Location::default(),
+                                item.span,
                                 "E346",
                             ));
                         }
                         if members.contains(&mt) {
                             return Err(CompileError::new(
                                 format!("union '{}' has duplicate member type '{mt:?}'", d.name),
-                                Location::default(),
+                                item.span,
                                 "E346",
                             ));
                         }
@@ -495,8 +523,8 @@ impl Compiler {
         // Pass C: declare every function, then register module name bindings.
         for (path, prog) in &units {
             for item in &prog.items {
-                match item {
-                    Stmt::Function(f) => {
+                match &item.kind {
+                    StmtKind::Function(f) => {
                         let name = self.item_name(path.as_deref(), &f.name);
                         if f.is_unsafe {
                             self.unsafe_funcs.insert(name.clone());
@@ -506,7 +534,7 @@ impl Compiler {
                         }
                         self.declare_function(f, &name)?;
                     }
-                    Stmt::Implement(imp) => {
+                    StmtKind::Implement(imp) => {
                         for f in &imp.functions {
                             let name = self
                                 .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
@@ -544,12 +572,12 @@ impl Compiler {
         // Pass D: compile every function.
         for (path, prog) in &units {
             for item in &prog.items {
-                match item {
-                    Stmt::Function(f) => {
+                match &item.kind {
+                    StmtKind::Function(f) => {
                         let name = self.item_name(path.as_deref(), &f.name);
                         self.compile_function(f, &name, path.as_deref(), false)?;
                     }
-                    Stmt::Implement(imp) => {
+                    StmtKind::Implement(imp) => {
                         for f in &imp.functions {
                             let name = self
                                 .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
@@ -576,10 +604,10 @@ impl Compiler {
     /// including `require` statements nested inside function bodies.
     fn load_requires(&mut self, program: &Program, out: &mut Vec<RequiredModule>) -> CResult<()> {
         for item in &program.items {
-            match item {
-                Stmt::Require { path, alias } => self.load_one(path, alias, out)?,
-                Stmt::Function(f) => self.load_requires_stmts(&f.body, out)?,
-                Stmt::Implement(imp) => {
+            match &item.kind {
+                StmtKind::Require { path, alias } => self.load_one(path, alias, out)?,
+                StmtKind::Function(f) => self.load_requires_stmts(&f.body, out)?,
+                StmtKind::Implement(imp) => {
                     for f in &imp.functions {
                         self.load_requires_stmts(&f.body, out)?;
                     }
@@ -596,9 +624,9 @@ impl Compiler {
         out: &mut Vec<RequiredModule>,
     ) -> CResult<()> {
         for s in stmts {
-            match s {
-                Stmt::Require { path, alias } => self.load_one(path, alias, out)?,
-                Stmt::If {
+            match &s.kind {
+                StmtKind::Require { path, alias } => self.load_one(path, alias, out)?,
+                StmtKind::If {
                     then_branch,
                     else_branch,
                     ..
@@ -606,12 +634,12 @@ impl Compiler {
                     self.load_requires_stmts(then_branch, out)?;
                     self.load_requires_stmts(else_branch, out)?;
                 }
-                Stmt::Defer { body } | Stmt::Handle { body, .. } => {
+                StmtKind::Defer { body } | StmtKind::Handle { body, .. } => {
                     self.load_requires_stmts(body, out)?
                 }
-                Stmt::Unsafe { body } => self.load_requires_stmts(body, out)?,
-                Stmt::For { body, .. } => self.load_requires_stmts(body, out)?,
-                Stmt::Match {
+                StmtKind::Unsafe { body } => self.load_requires_stmts(body, out)?,
+                StmtKind::For { body, .. } => self.load_requires_stmts(body, out)?,
+                StmtKind::Match {
                     cases, else_branch, ..
                 } => {
                     for c in cases {
@@ -683,7 +711,7 @@ impl Compiler {
             if parent_prog
                 .items
                 .iter()
-                .any(|i| matches!(i, Stmt::Function(f) if f.name == last))
+                .any(|i| matches!(&i.kind, StmtKind::Function(f) if f.name == last))
             {
                 if self.loader.try_load(path).is_some() {
                     eprintln!(
@@ -710,7 +738,7 @@ impl Compiler {
                     if existing != &m.path {
                         return Err(CompileError::new(
                             format!("module alias '{alias}' already bound to '{existing}'"),
-                            Location::default(),
+                            Span::default(),
                             "E380",
                         ));
                     }
@@ -733,14 +761,14 @@ impl Compiler {
                             "function '{item}' is exported by both '{}' and '{fq}'",
                             prev
                         ),
-                        Location::default(),
+                        Span::default(),
                         "E380",
                     ));
                 }
                 self.plain_funcs.insert(item.clone(), fq);
             } else {
                 for item in &m.program.items {
-                    if let Stmt::Function(f) = item {
+                    if let StmtKind::Function(f) = &item.kind {
                         if !matches!(f.visibility, Some(Visibility::Public)) {
                             continue;
                         }
@@ -750,7 +778,7 @@ impl Compiler {
                                     "function '{}' from module '{}' conflicts with a function of the same name",
                                     f.name, m.path
                                 ),
-                                Location::default(),
+                                Span::default(),
                                 "E380",
                             ));
                         }
@@ -763,7 +791,7 @@ impl Compiler {
                                     "function '{}' is exported by both '{}' and '{fq}'",
                                     f.name, prev
                                 ),
-                                Location::default(),
+                                Span::default(),
                                 "E380",
                             ));
                         }
@@ -779,7 +807,7 @@ impl Compiler {
             {
                 return Err(CompileError::new(
                     format!("function '{item}' is exported by both '{prev}' and '{fq}'"),
-                    Location::default(),
+                    Span::default(),
                     "E380",
                 ));
             }
@@ -805,7 +833,7 @@ impl Compiler {
                 .module
                 .declare_data(&name, Linkage::Local, false, false)?;
             let bytes = decode_string_literal(s)
-                .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
+                .map_err(|m| CompileError::new(m, Span::default(), "E363"))?;
             let mut desc = DataDescription::new();
             desc.set_align(1);
             desc.define(bytes.into_boxed_slice());
@@ -893,17 +921,17 @@ impl Compiler {
     pub fn run_main(&mut self) -> CResult<RunResult> {
         self.finalize()?;
         let id = *self.func_ids.get("main").ok_or_else(|| {
-            CompileError::new(
-                "program has no 'main' function",
-                Location::default(),
-                "E360",
-            )
+            CompileError::new("program has no 'main' function", self.program_span, "E360")
+                .with_note("running a `.yar` file requires a top-level `main` entry point")
+                .with_help(
+                    "add `main function do ... end`, optionally `with T` for a printable result",
+                )
         })?;
         let (_, return_tys) = self.sig_tys.get("main").cloned().ok_or_else(|| {
-            CompileError::new("missing signature for 'main'", Location::default(), "E360")
+            CompileError::new("missing signature for 'main'", self.program_span, "E360")
         })?;
         let sig = self.sigs.get("main").cloned().ok_or_else(|| {
-            CompileError::new("missing signature for 'main'", Location::default(), "E360")
+            CompileError::new("missing signature for 'main'", self.program_span, "E360")
         })?;
         // A fallible `main` returns an envelope `(env, payload)`. Run it and
         // surface a non-zero env as a runtime failure; success is void.
@@ -915,7 +943,7 @@ impl Compiler {
                 if env != 0 {
                     return Err(CompileError::new(
                         format!("main returned error tag {env}"),
-                        Location::default(),
+                        Span::default(),
                         "E360",
                     ));
                 }
@@ -933,7 +961,7 @@ impl Compiler {
                 [ty] => self.read_main_result(sig.returns[0].value_type, *ty, ptr as usize),
                 _ => Err(CompileError::new(
                     "'main' must return at most one value to be runnable",
-                    Location::default(),
+                    Span::default(),
                     "E360",
                 )),
             }
@@ -980,7 +1008,7 @@ impl Compiler {
                 }
                 _ => Err(CompileError::new(
                     "unsupported 'main' return type for run_main",
-                    Location::default(),
+                    Span::default(),
                     "E360",
                 )),
             }
@@ -993,7 +1021,7 @@ impl Compiler {
         let id = *self.func_ids.get(name).ok_or_else(|| {
             CompileError::new(
                 format!("unknown function '{name}'"),
-                Location::default(),
+                Span::default(),
                 "E361",
             )
         })?;
@@ -1044,7 +1072,7 @@ impl Compiler {
         if members.len() != 2 {
             return Err(CompileError::new(
                 "a fallible return `|T Err|` must have exactly two members",
-                Location::default(),
+                Span::default(),
                 "E308",
             ));
         }
@@ -1057,12 +1085,12 @@ impl Compiler {
             (true, false) => Ok(vec![right, Ty::Error]),
             (true, true) => Err(CompileError::new(
                 "a fallible return needs one success type and one error type",
-                Location::default(),
+                Span::default(),
                 "E308",
             )),
             (false, false) => Err(CompileError::new(
                 "a fallible return `|T Err|` requires an error type as one member",
-                Location::default(),
+                Span::default(),
                 "E308",
             )),
         }
@@ -1084,7 +1112,7 @@ impl Compiler {
         let id = *self.error_type_ids.get(&d.name).ok_or_else(|| {
             CompileError::new(
                 format!("unknown error type '{}'", d.name),
-                Location::default(),
+                Span::default(),
                 "E302",
             )
         })?;
@@ -1111,7 +1139,7 @@ impl Compiler {
             if members.iter().any(|(n, _)| n == m) {
                 return Err(CompileError::new(
                     format!("error type '{}' has duplicate member '{m}'", d.name),
-                    Location::default(),
+                    Span::default(),
                     "E308",
                 ));
             }
@@ -1130,7 +1158,7 @@ impl Compiler {
             .ok_or_else(|| {
                 CompileError::new(
                     format!("unknown error type '{path}'"),
-                    Location::default(),
+                    Span::default(),
                     "E302",
                 )
             })
@@ -1147,7 +1175,7 @@ impl Compiler {
                 "error type '{}' has no members to inject (declare it before dependents)",
                 self.error_types[id as usize].name
             ),
-            Location::default(),
+            Span::default(),
             "E308",
         ))
     }
@@ -1216,13 +1244,13 @@ impl Compiler {
                 Some((_, ty, _)) => struct_id(*ty).ok_or_else(|| {
                     CompileError::new(
                         format!("'{name}' is a {ty:?}, not a struct value"),
-                        Location::default(),
+                        Span::default(),
                         "E340",
                     )
                 }),
                 None => Err(CompileError::new(
                     format!("unknown variable '{name}'"),
-                    Location::default(),
+                    Span::default(),
                     "E340",
                 )),
             },
@@ -1239,21 +1267,21 @@ impl Compiler {
                     .ok_or_else(|| {
                         CompileError::new(
                             format!("struct '{}' has no field '{member}'", lay.name),
-                            Location::default(),
+                            Span::default(),
                             "E340",
                         )
                     })?;
                 struct_id(field.ty).ok_or_else(|| {
                     CompileError::new(
                         format!("field '{member}' is not a struct value"),
-                        Location::default(),
+                        Span::default(),
                         "E340",
                     )
                 })
             }
             _ => Err(CompileError::new(
                 "expected a struct value before '.'",
-                Location::default(),
+                Span::default(),
                 "E340",
             )),
         }
@@ -1296,7 +1324,7 @@ impl Compiler {
             .ok_or_else(|| {
                 CompileError::new(
                     format!("struct '{}' has no field '{member}'", lay.name),
-                    Location::default(),
+                    Span::default(),
                     "E340",
                 )
             })
@@ -1337,7 +1365,7 @@ impl Compiler {
                 _ => {
                     return Err(CompileError::new(
                         "struct literal field names must be identifiers",
-                        Location::default(),
+                        Span::default(),
                         "E340",
                     ));
                 }
@@ -1352,7 +1380,7 @@ impl Compiler {
                             "struct '{}' has no field '{field_name}'",
                             self.struct_layout(id).name
                         ),
-                        Location::default(),
+                        Span::default(),
                         "E340",
                     )
                 })?;
@@ -1413,7 +1441,7 @@ impl Compiler {
                 continue;
             }
             self.compile_expr(b, st, stack, value_expr)?;
-            let slot = self.pop_slot(stack, "struct field value")?;
+            let slot = self.pop_slot(st, stack, "struct field value")?;
             let val = self.coerce_or_wrap(b, st, slot.value, slot.ty, field.ty)?;
             b.ins().store(
                 cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -1471,8 +1499,8 @@ impl Compiler {
         let elem_size = elem.elem_size() as i32;
         for (i, el) in elems.iter().enumerate() {
             self.compile_expr(b, st, stack, el)?;
-            let slot = self.pop_slot(stack, "array element")?;
-            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type)?;
+            let slot = self.pop_slot(st, stack, "array element")?;
+            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type, st.current_span)?;
             b.ins().store(
                 cranelift_codegen::ir::MemFlagsData::trusted(),
                 val,
@@ -1495,7 +1523,7 @@ impl Compiler {
                     "array initializer has {} element(s) but the type declares {count}",
                     elems.len()
                 ),
-                Location::default(),
+                Span::default(),
                 "E345",
             ));
         }
@@ -1550,8 +1578,8 @@ impl Compiler {
         let nested: Vec<Function> = f
             .body
             .iter()
-            .filter_map(|s| match s {
-                Stmt::Function(nf) => Some(nf.clone()),
+            .filter_map(|s| match &s.kind {
+                StmtKind::Function(nf) => Some(nf.clone()),
                 _ => None,
             })
             .collect();
@@ -1614,6 +1642,9 @@ impl Compiler {
             registered_unions: std::collections::HashSet::new(),
             terminated: false,
             local_funcs,
+            current_span: Span::default(),
+            move_sites: HashMap::new(),
+            borrow_sites: HashMap::new(),
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -1752,8 +1783,9 @@ impl Compiler {
         stack: &mut Vec<Slot>,
         s: &Stmt,
     ) -> CResult<()> {
-        match s {
-            Stmt::Expr(e) => {
+        st.current_span = s.span;
+        match &s.kind {
+            StmtKind::Expr(e) => {
                 if self.emit_loop_control(b, st, e)? {
                     // `loop.break` / `loop.continue` terminate this block.
                 } else {
@@ -1761,7 +1793,7 @@ impl Compiler {
                 }
             }
 
-            Stmt::VarDecl {
+            StmtKind::VarDecl {
                 name,
                 mutability,
                 ty,
@@ -1799,8 +1831,9 @@ impl Compiler {
                         // The parser merges every preceding stack op into the
                         // initializer; only the trailing map is the struct
                         // literal, the rest are side effects.
-                        if let Some(Expr::Map(pairs)) = elems.last() {
-                            for el in &elems[..elems.len() - 1] {
+                        if let Some((Expr::Map(pairs), _)) = elems.last() {
+                            for (el, span) in &elems[..elems.len() - 1] {
+                                st.current_span = *span;
                                 self.compile_expr(b, st, stack, el)?;
                             }
                             let Ty::Struct(id) = t else { unreachable!() };
@@ -1816,10 +1849,11 @@ impl Compiler {
                                 t,
                             )
                         } else {
-                            for el in elems {
+                            for (el, span) in elems {
+                                st.current_span = *span;
                                 self.compile_expr(b, st, stack, el)?;
                             }
-                            let slot = self.pop_slot(stack, "value")?;
+                            let slot = self.pop_slot(st, stack, "value")?;
                             (slot, slot.value, slot.ty)
                         }
                     }
@@ -1828,16 +1862,14 @@ impl Compiler {
                     {
                         // Same as struct: prior words (e.g. `… call unwrap`) are
                         // side effects; the trailing container is the value.
-                        for el in &elems[..elems.len().saturating_sub(1)] {
+                        for (el, span) in &elems[..elems.len().saturating_sub(1)] {
+                            st.current_span = *span;
                             self.compile_expr(b, st, stack, el)?;
                         }
-                        let last = elems.last().ok_or_else(|| {
-                            CompileError::new(
-                                "empty initializer sequence",
-                                Location::default(),
-                                "E306",
-                            )
+                        let (last, last_span) = elems.last().ok_or_else(|| {
+                            CompileError::new("empty initializer sequence", st.current_span, "E306")
                         })?;
+                        st.current_span = *last_span;
                         match (t, last) {
                             (Ty::Hashmap { .. }, Expr::Map(pairs)) => {
                                 let (handle, _, _) =
@@ -1886,7 +1918,7 @@ impl Compiler {
                             }
                             _ => {
                                 self.compile_expr(b, st, stack, last)?;
-                                let slot = self.pop_slot(stack, "value")?;
+                                let slot = self.pop_slot(st, stack, "value")?;
                                 (slot, slot.value, slot.ty)
                             }
                         }
@@ -1936,11 +1968,11 @@ impl Compiler {
                     }
                     Some(e) => {
                         self.compile_expr(b, st, stack, e)?;
-                        let slot = self.pop_slot(stack, "value")?;
+                        let slot = self.pop_slot(st, stack, "value")?;
                         (slot, slot.value, slot.ty)
                     }
                     None => {
-                        let slot = self.pop_slot(stack, "value")?;
+                        let slot = self.pop_slot(st, stack, "value")?;
                         (slot, slot.value, slot.ty)
                     }
                 };
@@ -1961,13 +1993,13 @@ impl Compiler {
                 st.vars.insert(name.clone(), (var, t, var_own));
             }
 
-            Stmt::Set { target, value } => match target {
+            StmtKind::Set { target, value } => match target {
                 Expr::Variable { name } => {
                     self.require_not_moved_var(st, name)?;
                     let (var, t, _old_own) = st.vars.get(name).cloned().ok_or_else(|| {
                         CompileError::new(
                             format!("unknown variable '{name}'"),
-                            Location::default(),
+                            st.current_span,
                             "E320",
                         )
                     })?;
@@ -1979,7 +2011,7 @@ impl Compiler {
                     // first (the pointer is reused).
                     let trailing_map = match value {
                         Some(Expr::Map(_)) => true,
-                        Some(Expr::Seq(elems)) => matches!(elems.last(), Some(Expr::Map(_))),
+                        Some(Expr::Seq(elems)) => matches!(elems.last(), Some((Expr::Map(_), _))),
                         _ => false,
                     };
                     let reuses_ptr = trailing_map && matches!(t, Ty::Struct(_));
@@ -2013,8 +2045,9 @@ impl Compiler {
                             // The parser merges every preceding stack op into
                             // the initializer; only the trailing map is the
                             // struct literal, the rest are side effects.
-                            if let Some(Expr::Map(pairs)) = elems.last() {
-                                for el in &elems[..elems.len() - 1] {
+                            if let Some((Expr::Map(pairs), _)) = elems.last() {
+                                for (el, span) in &elems[..elems.len() - 1] {
+                                    st.current_span = *span;
                                     self.compile_expr(b, st, stack, el)?;
                                 }
                                 let Ty::Struct(id) = t else { unreachable!() };
@@ -2030,10 +2063,11 @@ impl Compiler {
                                     t,
                                 )
                             } else {
-                                for el in elems {
+                                for (el, span) in elems {
+                                    st.current_span = *span;
                                     self.compile_expr(b, st, stack, el)?;
                                 }
-                                let slot = self.pop_slot(stack, "value")?;
+                                let slot = self.pop_slot(st, stack, "value")?;
                                 (slot, slot.value, slot.ty)
                             }
                         }
@@ -2084,11 +2118,11 @@ impl Compiler {
                         }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
-                            let slot = self.pop_slot(stack, "value")?;
+                            let slot = self.pop_slot(st, stack, "value")?;
                             (slot, slot.value, slot.ty)
                         }
                         None => {
-                            let slot = self.pop_slot(stack, "value")?;
+                            let slot = self.pop_slot(st, stack, "value")?;
                             (slot, slot.value, slot.ty)
                         }
                     };
@@ -2111,7 +2145,7 @@ impl Compiler {
                     let sid = self.base_struct(st, base)?;
                     let field = self.find_field(sid, member)?.clone();
                     self.compile_expr(b, st, stack, base)?;
-                    let ptr = self.pop_slot(stack, "field set target")?;
+                    let ptr = self.pop_slot(st, stack, "field set target")?;
                     let (val, val_ty) = match value {
                         Some(Expr::List(elems)) if matches!(field.ty, Ty::List { .. }) => {
                             let Ty::List { elem } = field.ty else {
@@ -2128,11 +2162,11 @@ impl Compiler {
                         }
                         Some(e) => {
                             self.compile_expr(b, st, stack, e)?;
-                            let slot = self.pop_slot(stack, "value")?;
+                            let slot = self.pop_slot(st, stack, "value")?;
                             (slot.value, slot.ty)
                         }
                         None => {
-                            let slot = self.pop_slot(stack, "value")?;
+                            let slot = self.pop_slot(st, stack, "value")?;
                             (slot.value, slot.ty)
                         }
                     };
@@ -2160,13 +2194,13 @@ impl Compiler {
                 _ => {
                     return Err(CompileError::unsupported(
                         "field 'set' is not yet supported",
-                        Location::default(),
+                        st.current_span,
                         "E301",
                     ));
                 }
             },
 
-            Stmt::If {
+            StmtKind::If {
                 condition,
                 then_branch,
                 else_branch,
@@ -2179,7 +2213,7 @@ impl Compiler {
                 }
             }
 
-            Stmt::Match {
+            StmtKind::Match {
                 value,
                 cases,
                 else_branch,
@@ -2189,43 +2223,43 @@ impl Compiler {
                 st.terminated = prev;
             }
 
-            Stmt::For { source, body } => {
+            StmtKind::For { source, body } => {
                 let prev = st.terminated;
                 self.emit_for(b, st, stack, source, body)?;
                 st.terminated = prev;
             }
 
-            Stmt::Return { .. } => {
+            StmtKind::Return { .. } => {
                 self.emit_return(b, st, stack)?;
                 st.terminated = true;
             }
 
-            Stmt::Function(_)
-            | Stmt::Struct(_)
-            | Stmt::Implement(_)
-            | Stmt::Enum(_)
-            | Stmt::Union(_)
-            | Stmt::Error(_)
-            | Stmt::Require { .. } => {
+            StmtKind::Function(_)
+            | StmtKind::Struct(_)
+            | StmtKind::Implement(_)
+            | StmtKind::Enum(_)
+            | StmtKind::Union(_)
+            | StmtKind::Error(_)
+            | StmtKind::Require { .. } => {
                 // Only meaningful at program level; no-op inside a body.
             }
 
-            Stmt::Defer { body } => {
+            StmtKind::Defer { body } => {
                 // Schedule the body to run in reverse order at scope exit,
                 // so a `myRegion @free_region call` runs after the region's
                 // values have been dropped.
                 st.deferred.push(body.clone());
             }
 
-            Stmt::Handle { body, fallback } => {
+            StmtKind::Handle { body, fallback } => {
                 let prev = st.terminated;
                 self.emit_handle(b, st, stack, body, fallback.as_ref())?;
                 st.terminated = prev;
             }
 
-            Stmt::Move { target, source } => self.emit_move(b, st, stack, target, source)?,
+            StmtKind::Move { target, source } => self.emit_move(b, st, stack, target, source)?,
 
-            Stmt::Unsafe { body } => {
+            StmtKind::Unsafe { body } => {
                 // Compile the body with an active unsafe context.
                 st.unsafe_depth += 1;
                 let result = self.compile_body(b, st, stack, body);
@@ -2236,7 +2270,7 @@ impl Compiler {
             // The parser extracts `fallback` out of `handle` bodies into
             // `Handle.fallback`, so a bare `Fallback` statement is unreachable
             // here; treat it as a no-op rather than a hard error.
-            Stmt::Fallback { .. } => {}
+            StmtKind::Fallback { .. } => {}
         }
         Ok(())
     }
@@ -2278,13 +2312,20 @@ impl Compiler {
             let payload = if payload_ty == Ty::Void {
                 zero
             } else {
-                let slot = self.pop_slot(stack, "return value")?;
+                let slot = self.pop_slot(st, stack, "return value")?;
                 // The callee owns heap values it returns; the caller claims
                 // them from the envelope, so the callee must not free them.
                 if self.is_heap(slot.ty) {
                     st.moved.insert(slot.value);
                 }
-                coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)?
+                coerce(
+                    b,
+                    slot.value,
+                    slot.ty,
+                    Ty::I64,
+                    self.ptr_type,
+                    st.current_span,
+                )?
             };
             return Ok(vec![zero, payload]);
         }
@@ -2295,7 +2336,7 @@ impl Compiler {
                     "function returns {n} value(s) but only {} on the stack",
                     stack.len()
                 ),
-                Location::default(),
+                st.current_span,
                 "E323",
             ));
         }
@@ -2332,9 +2373,12 @@ impl Compiler {
         if st.error_value.is_none() {
             return Err(CompileError::new(
                 "'unwrap' requires the caller to declare a fallible return (|T Err|)",
-                Location::default(),
+                st.current_span,
                 "E308",
-            ));
+            )
+            .with_primary_message("`unwrap` here")
+            .with_note("`unwrap` propagates failure to the caller, so the caller must be fallible")
+            .with_help("declare `with |T Err|` on this function, or use `handle ... fallback ... end` instead"));
         }
         let env = stack.pop().unwrap();
         let payload = stack.pop().unwrap();
@@ -2477,13 +2521,13 @@ impl Compiler {
                     success_tys.len(),
                     results.len()
                 ),
-                Location::default(),
+                st.current_span,
                 "E328",
             ));
         }
         let mut args: Vec<BlockArg> = Vec::with_capacity(results.len());
         for (s, want) in results.iter().zip(&success_tys) {
-            let v = coerce(b, s.value, s.ty, *want, self.ptr_type)?;
+            let v = coerce(b, s.value, s.ty, *want, self.ptr_type, st.current_span)?;
             args.push(BlockArg::Value(v));
         }
         b.ins().jump(end, &args);
@@ -2514,11 +2558,11 @@ impl Compiler {
         b.switch_to_block(dead);
     }
 
-    fn pop_slot(&self, stack: &mut Vec<Slot>, what: &str) -> CResult<Slot> {
+    fn pop_slot(&self, st: &FnState, stack: &mut Vec<Slot>, what: &str) -> CResult<Slot> {
         stack.pop().ok_or_else(|| {
             CompileError::new(
                 format!("missing operand for {what}"),
-                Location::default(),
+                st.current_span,
                 "E362",
             )
         })
@@ -2535,7 +2579,7 @@ impl Compiler {
         let fref = st.rt.get(name).copied().ok_or_else(|| {
             CompileError::new(
                 format!("missing runtime function '{name}'"),
-                Location::default(),
+                st.current_span,
                 "E370",
             )
         })?;
@@ -2549,9 +2593,12 @@ impl Compiler {
         if st.unsafe_depth == 0 {
             return Err(CompileError::new(
                 format!("'{what}' requires an unsafe context"),
-                Location::default(),
+                st.current_span,
                 "E370",
-            ));
+            )
+            .with_primary_message("unsafe operation here")
+            .with_note("raw pointers, `mem.allocate`/`free`/`load`/`store`, and `unsafe function` calls need an unsafe context")
+            .with_help("wrap this in `unsafe ... end`, or mark the enclosing function `unsafe function`"));
         }
         Ok(())
     }
@@ -2559,11 +2606,19 @@ impl Compiler {
     /// Reject use of a variable whose value was transferred by `move`.
     fn require_not_moved_var(&self, st: &FnState, name: &str) -> CResult<()> {
         if st.moved_vars.contains(name) {
-            return Err(CompileError::new(
+            let mut err = CompileError::new(
                 format!("use after move: '{name}' no longer owns its value"),
-                Location::default(),
+                st.current_span,
                 "E373",
-            ));
+            )
+            .with_primary_message("value used here after move");
+            if let Some(site) = st.move_sites.get(name).copied() {
+                err = err.with_label(site, "value moved here");
+            }
+            err = err
+                .with_note("after `move`, the source name is empty; use the new owner instead")
+                .with_help("read from the destination variable, or avoid moving if you still need the source");
+            return Err(err);
         }
         Ok(())
     }
@@ -2571,11 +2626,22 @@ impl Compiler {
     /// Reject mutating or consuming a value while a borrow of it is live.
     fn require_not_borrowed(&self, st: &FnState, value: Value, what: &str) -> CResult<()> {
         if st.borrowed.contains(&value) {
-            return Err(CompileError::new(
+            let mut err = CompileError::new(
                 format!("cannot {what} while a borrow is live; release the reference first"),
-                Location::default(),
+                st.current_span,
                 "E374",
-            ));
+            )
+            .with_primary_message(format!("cannot {what} here"))
+            .with_note(
+                "a live `borrow` (or region put) pins the owner until the reference is released",
+            )
+            .with_help(
+                "pop or otherwise consume the reference before mutating or dropping the owner",
+            );
+            if let Some(site) = st.borrow_sites.get(&value).copied() {
+                err = err.with_label(site, "borrow still live here");
+            }
+            return Err(err);
         }
         Ok(())
     }
@@ -2583,11 +2649,18 @@ impl Compiler {
     /// Reject a second overlapping borrow of the same value.
     fn require_can_borrow(&self, st: &FnState, value: Value) -> CResult<()> {
         if st.borrowed.contains(&value) {
-            return Err(CompileError::new(
+            let mut err = CompileError::new(
                 "second overlapping borrow of the same value",
-                Location::default(),
+                st.current_span,
                 "E375",
-            ));
+            )
+            .with_primary_message("second borrow attempted here")
+            .with_note("Yarrow allows only one live borrow of a value at a time")
+            .with_help("release the first reference (e.g. `pop`) before borrowing again");
+            if let Some(site) = st.borrow_sites.get(&value).copied() {
+                err = err.with_label(site, "first borrow is still live");
+            }
+            return Err(err);
         }
         Ok(())
     }
@@ -2597,8 +2670,12 @@ impl Compiler {
         if st.region_freed.contains(&value) {
             return Err(CompileError::new(
                 "use after region free: value was attached to a freed region",
-                Location::default(),
+                st.current_span,
                 "E376",
+            )
+            .with_note("values put into a region become invalid after `region.free`")
+            .with_help(
+                "finish using borrows of region-attached values before freeing the region",
             ));
         }
         Ok(())
@@ -2606,11 +2683,18 @@ impl Compiler {
 
     /// Coerce `slot` to the 64-bit type runtime functions expect (pointers and
     /// ≤ 8-byte scalars round-trip through the low bytes).
-    fn rt_arg(&self, b: &mut FunctionBuilder, slot: Slot) -> CResult<Value> {
+    fn rt_arg(&self, b: &mut FunctionBuilder, st: &FnState, slot: Slot) -> CResult<Value> {
         if slot.ty.clty(self.ptr_type) == self.ptr_type {
             return Ok(slot.value);
         }
-        coerce(b, slot.value, slot.ty, Ty::I64, self.ptr_type)
+        coerce(
+            b,
+            slot.value,
+            slot.ty,
+            Ty::I64,
+            self.ptr_type,
+            st.current_span,
+        )
     }
 
     /// The generic host-call path: `@name` (or a call to an undefined
@@ -2630,7 +2714,7 @@ impl Compiler {
             .ok_or_else(|| {
                 CompileError::new(
                     format!("unknown host function '{name}'"),
-                    Location::default(),
+                    st.current_span,
                     "E372",
                 )
             })?;
@@ -2641,7 +2725,7 @@ impl Compiler {
         if stack.len() < n {
             return Err(CompileError::new(
                 format!("'{name}' requires {n} argument(s)"),
-                Location::default(),
+                st.current_span,
                 "E331",
             ));
         }
@@ -2649,12 +2733,19 @@ impl Compiler {
         let mut args: Vec<Value> = Vec::with_capacity(n);
         for (i, slot) in tail.iter().enumerate() {
             let pt = scalar_ty(host.params[i] as u8);
-            args.push(coerce(b, slot.value, slot.ty, pt, self.ptr_type)?);
+            args.push(coerce(
+                b,
+                slot.value,
+                slot.ty,
+                pt,
+                self.ptr_type,
+                st.current_span,
+            )?);
         }
         let fref = st.rt.get(name).copied().ok_or_else(|| {
             CompileError::new(
                 format!("unregistered host function '{name}'"),
-                Location::default(),
+                st.current_span,
                 "E370",
             )
         })?;
@@ -2704,11 +2795,18 @@ impl Compiler {
             return Ok(());
         }
         if st.borrowed.contains(&slot.value) {
-            return Err(CompileError::new(
+            let mut err = CompileError::new(
                 "cannot drop owner while a borrow is live; release the reference first",
-                Location::default(),
+                st.current_span,
                 "E374",
-            ));
+            )
+            .with_primary_message("owner dropped here")
+            .with_note("dropping an owner while a borrow is live would leave a dangling reference")
+            .with_help("release the reference first, then drop or overwrite the owner");
+            if let Some(site) = st.borrow_sites.get(&slot.value).copied() {
+                err = err.with_label(site, "borrow still live here");
+            }
+            return Err(err);
         }
         let kind = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
         self.rt_call(b, st, "free_value", vec![slot.value, kind])?;
@@ -2722,14 +2820,22 @@ impl Compiler {
         // Popping / dropping a non-borrow view of a value while a borrow is
         // live would free (or discard) the owner too early.
         if slot.own != Own::Borrow && st.borrowed.contains(&slot.value) {
-            return Err(CompileError::new(
+            let mut err = CompileError::new(
                 "cannot pop/drop owner while a borrow is live; release the reference first",
-                Location::default(),
+                st.current_span,
                 "E374",
-            ));
+            )
+            .with_primary_message("owner popped here")
+            .with_note("popping the owner while a borrow is live would discard it too early")
+            .with_help("pop the reference first (or let it fall out of scope), then the owner");
+            if let Some(site) = st.borrow_sites.get(&slot.value).copied() {
+                err = err.with_label(site, "borrow still live here");
+            }
+            return Err(err);
         }
         if slot.own == Own::Borrow {
             st.borrowed.remove(&slot.value);
+            st.borrow_sites.remove(&slot.value);
         }
         self.emit_drop(b, st, slot)
     }
@@ -2748,7 +2854,7 @@ impl Compiler {
         let gv = self.struct_desc_gvs.get(&id).copied().ok_or_else(|| {
             CompileError::new(
                 format!("no field descriptors for struct #{id}"),
-                Location::default(),
+                st.current_span,
                 "E371",
             )
         })?;
@@ -2775,7 +2881,7 @@ impl Compiler {
         let gv = self.union_desc_gvs.get(&id).copied().ok_or_else(|| {
             CompileError::new(
                 format!("no member-kind table for union #{id}"),
-                Location::default(),
+                st.current_span,
                 "E371",
             )
         })?;
@@ -2811,12 +2917,12 @@ impl Compiler {
                         "cannot convert '{from:?}' into union '{}' (members: {:?})",
                         info.name, info.members
                     ),
-                    Location::default(),
+                    st.current_span,
                     "E309",
                 )
             })?;
         let member = info.members[idx];
-        let val = coerce(b, value, from, member, self.ptr_type)?;
+        let val = coerce(b, value, from, member, self.ptr_type, st.current_span)?;
         self.emit_register_union(b, st, id)?;
         let size = b.ins().iconst(irtypes::I64, 16);
         let out = self.rt_call(b, st, "alloc", vec![size])?;
@@ -2855,7 +2961,7 @@ impl Compiler {
             Ty::Union(id) if !matches!(from, Ty::Union(_)) => {
                 self.emit_union_wrap(b, st, value, from, id)
             }
-            _ => coerce(b, value, from, to, self.ptr_type),
+            _ => coerce(b, value, from, to, self.ptr_type, st.current_span),
         }
     }
 
@@ -2908,7 +3014,7 @@ impl Compiler {
         if stack.len() != before + 1 {
             return Err(CompileError::new(
                 "condition must evaluate to a single value",
-                Location::default(),
+                st.current_span,
                 "E324",
             ));
         }
@@ -2916,11 +3022,14 @@ impl Compiler {
         if slot.ty.is_bool() {
             Ok(slot.value)
         } else {
-            Err(CompileError::new(
-                "condition must be bool",
-                Location::default(),
-                "E324",
-            ))
+            Err(
+                CompileError::new("condition must be bool", st.current_span, "E324")
+                    .with_primary_message(format!("expected bool, found {:?}", slot.ty))
+                    .with_note("`if` and conditional `for` require a boolean condition")
+                    .with_help(
+                        "compare with `==`, `<`, `>`, or another relational/logical operator first",
+                    ),
+            )
         }
     }
 
@@ -2939,7 +3048,7 @@ impl Compiler {
         let slot = stack.pop().ok_or_else(|| {
             CompileError::new(
                 "condition must evaluate to a single value",
-                Location::default(),
+                st.current_span,
                 "E324",
             )
         })?;
@@ -2948,7 +3057,7 @@ impl Compiler {
         } else {
             Err(CompileError::new(
                 "condition must be a boolean or integer",
-                Location::default(),
+                st.current_span,
                 "E324",
             ))
         }
@@ -3025,13 +3134,13 @@ impl Compiler {
                 if else_extra.len() != then_extra.len() {
                     return Err(CompileError::new(
                         "if/else branches must leave the same number of values",
-                        Location::default(),
+                        st.current_span,
                         "E328",
                     ));
                 }
                 let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
                 for (s, want) in else_extra.iter().zip(&then_extra) {
-                    let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type)?;
+                    let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type, st.current_span)?;
                     ev.push(BlockArg::Value(v));
                 }
                 b.ins().jump(merge, &ev);
@@ -3083,7 +3192,7 @@ impl Compiler {
             None
         } else {
             self.compile_expr(b, st, stack, value)?;
-            Some(self.pop_slot(stack, "match value")?)
+            Some(self.pop_slot(st, stack, "match value")?)
         };
         let mut sub_stack = pre.clone();
         if let Some(s) = subject {
@@ -3115,7 +3224,7 @@ impl Compiler {
         if has_error_type_case && error_subject.is_none() {
             return Err(CompileError::new(
                 "error member case requires an error subject (inside handle, or a fallible value)",
-                Location::default(),
+                st.current_span,
                 "E308",
             ));
         }
@@ -3126,7 +3235,7 @@ impl Compiler {
             let s = subject.ok_or_else(|| {
                 CompileError::new(
                     "match type dispatch requires a subject value",
-                    Location::default(),
+                    st.current_span,
                     "E308",
                 )
             })?;
@@ -3135,7 +3244,7 @@ impl Compiler {
                 other => {
                     return Err(CompileError::new(
                         format!("match type dispatch requires a union subject, got {other:?}"),
-                        Location::default(),
+                        st.current_span,
                         "E308",
                     ));
                 }
@@ -3170,7 +3279,7 @@ impl Compiler {
                     let (_, id, _) = subject_union.as_ref().ok_or_else(|| {
                         CompileError::new(
                             "union member case requires a union subject",
-                            Location::default(),
+                            st.current_span,
                             "E308",
                         )
                     })?;
@@ -3182,9 +3291,15 @@ impl Compiler {
                                 "case type {t:?} is not a member of union '{}'",
                                 self.unions[*id as usize].name
                             ),
-                            Location::default(),
+                            st.current_span,
                             "E308",
-                        ));
+                        )
+                        .with_primary_message("invalid case type")
+                        .with_note(format!(
+                            "union '{}' members are: {:?}",
+                            self.unions[*id as usize].name, members
+                        ))
+                        .with_help("use a `Type case` that matches a declared member, or handle it in `else`"));
                     }
                     Some(t)
                 }
@@ -3204,7 +3319,7 @@ impl Compiler {
                     if stack.len() > sub_stack.len() {
                         return Err(CompileError::new(
                             "a 'match' case condition must leave the stack balanced",
-                            Location::default(),
+                            st.current_span,
                             "E343",
                         ));
                     }
@@ -3276,12 +3391,12 @@ impl Compiler {
             if stack.len() < sub_stack.len() {
                 return Err(CompileError::new(
                     "'match' branch underflowed the subject stack",
-                    Location::default(),
+                    st.current_span,
                     "E343",
                 ));
             }
             let results = stack.split_off(sub_stack.len());
-            self.match_merge(b, merge, &mut results_ty, results)?;
+            self.match_merge(b, st, merge, &mut results_ty, results)?;
         }
 
         // No cases: fall straight through to `else` (otherwise `else_blk` is
@@ -3296,12 +3411,12 @@ impl Compiler {
         if stack.len() < sub_stack.len() {
             return Err(CompileError::new(
                 "'match' branch underflowed the subject stack",
-                Location::default(),
+                st.current_span,
                 "E343",
             ));
         }
         let results = stack.split_off(sub_stack.len());
-        self.match_merge(b, merge, &mut results_ty, results)?;
+        self.match_merge(b, st, merge, &mut results_ty, results)?;
 
         b.switch_to_block(merge);
         *stack = pre;
@@ -3322,6 +3437,7 @@ impl Compiler {
     fn match_merge(
         &mut self,
         b: &mut FunctionBuilder,
+        st: &FnState,
         merge: Block,
         results_ty: &mut Option<Vec<Ty>>,
         results: Vec<Slot>,
@@ -3339,7 +3455,7 @@ impl Compiler {
                 if prev.len() != results.len() {
                     return Err(CompileError::new(
                         "'match' branches must leave the same number of values",
-                        Location::default(),
+                        st.current_span,
                         "E343",
                     ));
                 }
@@ -3348,7 +3464,7 @@ impl Compiler {
         };
         let mut args: Vec<BlockArg> = Vec::with_capacity(results.len());
         for (s, t) in results.iter().zip(&want) {
-            let v = coerce(b, s.value, s.ty, *t, self.ptr_type)?;
+            let v = coerce(b, s.value, s.ty, *t, self.ptr_type, st.current_span)?;
             args.push(BlockArg::Value(v));
         }
         b.ins().jump(merge, &args);
@@ -3385,7 +3501,7 @@ impl Compiler {
     ) -> CResult<()> {
         let pre = stack.clone();
         self.compile_expr(b, st, stack, source)?;
-        let iterable = self.pop_slot(stack, "'for' iterable")?;
+        let iterable = self.pop_slot(st, stack, "'for' iterable")?;
         // Resolve the element type and how to reach the elements. Arrays have
         // a compile-time length and their storage is the array slot itself;
         // lists store a length in the header and their elements behind
@@ -3410,7 +3526,7 @@ impl Compiler {
             other => {
                 return Err(CompileError::new(
                     format!("'for' requires an array or list iterable, got {other:?}"),
-                    Location::default(),
+                    st.current_span,
                     "E344",
                 ));
             }
@@ -3461,7 +3577,7 @@ impl Compiler {
         if stack.len() != pre.len() {
             return Err(CompileError::new(
                 "'for' body must leave the stack balanced",
-                Location::default(),
+                st.current_span,
                 "E325",
             ));
         }
@@ -3512,7 +3628,7 @@ impl Compiler {
         if stack.len() != pre.len() {
             return Err(CompileError::new(
                 "for body must leave the stack balanced",
-                Location::default(),
+                st.current_span,
                 "E325",
             ));
         }
@@ -3533,14 +3649,14 @@ impl Compiler {
         match e {
             Expr::Integer { value } => {
                 let n = decode_int_literal(value)
-                    .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
+                    .map_err(|m| CompileError::new(m, st.current_span, "E363"))?;
                 // The front-end validates literals; lowering is currently 64-bit.
                 if n < i64::MIN as i128 || n > i64::MAX as i128 {
                     return Err(CompileError::new(
                         format!(
                             "integer literal '{value}' is out of range for 64-bit code generation"
                         ),
-                        Location::default(),
+                        st.current_span,
                         "E364",
                     ));
                 }
@@ -3554,7 +3670,7 @@ impl Compiler {
             }
             Expr::Float { value } => {
                 let n = decode_float_literal(value)
-                    .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
+                    .map_err(|m| CompileError::new(m, st.current_span, "E363"))?;
                 let ty = float_literal_ty(n);
                 let v = match ty {
                     Ty::F32 => b.ins().f32const(n as f32),
@@ -3576,7 +3692,7 @@ impl Compiler {
             }
             Expr::Rune { value } => {
                 let cp = decode_rune_literal(value)
-                    .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
+                    .map_err(|m| CompileError::new(m, st.current_span, "E363"))?;
                 let v = b.ins().iconst(irtypes::I32, cp as i64);
                 stack.push(Slot {
                     value: v,
@@ -3607,7 +3723,7 @@ impl Compiler {
                 } else {
                     return Err(CompileError::new(
                         format!("unknown variable '{name}'"),
-                        Location::default(),
+                        st.current_span,
                         "E320",
                     ));
                 }
@@ -3648,7 +3764,7 @@ impl Compiler {
                             .ok_or_else(|| {
                                 CompileError::new(
                                     format!("error type '{}' has no member '{member}'", info.name),
-                                    Location::default(),
+                                    st.current_span,
                                     "E320",
                                 )
                             })?;
@@ -3672,7 +3788,7 @@ impl Compiler {
                             .ok_or_else(|| {
                                 CompileError::new(
                                     format!("enum '{}' has no member '{member}'", info.name),
-                                    Location::default(),
+                                    st.current_span,
                                     "E320",
                                 )
                             })?;
@@ -3693,7 +3809,7 @@ impl Compiler {
                 let field = self.find_field(sid, member)?;
                 let fty = field.ty;
                 self.compile_expr(b, st, stack, base)?;
-                let ptr = self.pop_slot(stack, "field access")?;
+                let ptr = self.pop_slot(st, stack, "field access")?;
                 let val = b.ins().load(
                     fty.clty(self.ptr_type),
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -3713,14 +3829,14 @@ impl Compiler {
                 let p = Primitive::parse_name(name).ok_or_else(|| {
                     CompileError::new(
                         format!("unknown type value '{name}'"),
-                        Location::default(),
+                        st.current_span,
                         "E302",
                     )
                 })?;
                 let ty = primitive_ty(p).ok_or_else(|| {
                     CompileError::new(
                         format!("type value '{name}' is not yet supported"),
-                        Location::default(),
+                        st.current_span,
                         "E301",
                     )
                 })?;
@@ -3738,28 +3854,29 @@ impl Compiler {
             Expr::Binary { op, left, right } => {
                 self.compile_expr(b, st, stack, left)?;
                 self.compile_expr(b, st, stack, right)?;
-                let r = self.pop_slot(stack, "operator")?;
-                let l = self.pop_slot(stack, "operator")?;
+                let r = self.pop_slot(st, stack, "operator")?;
+                let l = self.pop_slot(st, stack, "operator")?;
                 self.emit_bin(b, st, stack, *op, l, r)?;
             }
             Expr::Unary { op, operand } => {
                 self.compile_expr(b, st, stack, operand)?;
-                let slot = self.pop_slot(stack, "unary operator")?;
-                self.emit_not(b, stack, *op, slot)?;
+                let slot = self.pop_slot(st, stack, "unary operator")?;
+                self.emit_not(b, st, stack, *op, slot)?;
             }
             Expr::Call { target } => self.emit_call(b, st, stack, target)?,
             Expr::ApplyBin(op) => {
-                let r = self.pop_slot(stack, "operator")?;
-                let l = self.pop_slot(stack, "operator")?;
+                let r = self.pop_slot(st, stack, "operator")?;
+                let l = self.pop_slot(st, stack, "operator")?;
                 self.emit_bin(b, st, stack, *op, l, r)?;
             }
             Expr::ApplyUn(op) => {
-                let slot = self.pop_slot(stack, "unary operator")?;
-                self.emit_not(b, stack, *op, slot)?;
+                let slot = self.pop_slot(st, stack, "unary operator")?;
+                self.emit_not(b, st, stack, *op, slot)?;
             }
             Expr::StackOp(op) => self.emit_stackop(b, st, stack, *op)?,
             Expr::Seq(elems) => {
-                for el in elems {
+                for (el, span) in elems {
+                    st.current_span = *span;
                     self.compile_expr(b, st, stack, el)?;
                 }
             }
@@ -3770,7 +3887,7 @@ impl Compiler {
                 let mut elem_ty: Option<Ty> = None;
                 for el in elems {
                     self.compile_expr(b, st, stack, el)?;
-                    let slot = self.pop_slot(stack, "array element")?;
+                    let slot = self.pop_slot(st, stack, "array element")?;
                     elem_ty = Some(match elem_ty {
                         None => slot.ty,
                         Some(t) => common_type(t, slot.ty).ok_or_else(|| {
@@ -3779,7 +3896,7 @@ impl Compiler {
                                     "array literal elements have incompatible types {t:?} and {:?}",
                                     slot.ty
                                 ),
-                                Location::default(),
+                                st.current_span,
                                 "E345",
                             )
                         })?,
@@ -3789,14 +3906,21 @@ impl Compiler {
                 let elem_ty = elem_ty.ok_or_else(|| {
                     CompileError::new(
                         "empty array literal needs a type annotation",
-                        Location::default(),
+                        st.current_span,
                         "E345",
                     )
                 })?;
                 let ptr = self.alloc_array(b, st, elem_ty, elems.len() as u32)?;
                 let elem_size = elem_ty.elem_size() as i32;
                 for (i, slot) in vals.iter().enumerate() {
-                    let val = coerce(b, slot.value, slot.ty, elem_ty, self.ptr_type)?;
+                    let val = coerce(
+                        b,
+                        slot.value,
+                        slot.ty,
+                        elem_ty,
+                        self.ptr_type,
+                        st.current_span,
+                    )?;
                     b.ins().store(
                         cranelift_codegen::ir::MemFlagsData::trusted(),
                         val,
@@ -3835,7 +3959,7 @@ impl Compiler {
                 if all_idents {
                     return Err(CompileError::new(
                         "struct literal requires a declared struct type",
-                        Location::default(),
+                        st.current_span,
                         "E340",
                     ));
                 }
@@ -3873,19 +3997,19 @@ impl Compiler {
                 self.require_unsafe(st, "store through a pointer")?;
                 self.compile_expr(b, st, stack, addr)?;
                 self.compile_expr(b, st, stack, value)?;
-                let value = self.pop_slot(stack, "'store'")?;
-                let addr = self.pop_slot(stack, "'store'")?;
+                let value = self.pop_slot(st, stack, "'store'")?;
+                let addr = self.pop_slot(st, stack, "'store'")?;
                 let Ty::Ptr(code) = addr.ty else {
                     return Err(CompileError::new(
                         format!("'store' requires a pointer target, got {:?}", addr.ty),
-                        Location::default(),
+                        st.current_span,
                         "E341",
                     ));
                 };
                 if code == 0x50 {
                     return Err(CompileError::new(
                         "cannot 'store' through a pointer to an unknown type",
-                        Location::default(),
+                        st.current_span,
                         "E341",
                     ));
                 }
@@ -3923,18 +4047,18 @@ impl Compiler {
         stack: &mut Vec<Slot>,
     ) -> CResult<()> {
         self.require_unsafe(st, "load through a pointer")?;
-        let addr = self.pop_slot(stack, "'load'")?;
+        let addr = self.pop_slot(st, stack, "'load'")?;
         let Ty::Ptr(code) = addr.ty else {
             return Err(CompileError::new(
                 format!("'load' requires a pointer, got {:?}", addr.ty),
-                Location::default(),
+                st.current_span,
                 "E341",
             ));
         };
         if code == 0x50 {
             return Err(CompileError::new(
                 "cannot 'load' through a pointer to an unknown type",
-                Location::default(),
+                st.current_span,
                 "E341",
             ));
         }
@@ -3965,7 +4089,7 @@ impl Compiler {
         let gv = self.fn_gvs.get(value).copied().ok_or_else(|| {
             CompileError::new(
                 "string literal has no data section",
-                Location::default(),
+                st.current_span,
                 "E371",
             )
         })?;
@@ -3973,7 +4097,7 @@ impl Compiler {
         // The lexeme carries the surrounding quotes, so the byte length must
         // come from the decoded literal (matching the data section contents).
         let len = decode_string_literal(value)
-            .map_err(|m| CompileError::new(m, Location::default(), "E363"))?
+            .map_err(|m| CompileError::new(m, st.current_span, "E363"))?
             .len() as i64;
         let len = b.ins().iconst(irtypes::I64, len);
         let out = self.rt_call(b, st, "str_new", vec![addr, len])?;
@@ -4003,7 +4127,7 @@ impl Compiler {
             let mut t: Option<Ty> = None;
             for el in elems {
                 self.compile_expr(b, st, stack, el)?;
-                let slot = self.pop_slot(stack, "list element")?;
+                let slot = self.pop_slot(st, stack, "list element")?;
                 t = Some(match t {
                     None => slot.ty,
                     Some(prev) => common_type(prev, slot.ty).ok_or_else(|| {
@@ -4012,7 +4136,7 @@ impl Compiler {
                                 "list literal elements have incompatible types {prev:?} and {:?}",
                                 slot.ty
                             ),
-                            Location::default(),
+                            st.current_span,
                             "E345",
                         )
                     })?,
@@ -4021,7 +4145,7 @@ impl Compiler {
             t.ok_or_else(|| {
                 CompileError::new(
                     "empty list literal needs a type annotation",
-                    Location::default(),
+                    st.current_span,
                     "E345",
                 )
             })?
@@ -4029,7 +4153,7 @@ impl Compiler {
         let code = elem_code(elem).ok_or_else(|| {
             CompileError::new(
                 format!("list element type {elem:?} is not supported"),
-                Location::default(),
+                st.current_span,
                 "E345",
             )
         })?;
@@ -4062,10 +4186,11 @@ impl Compiler {
     ) -> CResult<()> {
         for el in elems {
             self.compile_expr(b, st, stack, el)?;
-            let slot = self.pop_slot(stack, "list element")?;
-            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type)?;
+            let slot = self.pop_slot(st, stack, "list element")?;
+            let val = coerce(b, slot.value, slot.ty, elem, self.ptr_type, st.current_span)?;
             let arg = self.rt_arg(
                 b,
+                st,
                 Slot {
                     value: val,
                     ty: elem,
@@ -4101,7 +4226,7 @@ impl Compiler {
             Some(_) => {
                 return Err(CompileError::new(
                     "map literal requires a hashmap type",
-                    Location::default(),
+                    st.current_span,
                     "E306",
                 ));
             }
@@ -4110,23 +4235,23 @@ impl Compiler {
                 let mut vt: Option<Ty> = None;
                 for (k, v) in pairs {
                     self.compile_expr(b, st, stack, k)?;
-                    let ks = self.pop_slot(stack, "map key")?;
+                    let ks = self.pop_slot(st, stack, "map key")?;
                     kt = Some(merge_type(kt, ks.ty)?);
                     self.compile_expr(b, st, stack, v)?;
-                    let vs = self.pop_slot(stack, "map value")?;
+                    let vs = self.pop_slot(st, stack, "map value")?;
                     vt = Some(merge_type(vt, vs.ty)?);
                 }
                 let kt = kt.ok_or_else(|| {
                     CompileError::new(
                         "empty map literal needs a type annotation",
-                        Location::default(),
+                        st.current_span,
                         "E306",
                     )
                 })?;
                 let vt = vt.ok_or_else(|| {
                     CompileError::new(
                         "empty map literal needs a type annotation",
-                        Location::default(),
+                        st.current_span,
                         "E306",
                     )
                 })?;
@@ -4136,14 +4261,14 @@ impl Compiler {
         let kcode = elem_code(kt).ok_or_else(|| {
             CompileError::new(
                 format!("map key type {kt:?} is not supported"),
-                Location::default(),
+                st.current_span,
                 "E306",
             )
         })?;
         let vcode = elem_code(vt).ok_or_else(|| {
             CompileError::new(
                 format!("map value type {vt:?} is not supported"),
-                Location::default(),
+                st.current_span,
                 "E306",
             )
         })?;
@@ -4154,10 +4279,11 @@ impl Compiler {
         let handle = out[0];
         for (k, v) in pairs {
             self.compile_expr(b, st, stack, k)?;
-            let ks = self.pop_slot(stack, "map key")?;
-            let karg = coerce(b, ks.value, ks.ty, kt, self.ptr_type)?;
+            let ks = self.pop_slot(st, stack, "map key")?;
+            let karg = coerce(b, ks.value, ks.ty, kt, self.ptr_type, st.current_span)?;
             let karg = self.rt_arg(
                 b,
+                st,
                 Slot {
                     value: karg,
                     ty: kt,
@@ -4165,10 +4291,11 @@ impl Compiler {
                 },
             )?;
             self.compile_expr(b, st, stack, v)?;
-            let vs = self.pop_slot(stack, "map value")?;
-            let varg = coerce(b, vs.value, vs.ty, vt, self.ptr_type)?;
+            let vs = self.pop_slot(st, stack, "map value")?;
+            let varg = coerce(b, vs.value, vs.ty, vt, self.ptr_type, st.current_span)?;
             let varg = self.rt_arg(
                 b,
+                st,
                 Slot {
                     value: varg,
                     ty: vt,
@@ -4203,7 +4330,7 @@ impl Compiler {
             // through the `pointer<T>` layer (`load`, member access, `set`).
             "load" => {
                 self.require_unsafe(st, "@load")?;
-                let addr = self.pop_slot(stack, "'@load'")?;
+                let addr = self.pop_slot(st, stack, "'@load'")?;
                 let val = b.ins().load(
                     irtypes::I64,
                     cranelift_codegen::ir::MemFlagsData::trusted(),
@@ -4218,9 +4345,16 @@ impl Compiler {
             }
             "store" => {
                 self.require_unsafe(st, "@store")?;
-                let value = self.pop_slot(stack, "'@store'")?;
-                let addr = self.pop_slot(stack, "'@store'")?;
-                let val = coerce(b, value.value, value.ty, Ty::I64, self.ptr_type)?;
+                let value = self.pop_slot(st, stack, "'@store'")?;
+                let addr = self.pop_slot(st, stack, "'@store'")?;
+                let val = coerce(
+                    b,
+                    value.value,
+                    value.ty,
+                    Ty::I64,
+                    self.ptr_type,
+                    st.current_span,
+                )?;
                 b.ins().store(
                     cranelift_codegen::ir::MemFlagsData::trusted(),
                     val,
@@ -4237,7 +4371,7 @@ impl Compiler {
                 });
             }
             "free_region" => {
-                let region = self.pop_slot(stack, "'@free_region'")?;
+                let region = self.pop_slot(st, stack, "'@free_region'")?;
                 // Values still borrowed from this region would escape the free.
                 let attached: Vec<Value> = st
                     .region_attached
@@ -4252,11 +4386,18 @@ impl Compiler {
                     .collect();
                 for val in &attached {
                     if st.borrowed.contains(val) {
-                        return Err(CompileError::new(
+                        let mut err = CompileError::new(
                             "region escape: cannot free region while a borrow of an attached value is live",
-                            Location::default(),
+                            st.current_span,
                             "E376",
-                        ));
+                        )
+                        .with_primary_message("region freed here")
+                        .with_note("freeing a region invalidates every value attached to it")
+                        .with_help("release borrows of attached values (e.g. `pop`) before `region.free`");
+                        if let Some(site) = st.borrow_sites.get(val).copied() {
+                            err = err.with_label(site, "borrow of attached value still live");
+                        }
+                        return Err(err);
                     }
                     st.region_attached.remove(val);
                     st.region_freed.insert(*val);
@@ -4264,15 +4405,15 @@ impl Compiler {
                 self.rt_call(b, st, "region_free", vec![region.value])?;
             }
             "put_region" => {
-                let region = self.pop_slot(stack, "'@put_region'")?;
-                let value = self.pop_slot(stack, "'@put_region'")?;
+                let region = self.pop_slot(st, stack, "'@put_region'")?;
+                let value = self.pop_slot(st, stack, "'@put_region'")?;
                 if !value.ty.is_pointer() {
                     return Err(CompileError::new(
                         format!(
                             "'@put_region' requires a reference, struct, array, string or container, got {:?}",
                             value.ty
                         ),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4289,6 +4430,7 @@ impl Compiler {
                 st.moved.insert(value.value);
                 st.region_attached.insert(value.value, region.value);
                 st.borrowed.insert(value.value);
+                st.borrow_sites.insert(value.value, st.current_span);
                 stack.push(Slot {
                     value: value.value,
                     ty: value.ty,
@@ -4297,14 +4439,14 @@ impl Compiler {
             }
 
             "string_join" => {
-                let sep = self.pop_slot(stack, "'@string_join'")?;
-                let right = self.pop_slot(stack, "'@string_join'")?;
-                let left = self.pop_slot(stack, "'@string_join'")?;
+                let sep = self.pop_slot(st, stack, "'@string_join'")?;
+                let right = self.pop_slot(st, stack, "'@string_join'")?;
+                let left = self.pop_slot(st, stack, "'@string_join'")?;
                 for s in [&left, &right, &sep] {
                     if s.ty != Ty::String {
                         return Err(CompileError::new(
                             format!("'@string_join' requires string operands, got {:?}", s.ty),
-                            Location::default(),
+                            st.current_span,
                             "E372",
                         ));
                     }
@@ -4322,11 +4464,11 @@ impl Compiler {
                 });
             }
             "string_len" => {
-                let s = self.pop_slot(stack, "'@string_len'")?;
+                let s = self.pop_slot(st, stack, "'@string_len'")?;
                 if s.ty != Ty::String {
                     return Err(CompileError::new(
                         format!("'@string_len' requires a string, got {:?}", s.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4339,21 +4481,29 @@ impl Compiler {
             }
 
             "list_push" => {
-                let value = self.pop_slot(stack, "'@list_push'")?;
-                let list = self.pop_slot(stack, "'@list_push'")?;
+                let value = self.pop_slot(st, stack, "'@list_push'")?;
+                let list = self.pop_slot(st, stack, "'@list_push'")?;
                 let Ty::List { elem } = list.ty else {
                     return Err(CompileError::new(
                         format!("'@list_push' requires a list, got {:?}", list.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 };
                 self.require_region_live(st, list.value)?;
                 self.require_not_borrowed(st, list.value, "mutate")?;
                 let elem_ty = elem_ty(elem);
-                let val = coerce(b, value.value, value.ty, elem_ty, self.ptr_type)?;
+                let val = coerce(
+                    b,
+                    value.value,
+                    value.ty,
+                    elem_ty,
+                    self.ptr_type,
+                    st.current_span,
+                )?;
                 let arg = self.rt_arg(
                     b,
+                    st,
                     Slot {
                         value: val,
                         ty: elem_ty,
@@ -4364,11 +4514,11 @@ impl Compiler {
                 stack.push(list);
             }
             "list_len" => {
-                let list = self.pop_slot(stack, "'@list_len'")?;
+                let list = self.pop_slot(st, stack, "'@list_len'")?;
                 if !matches!(list.ty, Ty::List { .. }) {
                     return Err(CompileError::new(
                         format!("'@list_len' requires a list, got {:?}", list.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4380,17 +4530,24 @@ impl Compiler {
                 });
             }
             "list_get" => {
-                let idx = self.pop_slot(stack, "'@list_get'")?;
-                let list = self.pop_slot(stack, "'@list_get'")?;
+                let idx = self.pop_slot(st, stack, "'@list_get'")?;
+                let list = self.pop_slot(st, stack, "'@list_get'")?;
                 let Ty::List { elem } = list.ty else {
                     return Err(CompileError::new(
                         format!("'@list_get' requires a list, got {:?}", list.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 };
                 let elem_ty = elem_ty(elem);
-                let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
+                let idx = coerce(
+                    b,
+                    idx.value,
+                    idx.ty,
+                    Ty::I64,
+                    self.ptr_type,
+                    st.current_span,
+                )?;
                 let len = self.rt_call(b, st, "list_len", vec![list.value])?;
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
                 b.ins().trapz(inb, TrapCode::unwrap_user(1));
@@ -4415,20 +4572,27 @@ impl Compiler {
                 });
             }
             "list_set" => {
-                let value = self.pop_slot(stack, "'@list_set'")?;
-                let idx = self.pop_slot(stack, "'@list_set'")?;
-                let list = self.pop_slot(stack, "'@list_set'")?;
+                let value = self.pop_slot(st, stack, "'@list_set'")?;
+                let idx = self.pop_slot(st, stack, "'@list_set'")?;
+                let list = self.pop_slot(st, stack, "'@list_set'")?;
                 let Ty::List { elem } = list.ty else {
                     return Err(CompileError::new(
                         format!("'@list_set' requires a list, got {:?}", list.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 };
                 self.require_region_live(st, list.value)?;
                 self.require_not_borrowed(st, list.value, "mutate")?;
                 let elem_ty = elem_ty(elem);
-                let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
+                let idx = coerce(
+                    b,
+                    idx.value,
+                    idx.ty,
+                    Ty::I64,
+                    self.ptr_type,
+                    st.current_span,
+                )?;
                 let len = self.rt_call(b, st, "list_len", vec![list.value])?;
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, idx, len[0]);
                 b.ins().trapz(inb, TrapCode::unwrap_user(1));
@@ -4440,15 +4604,22 @@ impl Compiler {
                 );
                 let off = b.ins().imul_imm(idx, elem_ty.elem_size() as i64);
                 let addr = b.ins().iadd(base, off);
-                let val = coerce(b, value.value, value.ty, elem_ty, self.ptr_type)?;
+                let val = coerce(
+                    b,
+                    value.value,
+                    value.ty,
+                    elem_ty,
+                    self.ptr_type,
+                    st.current_span,
+                )?;
                 b.ins()
                     .store(cranelift_codegen::ir::MemFlagsData::trusted(), val, addr, 0);
                 stack.push(list);
             }
 
             "map_get" => {
-                let key = self.pop_slot(stack, "'@map_get'")?;
-                let map = self.pop_slot(stack, "'@map_get'")?;
+                let key = self.pop_slot(st, stack, "'@map_get'")?;
+                let map = self.pop_slot(st, stack, "'@map_get'")?;
                 let Ty::Hashmap {
                     key: kcode,
                     value: vcode,
@@ -4456,15 +4627,16 @@ impl Compiler {
                 else {
                     return Err(CompileError::new(
                         format!("'@map_get' requires a hashmap, got {:?}", map.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 };
                 let kt = elem_ty(kcode);
                 let vt = elem_ty(vcode);
-                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type)?;
+                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type, st.current_span)?;
                 let karg = self.rt_arg(
                     b,
+                    st,
                     Slot {
                         value: karg,
                         ty: kt,
@@ -4488,7 +4660,7 @@ impl Compiler {
                 let val = if vt.clty(self.ptr_type) == self.ptr_type {
                     val
                 } else {
-                    coerce(b, val, Ty::I64, vt, self.ptr_type)?
+                    coerce(b, val, Ty::I64, vt, self.ptr_type, st.current_span)?
                 };
                 stack.push(Slot {
                     value: val,
@@ -4502,9 +4674,9 @@ impl Compiler {
                 });
             }
             "map_set" => {
-                let value = self.pop_slot(stack, "'@map_set'")?;
-                let key = self.pop_slot(stack, "'@map_set'")?;
-                let map = self.pop_slot(stack, "'@map_set'")?;
+                let value = self.pop_slot(st, stack, "'@map_set'")?;
+                let key = self.pop_slot(st, stack, "'@map_set'")?;
+                let map = self.pop_slot(st, stack, "'@map_set'")?;
                 let Ty::Hashmap {
                     key: kcode,
                     value: vcode,
@@ -4512,7 +4684,7 @@ impl Compiler {
                 else {
                     return Err(CompileError::new(
                         format!("'@map_set' requires a hashmap, got {:?}", map.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 };
@@ -4520,18 +4692,20 @@ impl Compiler {
                 self.require_not_borrowed(st, map.value, "mutate")?;
                 let kt = elem_ty(kcode);
                 let vt = elem_ty(vcode);
-                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type)?;
+                let karg = coerce(b, key.value, key.ty, kt, self.ptr_type, st.current_span)?;
                 let karg = self.rt_arg(
                     b,
+                    st,
                     Slot {
                         value: karg,
                         ty: kt,
                         own: Own::Trivial,
                     },
                 )?;
-                let varg = coerce(b, value.value, value.ty, vt, self.ptr_type)?;
+                let varg = coerce(b, value.value, value.ty, vt, self.ptr_type, st.current_span)?;
                 let varg = self.rt_arg(
                     b,
+                    st,
                     Slot {
                         value: varg,
                         ty: vt,
@@ -4542,11 +4716,11 @@ impl Compiler {
                 stack.push(map);
             }
             "map_len" => {
-                let map = self.pop_slot(stack, "'@map_len'")?;
+                let map = self.pop_slot(st, stack, "'@map_len'")?;
                 if !matches!(map.ty, Ty::Hashmap { .. }) {
                     return Err(CompileError::new(
                         format!("'@map_len' requires a hashmap, got {:?}", map.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4559,35 +4733,35 @@ impl Compiler {
             }
 
             "print" => {
-                let s = self.pop_slot(stack, "'@print'")?;
+                let s = self.pop_slot(st, stack, "'@print'")?;
                 if s.ty != Ty::String {
                     return Err(CompileError::new(
                         format!("'@print' requires a string, got {:?}", s.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
                 self.rt_call(b, st, "print_str", vec![s.value])?;
             }
             "print_int" => {
-                let v = self.pop_slot(stack, "'@print_int'")?;
-                let arg = coerce(b, v.value, v.ty, Ty::I64, self.ptr_type)?;
+                let v = self.pop_slot(st, stack, "'@print_int'")?;
+                let arg = coerce(b, v.value, v.ty, Ty::I64, self.ptr_type, st.current_span)?;
                 self.rt_call(b, st, "print_int", vec![arg])?;
             }
             "print_float" => {
-                let v = self.pop_slot(stack, "'@print_float'")?;
-                let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type)?;
+                let v = self.pop_slot(st, stack, "'@print_float'")?;
+                let arg = coerce(b, v.value, v.ty, Ty::F64, self.ptr_type, st.current_span)?;
                 self.rt_call(b, st, "print_float", vec![arg])?;
             }
             "print_newline" => {
                 self.rt_call(b, st, "print_newline", Vec::new())?;
             }
             "print_array" => {
-                let v = self.pop_slot(stack, "'@print_array'")?;
+                let v = self.pop_slot(st, stack, "'@print_array'")?;
                 if !matches!(v.ty, Ty::Array { .. }) {
                     return Err(CompileError::new(
                         format!("'@print_array' requires an array, got {:?}", v.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4595,11 +4769,11 @@ impl Compiler {
                 self.rt_call(b, st, "print_array", vec![v.value, kind])?;
             }
             "print_list" => {
-                let v = self.pop_slot(stack, "'@print_list'")?;
+                let v = self.pop_slot(st, stack, "'@print_list'")?;
                 if !matches!(v.ty, Ty::List { .. }) {
                     return Err(CompileError::new(
                         format!("'@print_list' requires a list, got {:?}", v.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4607,11 +4781,11 @@ impl Compiler {
                 self.rt_call(b, st, "print_list", vec![v.value, kind])?;
             }
             "print_hashmap" => {
-                let v = self.pop_slot(stack, "'@print_hashmap'")?;
+                let v = self.pop_slot(st, stack, "'@print_hashmap'")?;
                 if !matches!(v.ty, Ty::Hashmap { .. }) {
                     return Err(CompileError::new(
                         format!("'@print_hashmap' requires a hashmap, got {:?}", v.ty),
-                        Location::default(),
+                        st.current_span,
                         "E372",
                     ));
                 }
@@ -4662,7 +4836,7 @@ impl Compiler {
                                     "module '{}' only exports '{}' (not '{member}')",
                                     path, item
                                 ),
-                                Location::default(),
+                                st.current_span,
                                 "E330",
                             ));
                         }
@@ -4674,7 +4848,7 @@ impl Compiler {
                         } else if !self.func_ids.contains_key(&fq) {
                             return Err(CompileError::new(
                                 format!("module '{path}' has no function '{member}'"),
-                                Location::default(),
+                                st.current_span,
                                 "E330",
                             ));
                         } else {
@@ -4690,7 +4864,7 @@ impl Compiler {
             _ => {
                 return Err(CompileError::new(
                     "'call' target must be a function name",
-                    Location::default(),
+                    st.current_span,
                     "E329",
                 ));
             }
@@ -4712,18 +4886,18 @@ impl Compiler {
             }
             return Err(CompileError::new(
                 format!("unknown function '{name}'"),
-                Location::default(),
+                st.current_span,
                 "E330",
             ));
         }
         let (param_tys, return_tys) = self.sig_tys.get(&name).cloned().ok_or_else(|| {
-            CompileError::new("missing function signature", Location::default(), "E330")
+            CompileError::new("missing function signature", st.current_span, "E330")
         })?;
         let n = param_tys.len();
         if stack.len() < n {
             return Err(CompileError::new(
                 format!("call to '{name}' requires {n} argument(s)"),
-                Location::default(),
+                st.current_span,
                 "E331",
             ));
         }
@@ -4735,6 +4909,7 @@ impl Compiler {
             // the caller's point of view (the reference lives in the callee).
             if slot.own == Own::Borrow {
                 st.borrowed.remove(&slot.value);
+                st.borrow_sites.remove(&slot.value);
             }
             // An owned value passed by value to a callee is borrowed by the
             // callee (never freed there). The caller drops it once the call
@@ -4760,7 +4935,7 @@ impl Compiler {
         let fref = st.frefs.get(&name).copied().ok_or_else(|| {
             CompileError::new(
                 format!("unregistered callee '{name}'"),
-                Location::default(),
+                st.current_span,
                 "E330",
             )
         })?;
@@ -4774,7 +4949,14 @@ impl Compiler {
             let payload = if payload_ty == Ty::Void {
                 results[1]
             } else {
-                coerce(b, results[1], Ty::I64, payload_ty, self.ptr_type)?
+                coerce(
+                    b,
+                    results[1],
+                    Ty::I64,
+                    payload_ty,
+                    self.ptr_type,
+                    st.current_span,
+                )?
             };
             self.claim(st, payload, payload_ty);
             stack.push(Slot {
@@ -4816,7 +4998,7 @@ impl Compiler {
         if !self.func_ids.contains_key(&method) {
             return Err(CompileError::new(
                 format!("struct '{sname}' has no method '{member}'"),
-                Location::default(),
+                st.current_span,
                 "E342",
             ));
         }
@@ -4833,7 +5015,7 @@ impl Compiler {
         st: &mut FnState,
         stack: &mut Vec<Slot>,
     ) -> CResult<()> {
-        let slot = self.pop_slot(stack, "'typeof'")?;
+        let slot = self.pop_slot(st, stack, "'typeof'")?;
         self.consume(b, st, slot)?;
         let v = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
         stack.push(Slot {
@@ -4855,14 +5037,14 @@ impl Compiler {
         st: &mut FnState,
         stack: &mut Vec<Slot>,
     ) -> CResult<()> {
-        let s = self.pop_slot(stack, "'borrow'")?;
+        let s = self.pop_slot(st, stack, "'borrow'")?;
         if !s.ty.is_pointer() {
             return Err(CompileError::new(
                 format!(
                     "'borrow' requires a reference, struct, array, string or container, got {:?}",
                     s.ty
                 ),
-                Location::default(),
+                st.current_span,
                 "E341",
             ));
         }
@@ -4872,6 +5054,7 @@ impl Compiler {
             st.moved.insert(s.value);
         }
         st.borrowed.insert(s.value);
+        st.borrow_sites.insert(s.value, st.current_span);
         stack.push(Slot {
             value: s.value,
             ty: s.ty,
@@ -4900,14 +5083,14 @@ impl Compiler {
             _ => None,
         };
         self.compile_expr(b, st, stack, source)?;
-        let src = self.pop_slot(stack, "'move' source")?;
+        let src = self.pop_slot(st, stack, "'move' source")?;
         if !src.ty.is_pointer() {
             return Err(CompileError::new(
                 format!(
                     "'move' requires a reference, struct, array, string or container, got {:?}",
                     src.ty
                 ),
-                Location::default(),
+                st.current_span,
                 "E341",
             ));
         }
@@ -4916,12 +5099,12 @@ impl Compiler {
         let (var, ty, _own) = st.vars.get(target).cloned().ok_or_else(|| {
             CompileError::new(
                 format!("unknown variable '{target}'"),
-                Location::default(),
+                st.current_span,
                 "E320",
             )
         })?;
         // Type-check the transfer (exact type match or a valid coercion).
-        coerce(b, src.value, src.ty, ty, self.ptr_type)?;
+        coerce(b, src.value, src.ty, ty, self.ptr_type, st.current_span)?;
         // Drop the value the target currently owns (the runtime guards double
         // frees), then rebind it to the source's storage.
         if self.is_heap(ty) {
@@ -4935,6 +5118,7 @@ impl Compiler {
         st.moved.insert(src.value);
         if let Some(name) = src_name {
             st.moved_vars.insert(name.clone());
+            st.move_sites.insert(name.clone(), st.current_span);
             if let Some((svar, sty, _)) = st.vars.get(&name).cloned() {
                 st.vars.insert(name, (svar, sty, Own::Trivial));
             }
@@ -4961,7 +5145,7 @@ impl Compiler {
     ) -> CResult<()> {
         match op {
             StackOp::Dup => {
-                let s = self.pop_slot(stack, "dup")?;
+                let s = self.pop_slot(st, stack, "dup")?;
                 // A duplicate is a second live reference to the same storage;
                 // demote the owner to a borrow so only one side drops it.
                 let own = if s.own.is_owned() {
@@ -4982,29 +5166,29 @@ impl Compiler {
                 });
             }
             StackOp::Unrot => {
-                let a = self.pop_slot(stack, "unrot")?;
-                let second = self.pop_slot(stack, "unrot")?;
-                let third = self.pop_slot(stack, "unrot")?;
+                let a = self.pop_slot(st, stack, "unrot")?;
+                let second = self.pop_slot(st, stack, "unrot")?;
+                let third = self.pop_slot(st, stack, "unrot")?;
                 stack.push(a);
                 stack.push(third);
                 stack.push(second);
             }
             StackOp::Swap => {
-                let top = self.pop_slot(stack, "swap")?;
-                let sec = self.pop_slot(stack, "swap")?;
+                let top = self.pop_slot(st, stack, "swap")?;
+                let sec = self.pop_slot(st, stack, "swap")?;
                 stack.push(top);
                 stack.push(sec);
             }
             StackOp::Rot => {
-                let a = self.pop_slot(stack, "rot")?;
-                let second = self.pop_slot(stack, "rot")?;
-                let third = self.pop_slot(stack, "rot")?;
+                let a = self.pop_slot(st, stack, "rot")?;
+                let second = self.pop_slot(st, stack, "rot")?;
+                let third = self.pop_slot(st, stack, "rot")?;
                 stack.push(second);
                 stack.push(third);
                 stack.push(a);
             }
             StackOp::Pop => {
-                let slot = self.pop_slot(stack, "pop")?;
+                let slot = self.pop_slot(st, stack, "pop")?;
                 self.consume(b, st, slot)?;
             }
             StackOp::Drop => {
@@ -5034,11 +5218,7 @@ impl Compiler {
         match member {
             "break" => {
                 let loop_ctx = st.loops.last().ok_or_else(|| {
-                    CompileError::new(
-                        "'loop.break' outside of a loop",
-                        Location::default(),
-                        "E321",
-                    )
+                    CompileError::new("'loop.break' outside of a loop", st.current_span, "E321")
                 })?;
                 b.ins().jump(loop_ctx.break_to, &[]);
                 self.dead_block(b);
@@ -5046,11 +5226,7 @@ impl Compiler {
             }
             "continue" => {
                 let loop_ctx = st.loops.last().ok_or_else(|| {
-                    CompileError::new(
-                        "'loop.continue' outside of a loop",
-                        Location::default(),
-                        "E322",
-                    )
+                    CompileError::new("'loop.continue' outside of a loop", st.current_span, "E322")
                 })?;
                 b.ins().jump(loop_ctx.continue_to, &[]);
                 self.dead_block(b);
@@ -5149,7 +5325,7 @@ impl Compiler {
             }
             _ => Err(CompileError::new(
                 format!("unknown std intrinsic '{fq}'"),
-                Location::default(),
+                st.current_span,
                 "E330",
             )),
         }
@@ -5173,9 +5349,13 @@ impl Compiler {
         }
         Err(CompileError::new(
             format!("'{fq}' is not public and cannot be used across 'require'"),
-            Location::default(),
+            Span::default(),
             "E381",
-        ))
+        )
+        .with_note("only `public` functions are visible to other modules via `require`")
+        .with_help(format!(
+            "mark the function `public`, or call it only from within `{mod_path}`"
+        )))
     }
 
     /// Deep-copy a heap value for a `copy` parameter. Scalars never reach here.
@@ -5197,7 +5377,7 @@ impl Compiler {
             }
             other => Err(CompileError::unsupported(
                 format!("'copy' for {other:?} is not yet supported"),
-                Location::default(),
+                st.current_span,
                 "E336",
             )),
         }
@@ -5206,6 +5386,7 @@ impl Compiler {
     fn emit_not(
         &mut self,
         b: &mut FunctionBuilder,
+        st: &FnState,
         stack: &mut Vec<Slot>,
         _op: UnOp,
         slot: Slot,
@@ -5223,7 +5404,7 @@ impl Compiler {
             _ => {
                 return Err(CompileError::new(
                     format!("'not' requires a bool, int or float, got {:?}", slot.ty),
-                    Location::default(),
+                    st.current_span,
                     "E332",
                 ));
             }
@@ -5261,7 +5442,14 @@ impl Compiler {
         };
         if let Some((ptr, off, sub)) = ptr_math {
             self.require_unsafe(st, "pointer arithmetic")?;
-            let off = coerce(b, off.value, off.ty, Ty::I64, self.ptr_type)?;
+            let off = coerce(
+                b,
+                off.value,
+                off.ty,
+                Ty::I64,
+                self.ptr_type,
+                st.current_span,
+            )?;
             let addr = if sub {
                 b.ins().isub(ptr.value, off)
             } else {
@@ -5283,7 +5471,7 @@ impl Compiler {
             if lt != Ty::String || rt != Ty::String {
                 return Err(CompileError::new(
                     format!("'~' requires string operands, got {lt:?} and {rt:?}"),
-                    Location::default(),
+                    st.current_span,
                     "E335",
                 ));
             }
@@ -5299,7 +5487,7 @@ impl Compiler {
         if op == Plus && (l.ty == Ty::String || r.ty == Ty::String) {
             return Err(CompileError::new(
                 "string concatenation uses '~', not '+'",
-                Location::default(),
+                st.current_span,
                 "E335",
             ));
         }
@@ -5311,7 +5499,7 @@ impl Compiler {
                     if l.ty.is_pointer() { l.ty } else { r.ty },
                     op
                 ),
-                Location::default(),
+                st.current_span,
                 "E333",
             ));
         }
@@ -5322,7 +5510,7 @@ impl Compiler {
                     "incompatible operand types {:?} and {:?} for {:?}",
                     l.ty, r.ty, op
                 ),
-                Location::default(),
+                st.current_span,
                 "E333",
             )
         })?;
@@ -5331,7 +5519,7 @@ impl Compiler {
             Plus if common == Ty::String => {
                 return Err(CompileError::new(
                     "string concatenation uses '~', not '+'",
-                    Location::default(),
+                    st.current_span,
                     "E335",
                 ));
             }
@@ -5341,8 +5529,8 @@ impl Compiler {
             }
             Plus | Minus | Mul | Mod | Pow => {
                 if common.is_float() {
-                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                     let v = match op {
                         Plus => b.ins().fadd(ll, rr),
                         Minus => b.ins().fsub(ll, rr),
@@ -5350,7 +5538,7 @@ impl Compiler {
                         _ => {
                             return Err(CompileError::unsupported(
                                 "float 'mod'/'^' are not yet supported",
-                                Location::default(),
+                                st.current_span,
                                 "E334",
                             ));
                         }
@@ -5361,8 +5549,8 @@ impl Compiler {
                         own: Own::Trivial,
                     });
                 } else {
-                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                     let v = match op {
                         Plus => b.ins().iadd(ll, rr),
                         Minus => b.ins().isub(ll, rr),
@@ -5375,8 +5563,10 @@ impl Compiler {
                             }
                         }
                         Pow => {
-                            let lw = coerce(b, ll, common, Ty::I64, self.ptr_type)?;
-                            let rw = coerce(b, rr, common, Ty::I64, self.ptr_type)?;
+                            let lw =
+                                coerce(b, ll, common, Ty::I64, self.ptr_type, st.current_span)?;
+                            let rw =
+                                coerce(b, rr, common, Ty::I64, self.ptr_type, st.current_span)?;
                             self.emit_int_pow(b, lw, rw, irtypes::I64)?
                         }
                         _ => unreachable!(),
@@ -5391,8 +5581,8 @@ impl Compiler {
 
             Div => {
                 if common.is_float() {
-                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                     let v = b.ins().fdiv(ll, rr);
                     stack.push(Slot {
                         value: v,
@@ -5401,8 +5591,8 @@ impl Compiler {
                     });
                 } else {
                     // `10 4 /` yields 2.5: promote integers to f64.
-                    let ll = coerce(b, l.value, l.ty, Ty::F64, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, Ty::F64, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, Ty::F64, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, Ty::F64, self.ptr_type, st.current_span)?;
                     let v = b.ins().fdiv(ll, rr);
                     stack.push(Slot {
                         value: v,
@@ -5416,12 +5606,12 @@ impl Compiler {
                 if common.is_float() {
                     return Err(CompileError::new(
                         "'//' (floor divide) requires integer operands",
-                        Location::default(),
+                        st.current_span,
                         "E335",
                     ));
                 }
-                let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                 let v = if common.is_signed() {
                     b.ins().sdiv(ll, rr)
                 } else {
@@ -5455,8 +5645,8 @@ impl Compiler {
                         own: Own::Trivial,
                     });
                 } else if common.is_float() {
-                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                     let fcc = match op {
                         Eq => FloatCC::Equal,
                         Ne => FloatCC::NotEqual,
@@ -5473,8 +5663,8 @@ impl Compiler {
                         own: Own::Trivial,
                     });
                 } else {
-                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                    let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                    let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                     let cc = match op {
                         Eq => IntCC::Equal,
                         Ne => IntCC::NotEqual,
@@ -5501,12 +5691,12 @@ impl Compiler {
                 if !(common.is_bool() || common.is_int()) {
                     return Err(CompileError::new(
                         "'and'/'or'/'xor' require bool or integer operands",
-                        Location::default(),
+                        st.current_span,
                         "E336",
                     ));
                 }
-                let ll = coerce(b, l.value, l.ty, common, self.ptr_type)?;
-                let rr = coerce(b, r.value, r.ty, common, self.ptr_type)?;
+                let ll = coerce(b, l.value, l.ty, common, self.ptr_type, st.current_span)?;
+                let rr = coerce(b, r.value, r.ty, common, self.ptr_type, st.current_span)?;
                 let v = match op {
                     And => b.ins().band(ll, rr),
                     Or => b.ins().bor(ll, rr),
@@ -5522,8 +5712,8 @@ impl Compiler {
 
             Lshift | Rshift => {
                 // Shift both operands to 64-bit; the result is 64-bit.
-                let ll = coerce(b, l.value, l.ty, Ty::I64, self.ptr_type)?;
-                let rr = coerce(b, r.value, r.ty, Ty::I64, self.ptr_type)?;
+                let ll = coerce(b, l.value, l.ty, Ty::I64, self.ptr_type, st.current_span)?;
+                let rr = coerce(b, r.value, r.ty, Ty::I64, self.ptr_type, st.current_span)?;
                 let v = match op {
                     Lshift => b.ins().ishl(ll, rr),
                     Rshift => {
@@ -5602,8 +5792,13 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
     fn walk_expr<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
         match e {
             Expr::String { value } => push(value, out),
-            Expr::Array(es) | Expr::List(es) | Expr::Seq(es) => {
+            Expr::Array(es) | Expr::List(es) => {
                 for el in es {
+                    walk_expr(el, out);
+                }
+            }
+            Expr::Seq(es) => {
+                for (el, _) in es {
                     walk_expr(el, out);
                 }
             }
@@ -5627,14 +5822,14 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
         }
     }
     for s in stmts {
-        match s {
-            Stmt::Expr(e) => walk_expr(e, out),
-            Stmt::VarDecl { value, .. } | Stmt::Set { value, .. } => {
+        match &s.kind {
+            StmtKind::Expr(e) => walk_expr(e, out),
+            StmtKind::VarDecl { value, .. } | StmtKind::Set { value, .. } => {
                 if let Some(v) = value {
                     walk_expr(v, out);
                 }
             }
-            Stmt::If {
+            StmtKind::If {
                 condition,
                 then_branch,
                 else_branch,
@@ -5643,11 +5838,11 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
                 collect_strings(then_branch, out);
                 collect_strings(else_branch, out);
             }
-            Stmt::For { source, body } => {
+            StmtKind::For { source, body } => {
                 walk_expr(source, out);
                 collect_strings(body, out);
             }
-            Stmt::Match {
+            StmtKind::Match {
                 value,
                 cases,
                 else_branch,
@@ -5662,18 +5857,18 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
                 }
                 collect_strings(else_branch, out);
             }
-            Stmt::Return { value: Some(v) } => walk_expr(v, out),
-            Stmt::Return { value: None } => {}
-            Stmt::Defer { body } => collect_strings(body, out),
-            Stmt::Unsafe { body } => collect_strings(body, out),
-            Stmt::Handle { body, fallback } => {
+            StmtKind::Return { value: Some(v) } => walk_expr(v, out),
+            StmtKind::Return { value: None } => {}
+            StmtKind::Defer { body } => collect_strings(body, out),
+            StmtKind::Unsafe { body } => collect_strings(body, out),
+            StmtKind::Handle { body, fallback } => {
                 collect_strings(body, out);
                 if let Some(fb) = fallback {
                     walk_expr(fb, out);
                 }
             }
-            Stmt::Function(f) => collect_strings(&f.body, out),
-            Stmt::Implement(imp) => {
+            StmtKind::Function(f) => collect_strings(&f.body, out),
+            StmtKind::Implement(imp) => {
                 for f in &imp.functions {
                     collect_strings(&f.body, out);
                 }
@@ -5690,7 +5885,7 @@ fn merge_type(prev: Option<Ty>, next: Ty) -> CResult<Ty> {
         Some(prev) => common_type(prev, next).ok_or_else(|| {
             CompileError::new(
                 format!("incompatible element types {prev:?} and {next:?}"),
-                Location::default(),
+                Span::default(),
                 "E345",
             )
         }),
@@ -5706,7 +5901,7 @@ fn for_source_is_condition(source: &Expr) -> bool {
         Expr::Binary { op, .. } => matches!(op, Eq | Ne | Gt | Gte | Lt | Lte | And | Or),
         Expr::Unary { .. } | Expr::ApplyUn(_) => true,
         Expr::ApplyBin(op) => matches!(op, Eq | Ne | Gt | Gte | Lt | Lte | And | Or),
-        Expr::Seq(xs) => xs.last().is_some_and(for_source_is_condition),
+        Expr::Seq(xs) => xs.last().is_some_and(|(e, _)| for_source_is_condition(e)),
         _ => false,
     }
 }

@@ -13,6 +13,7 @@ pub mod literals;
 
 pub use ast::*;
 
+use crate::diagnostics::Span;
 use crate::tokenizer::token::Location;
 use crate::tokenizer::token::Token;
 use crate::tokenizer::token_kind::TokenKind;
@@ -31,6 +32,11 @@ impl ParseError {
             location,
             code: code.into(),
         }
+    }
+
+    pub fn into_diagnostic(self) -> crate::diagnostics::Diagnostic {
+        crate::diagnostics::Diagnostic::error(self.code, self.message)
+            .with_primary(Span::from_location(self.location), "")
     }
 }
 
@@ -76,6 +82,7 @@ impl Parser {
     fn body(&mut self, stops: &[TokenKind]) -> ParseResult<Vec<Stmt>> {
         let mut stmts = Vec::new();
         let mut ops: Vec<Expr> = Vec::new();
+        let mut op_spans: Vec<Span> = Vec::new();
 
         loop {
             let kind = self.peek_kind();
@@ -88,14 +95,17 @@ impl Parser {
                 TokenKind::End | TokenKind::Else | TokenKind::Case | TokenKind::Eof => break,
 
                 TokenKind::Mutable | TokenKind::Const | TokenKind::Static => {
-                    let decl = self.parse_var_decl(&mut ops)?;
+                    let decl = self.parse_var_decl(&mut ops, &mut op_spans)?;
                     stmts.push(decl);
                 }
 
                 TokenKind::Function => {
-                    let name = self.pop_name(&mut ops)?;
+                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
+                    let start = self.peek_span();
                     let func = self.parse_function(name, None, false)?;
-                    stmts.push(Stmt::Function(func));
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Function(func), span));
                 }
 
                 TokenKind::Load | TokenKind::Store => {
@@ -104,87 +114,115 @@ impl Parser {
                     // When the next token is a function declaration head, this
                     // is a function name; otherwise it is the word.
                     if self.peek_is_function_head(1) {
+                        let span = self.peek_span();
                         ops.push(Expr::variable(self.peek_lexeme()));
+                        note_op_span(&mut op_spans, span);
                         self.advance();
                     } else {
-                        self.process_expr_word(&mut ops)?;
+                        self.process_expr_word(&mut ops, &mut op_spans)?;
                     }
                 }
 
                 TokenKind::Public | TokenKind::Private => {
                     let vis = self.parse_visibility().unwrap();
-                    let stmt = self.parse_visible_decl(&mut ops, vis)?;
+                    let stmt = self.parse_visible_decl(&mut ops, &mut op_spans, vis)?;
                     stmts.push(stmt);
                 }
 
                 TokenKind::Unsafe => {
                     if self.peek_next_kind() == TokenKind::Function {
                         // `name unsafe function`
-                        let name = self.pop_name(&mut ops)?;
+                        let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
+                        let start = self.peek_span();
                         self.advance();
                         let func = self.parse_function(name, None, true)?;
-                        stmts.push(Stmt::Function(func));
+                        let end = self.prev_span();
+                        let span = stack_span.merge(start).merge(end);
+                        stmts.push(Stmt::new(StmtKind::Function(func), span));
                     } else {
                         // `unsafe ... end`: an unsafe block.
+                        let start = self.peek_span();
                         self.advance();
                         let body = self.body(&[TokenKind::End])?;
                         self.expect(TokenKind::End, "expected 'end' after unsafe block")?;
-                        stmts.push(Stmt::Unsafe { body });
+                        let end = self.prev_span();
+                        stmts.push(Stmt::new(StmtKind::Unsafe { body }, start.merge(end)));
                     }
                 }
 
                 TokenKind::Struct => {
-                    let name = self.pop_name(&mut ops)?;
+                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
+                    let start = self.peek_span();
                     let decl = self.parse_struct(name, None)?;
-                    stmts.push(Stmt::Struct(decl));
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Struct(decl), span));
                 }
 
                 TokenKind::Enum => {
-                    let (name, underlying) = self.pop_enum_head(&mut ops)?;
+                    let (name, underlying, stack_span) =
+                        self.pop_enum_head(&mut ops, &mut op_spans)?;
+                    let start = self.peek_span();
                     let decl = self.parse_enum(name, underlying)?;
-                    stmts.push(Stmt::Enum(decl));
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Enum(decl), span));
                 }
 
                 TokenKind::Union => {
-                    let name = self.pop_name(&mut ops)?;
+                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
+                    let start = self.peek_span();
                     let decl = self.parse_union(name)?;
-                    stmts.push(Stmt::Union(decl));
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Union(decl), span));
                 }
 
                 TokenKind::Error => {
                     // Soft keyword: `error.Name` is a path; `… error require`
                     // is a module alias; otherwise `Name error … end`.
                     match self.peek_next_kind() {
-                        TokenKind::Dot => self.process_expr_word(&mut ops)?,
+                        TokenKind::Dot => self.process_expr_word(&mut ops, &mut op_spans)?,
                         TokenKind::Require => {
+                            let span = self.peek_span();
                             ops.push(Expr::variable("error"));
+                            note_op_span(&mut op_spans, span);
                             self.advance();
                         }
                         _ => {
-                            let decl = self.parse_error_decl(&mut ops)?;
-                            stmts.push(Stmt::Error(decl));
+                            let start = self.peek_span();
+                            let (decl, stack_span) =
+                                self.parse_error_decl(&mut ops, &mut op_spans)?;
+                            let end = self.prev_span();
+                            let span = stack_span.merge(start).merge(end);
+                            stmts.push(Stmt::new(StmtKind::Error(decl), span));
                         }
                     }
                 }
 
                 TokenKind::Implement => {
-                    let name = self.pop_name(&mut ops)?;
+                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
+                    let start = self.peek_span();
                     let impls = self.parse_implement(name)?;
-                    stmts.push(Stmt::Implement(impls));
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Implement(impls), span));
                 }
 
                 TokenKind::Require => {
-                    let req = self.parse_require(&mut ops)?;
+                    let req = self.parse_require(&mut ops, &mut op_spans)?;
                     stmts.push(req);
                 }
 
                 TokenKind::Set => {
-                    let set = self.parse_set(&mut ops)?;
+                    let set = self.parse_set(&mut ops, &mut op_spans)?;
                     stmts.push(set);
                 }
 
                 TokenKind::If => {
-                    let condition = drain_ops(&mut ops).unwrap_or_else(|| Expr::variable(""));
+                    let (condition, cond_span) = drain_ops(&mut ops, &mut op_spans)
+                        .unwrap_or_else(|| (Expr::variable(""), Span::default()));
+                    let start = self.peek_span();
                     self.advance();
                     let then_branch = self.body(&[TokenKind::Else, TokenKind::End])?;
                     let else_branch = if self.match_kind(TokenKind::Else) {
@@ -193,48 +231,62 @@ impl Parser {
                         Vec::new()
                     };
                     self.expect(TokenKind::End, "expected 'end' after if/else block")?;
-                    stmts.push(Stmt::If {
-                        condition,
-                        then_branch,
-                        else_branch,
-                    });
+                    let end = self.prev_span();
+                    let span = cond_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(
+                        StmtKind::If {
+                            condition,
+                            then_branch,
+                            else_branch,
+                        },
+                        span,
+                    ));
                 }
 
                 TokenKind::For => {
-                    let stmt = self.parse_for(&mut ops)?;
+                    let stmt = self.parse_for(&mut ops, &mut op_spans)?;
                     stmts.push(stmt);
                 }
 
                 TokenKind::Match => {
-                    let stmt = self.parse_match(&mut ops)?;
+                    let stmt = self.parse_match(&mut ops, &mut op_spans)?;
                     stmts.push(stmt);
                 }
 
                 TokenKind::Defer => {
+                    let start = self.peek_span();
                     self.advance();
                     let body = self.body(&[TokenKind::End])?;
                     self.expect(TokenKind::End, "expected 'end' after defer block")?;
-                    stmts.push(Stmt::Defer { body });
+                    let end = self.prev_span();
+                    stmts.push(Stmt::new(StmtKind::Defer { body }, start.merge(end)));
                 }
 
                 TokenKind::Handle => {
-                    if let Some(expr) = drain_ops(&mut ops) {
-                        stmts.push(Stmt::Expr(expr));
+                    if let Some((expr, span)) = drain_ops(&mut ops, &mut op_spans) {
+                        stmts.push(Stmt::new(StmtKind::Expr(expr), span));
                     }
+                    let start = self.peek_span();
                     self.advance();
                     let body = self.body(&[TokenKind::End])?;
                     self.expect(TokenKind::End, "expected 'end' after handle block")?;
+                    let end = self.prev_span();
                     let (body, fallback) = extract_fallback(body);
-                    stmts.push(Stmt::Handle { body, fallback });
+                    stmts.push(Stmt::new(
+                        StmtKind::Handle { body, fallback },
+                        start.merge(end),
+                    ));
                 }
 
                 TokenKind::Move => {
-                    let location = self.peek_location();
+                    let start = self.peek_span();
                     self.advance();
-                    let target = ops.pop().ok_or_else(|| {
+                    let location = self.prev_span().start_location();
+                    let target_expr = ops.pop().ok_or_else(|| {
                         ParseError::new("'move' requires a target variable", location, "E220")
                     })?;
-                    let target = match target {
+                    let target_span = op_spans.pop().unwrap_or_default();
+                    let target = match target_expr {
                         Expr::Variable { name } => name,
                         _ => {
                             return Err(ParseError::new(
@@ -244,36 +296,54 @@ impl Parser {
                             ));
                         }
                     };
-                    let source = drain_ops(&mut ops).unwrap_or_else(|| Expr::variable(""));
-                    stmts.push(Stmt::Move { target, source });
+                    let (source, source_span) = drain_ops(&mut ops, &mut op_spans)
+                        .unwrap_or_else(|| (Expr::variable(""), Span::default()));
+                    stmts.push(Stmt::new(
+                        StmtKind::Move { target, source },
+                        target_span.merge(source_span).merge(start),
+                    ));
                 }
 
                 TokenKind::Fallback => {
+                    let start = self.peek_span();
                     self.advance();
-                    let value = drain_ops(&mut ops);
-                    stmts.push(Stmt::Fallback { value });
+                    let (value, stack_span) = match drain_ops(&mut ops, &mut op_spans) {
+                        Some((expr, span)) => (Some(expr), span),
+                        None => (None, Span::default()),
+                    };
+                    stmts.push(Stmt::new(
+                        StmtKind::Fallback { value },
+                        stack_span.merge(start),
+                    ));
                 }
 
                 TokenKind::Return => {
+                    let drained = drain_ops(&mut ops, &mut op_spans);
+                    let start = self.peek_span();
                     self.advance();
-                    if let Some(expr) = drain_ops(&mut ops) {
-                        stmts.push(Stmt::Expr(expr));
+                    if let Some((expr, expr_span)) = drained {
+                        stmts.push(Stmt::new(StmtKind::Expr(expr), expr_span));
                     }
-                    stmts.push(Stmt::Return { value: None });
+                    stmts.push(Stmt::new(StmtKind::Return { value: None }, start));
                 }
 
-                _ => self.process_expr_word(&mut ops)?,
+                _ => self.process_expr_word(&mut ops, &mut op_spans)?,
             }
         }
 
-        if let Some(expr) = drain_ops(&mut ops) {
-            stmts.push(Stmt::Expr(expr));
+        if let Some((expr, span)) = drain_ops(&mut ops, &mut op_spans) {
+            stmts.push(Stmt::new(StmtKind::Expr(expr), span));
         }
 
         Ok(stmts)
     }
 
-    fn parse_var_decl(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
+    fn parse_var_decl(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<Stmt> {
+        let start = self.peek_span();
         let mutability = match self.peek_kind() {
             TokenKind::Mutable => Mutability::Mutable,
             TokenKind::Const => Mutability::Const,
@@ -282,19 +352,27 @@ impl Parser {
         };
         self.advance();
 
-        let name = self.pop_name(ops)?;
-        let value = drain_ops(ops);
+        let (name, name_span) = self.pop_name(ops, op_spans)?;
+        let (value, value_span) = match drain_ops(ops, op_spans) {
+            Some((expr, span)) => (Some(expr), span),
+            None => (None, Span::default()),
+        };
         let ty = self.parse_type()?;
+        let end = self.prev_span();
 
-        Ok(Stmt::VarDecl {
-            name,
-            mutability,
-            ty,
-            value,
-        })
+        Ok(Stmt::new(
+            StmtKind::VarDecl {
+                name,
+                mutability,
+                ty,
+                value,
+            },
+            name_span.merge(value_span).merge(start).merge(end),
+        ))
     }
 
-    fn parse_set(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
+    fn parse_set(&mut self, ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> ParseResult<Stmt> {
+        let start = self.peek_span();
         let location = self.peek_location();
         self.advance();
 
@@ -306,26 +384,40 @@ impl Parser {
             ));
         }
 
-        let target = pop_target(ops).ok_or_else(|| {
+        let (target, target_span) = pop_target(ops, op_spans).ok_or_else(|| {
             ParseError::new("'set' target must be a variable or field", location, "E203")
         })?;
-        let value = drain_ops(ops);
+        let (value, value_span) = match drain_ops(ops, op_spans) {
+            Some((expr, span)) => (Some(expr), span),
+            None => (None, Span::default()),
+        };
 
-        Ok(Stmt::Set { target, value })
+        Ok(Stmt::new(
+            StmtKind::Set { target, value },
+            target_span.merge(value_span).merge(start),
+        ))
     }
 
-    fn parse_for(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
+    fn parse_for(&mut self, ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> ParseResult<Stmt> {
+        let (source, source_span) =
+            drain_ops(ops, op_spans).unwrap_or_else(|| (Expr::variable(""), Span::default()));
+        let start = self.peek_span();
         self.advance();
         // Condition (`i 3 < for`) or iterable (`numbers for`). Binders before
         // `for` are not part of the surface; use `std.loop` for value/index.
-        let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
         let body = self.body(&[TokenKind::End])?;
         self.expect(TokenKind::End, "expected 'end' after for block")?;
-        Ok(Stmt::For { source, body })
+        let end = self.prev_span();
+        Ok(Stmt::new(
+            StmtKind::For { source, body },
+            source_span.merge(start).merge(end),
+        ))
     }
 
-    fn parse_match(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
-        let value = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
+    fn parse_match(&mut self, ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> ParseResult<Stmt> {
+        let (value, value_span) =
+            drain_ops(ops, op_spans).unwrap_or_else(|| (Expr::variable(""), Span::default()));
+        let start = self.peek_span();
         self.advance();
 
         let mut cases = Vec::new();
@@ -363,6 +455,7 @@ impl Parser {
 
             // An expression case: `<condition words> case <body> end`.
             let mut cond_ops = Vec::new();
+            let mut cond_op_spans: Vec<Span> = Vec::new();
             loop {
                 let kind = self.peek_kind();
                 if kind == TokenKind::Case {
@@ -375,10 +468,11 @@ impl Parser {
                         "E205",
                     ));
                 }
-                self.process_expr_word(&mut cond_ops)?;
+                self.process_expr_word(&mut cond_ops, &mut cond_op_spans)?;
             }
             self.advance(); // consume 'case'
-            let condition = drain_ops(&mut cond_ops).unwrap_or_else(|| Expr::variable(""));
+            let (condition, _) = drain_ops(&mut cond_ops, &mut cond_op_spans)
+                .unwrap_or_else(|| (Expr::variable(""), Span::default()));
             let body = self.body(&[TokenKind::End])?;
             self.expect(TokenKind::End, "expected 'end' after case block")?;
             cases.push(MatchCase {
@@ -387,14 +481,23 @@ impl Parser {
             });
         }
 
-        Ok(Stmt::Match {
-            value,
-            cases,
-            else_branch,
-        })
+        let end = self.prev_span();
+        Ok(Stmt::new(
+            StmtKind::Match {
+                value,
+                cases,
+                else_branch,
+            },
+            value_span.merge(start).merge(end),
+        ))
     }
 
-    fn parse_require(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
+    fn parse_require(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<Stmt> {
+        let start = self.peek_span();
         let location = self.peek_location();
         self.advance();
 
@@ -402,19 +505,21 @@ impl Parser {
         // is pushed on the operand stack before the `require` keyword, above
         // the path string. So the top of the stack is either the scope name
         // or the path directly.
-        let (path_expr, alias) = match ops.pop() {
+        let (path_expr, alias, stack_span) = match ops.pop() {
             Some(Expr::Variable { name }) => {
+                let alias_span = op_spans.pop().unwrap_or_default();
                 let path = ops.pop().ok_or_else(|| {
                     ParseError::new("'require' expects a module path string", location, "E207")
                 })?;
-                (path, Some(name))
+                let path_span = op_spans.pop().unwrap_or_default();
+                (path, Some(name), path_span.merge(alias_span))
             }
-            other => (
-                other.ok_or_else(|| {
+            other => {
+                let path = other.ok_or_else(|| {
                     ParseError::new("'require' expects a module path string", location, "E207")
-                })?,
-                None,
-            ),
+                })?;
+                (path, None, op_spans.pop().unwrap_or_default())
+            }
         };
 
         let path = match path_expr {
@@ -434,7 +539,10 @@ impl Parser {
             }
         };
 
-        Ok(Stmt::Require { path, alias })
+        Ok(Stmt::new(
+            StmtKind::Require { path, alias },
+            stack_span.merge(start),
+        ))
     }
 
     // ------------------------------------------------------------------
@@ -546,20 +654,28 @@ impl Parser {
         })
     }
 
-    fn parse_error_decl(&mut self, ops: &mut Vec<Expr>) -> ParseResult<ErrorDecl> {
+    fn parse_error_decl(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<(ErrorDecl, Span)> {
         let location = self.peek_location();
         self.expect(TokenKind::Error, "expected 'error'")?;
 
         // Operand stack: `Name` or `Name InjectPath` before the `error` keyword.
+        let mut head_span = Span::default();
         let inject = match ops.last() {
             Some(Expr::Member { .. }) | Some(Expr::Variable { .. }) if ops.len() >= 2 => {
+                let inject_span = op_spans.pop().unwrap_or_default();
+                head_span = head_span.merge(inject_span);
                 Some(expr_to_path(ops.pop().unwrap())?)
             }
             _ => None,
         };
-        let name = self.pop_name(ops).map_err(|_| {
+        let (name, name_span) = self.pop_name(ops, op_spans).map_err(|_| {
             ParseError::new("'error' declaration requires a type name", location, "E230")
         })?;
+        head_span = head_span.merge(name_span);
 
         let mut members = Vec::new();
         while self.peek_kind() != TokenKind::End {
@@ -571,11 +687,14 @@ impl Parser {
         }
         self.expect(TokenKind::End, "expected 'end' to close error")?;
 
-        Ok(ErrorDecl {
-            name,
-            inject,
-            members,
-        })
+        Ok((
+            ErrorDecl {
+                name,
+                inject,
+                members,
+            },
+            head_span,
+        ))
     }
 
     fn parse_union(&mut self, name: String) -> ParseResult<UnionDecl> {
@@ -747,18 +866,25 @@ impl Parser {
     // Expressions
     // ------------------------------------------------------------------
 
-    fn process_expr_word(&mut self, ops: &mut Vec<Expr>) -> ParseResult<()> {
+    fn process_expr_word(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<()> {
         let kind = self.peek_kind();
 
         match kind {
             TokenKind::LeftSquare => {
                 ops.push(self.parse_array_literal()?);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::LeftParen => {
                 ops.push(self.parse_list_literal()?);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::LeftCurly => {
                 ops.push(self.parse_map_literal()?);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::Integer
             | TokenKind::Float
@@ -769,13 +895,15 @@ impl Parser {
                 let tok = self.advance();
                 let expr = literal_expr(tok)?;
                 ops.push(expr);
+                note_op_span(op_spans, tok.span());
             }
             TokenKind::Identifier | TokenKind::Error => {
-                let name = if self.peek_kind() == TokenKind::Error {
-                    self.advance();
-                    "error".to_string()
+                let (name, mut span) = if self.peek_kind() == TokenKind::Error {
+                    let tok = self.advance();
+                    ("error".to_string(), tok.span())
                 } else {
-                    self.advance().lexeme.clone()
+                    let tok = self.advance();
+                    (tok.lexeme.clone(), tok.span())
                 };
                 let mut expr = Expr::variable(&name);
                 while self.match_kind(TokenKind::Dot) {
@@ -784,6 +912,7 @@ impl Parser {
                         base: Box::new(expr),
                         member,
                     };
+                    span = span.merge(self.prev_span());
                 }
                 // A bare primitive type name is a type value on the stack
                 // (e.g. the `i32` in `myVar typeof i32 ==`), not a variable.
@@ -793,23 +922,28 @@ impl Parser {
                 } else {
                     ops.push(expr);
                 }
+                note_op_span(op_spans, span);
             }
             TokenKind::Call => {
                 self.advance();
+                let call_span = self.prev_span();
                 let target = ops.pop().ok_or_else(|| {
+                    op_spans.pop();
                     ParseError::new(
                         "'call' requires a function to call",
                         self.peek_location(),
                         "E211",
                     )
                 })?;
+                op_spans.pop();
                 ops.push(Expr::Call {
                     target: Box::new(target),
                 });
+                note_op_span(op_spans, call_span);
             }
             TokenKind::At => {
-                let lexeme = self.advance().lexeme.clone();
-                let name = lexeme.strip_prefix('@').unwrap_or(&lexeme);
+                let tok = self.advance();
+                let name = tok.lexeme.strip_prefix('@').unwrap_or(&tok.lexeme);
                 if name.is_empty() {
                     return Err(ParseError::new(
                         "expected a builtin name after '@'",
@@ -820,104 +954,139 @@ impl Parser {
                 ops.push(Expr::Builtin {
                     name: name.to_string(),
                 });
+                note_op_span(op_spans, tok.span());
             }
             TokenKind::Unwrap => {
                 self.advance();
+                let unwrap_span = self.prev_span();
                 let inner = ops.pop().ok_or_else(|| {
+                    op_spans.pop();
                     ParseError::new(
                         "'unwrap' requires a value to unwrap",
                         self.peek_location(),
                         "E212",
                     )
                 })?;
+                op_spans.pop();
                 ops.push(Expr::Unwrap {
                     inner: Box::new(inner),
                 });
+                note_op_span(op_spans, unwrap_span);
             }
             TokenKind::Typeof => {
                 self.advance();
+                let typeof_span = self.prev_span();
                 if let Some(inner) = ops.pop() {
+                    op_spans.pop();
                     ops.push(Expr::Typeof {
                         inner: Box::new(inner),
                     });
                 } else {
                     ops.push(Expr::ApplyTypeof);
                 }
+                note_op_span(op_spans, typeof_span);
             }
             TokenKind::Borrow => {
                 self.advance();
+                let borrow_span = self.prev_span();
                 if let Some(inner) = ops.pop() {
+                    op_spans.pop();
                     ops.push(Expr::Borrow {
                         inner: Box::new(inner),
                     });
                 } else {
                     ops.push(Expr::ApplyBorrow);
                 }
+                note_op_span(op_spans, borrow_span);
             }
             TokenKind::Load => {
                 self.advance();
+                let load_span = self.prev_span();
                 if let Some(inner) = ops.pop() {
+                    op_spans.pop();
                     ops.push(Expr::Load {
                         inner: Box::new(inner),
                     });
                 } else {
                     ops.push(Expr::ApplyLoad);
                 }
+                note_op_span(op_spans, load_span);
             }
             TokenKind::Store => {
                 self.advance();
+                let store_span = self.prev_span();
                 let value = ops.pop().ok_or_else(|| {
+                    op_spans.pop();
                     ParseError::new(
                         "'store' requires a value and an address",
                         self.peek_location(),
                         "E221",
                     )
                 })?;
+                op_spans.pop();
                 let addr = ops.pop().ok_or_else(|| {
+                    op_spans.pop();
                     ParseError::new("'store' requires an address", self.peek_location(), "E221")
                 })?;
+                op_spans.pop();
                 ops.push(Expr::Store {
                     addr: Box::new(addr),
                     value: Box::new(value),
                 });
+                note_op_span(op_spans, store_span);
             }
             TokenKind::Dup => {
                 self.advance();
+                let dup_span = self.prev_span();
                 if !ops.is_empty() {
                     ops.push(ops[ops.len() - 1].clone());
+                    op_spans.push(*op_spans.last().unwrap());
                 } else {
                     ops.push(Expr::StackOp(StackOp::Dup));
+                    note_op_span(op_spans, dup_span);
                 }
             }
             TokenKind::Swap => {
                 self.advance();
+                let swap_span = self.prev_span();
                 if ops.len() >= 2 {
                     let n = ops.len();
                     ops.swap(n - 1, n - 2);
+                    op_spans.swap(n - 1, n - 2);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Swap));
+                    note_op_span(op_spans, swap_span);
                 }
             }
             TokenKind::Rot => {
                 self.advance();
+                let rot_span = self.prev_span();
                 if ops.len() >= 3 {
                     let first = ops.remove(0);
+                    let first_span = op_spans.remove(0);
                     ops.push(first);
+                    op_spans.push(first_span);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Rot));
+                    note_op_span(op_spans, rot_span);
                 }
             }
             TokenKind::Unrot => {
                 self.advance();
+                let unrot_span = self.prev_span();
                 if ops.len() >= 3 {
                     let last = ops.pop().unwrap();
+                    let last_span = op_spans.pop().unwrap();
                     ops.insert(0, last);
+                    op_spans.insert(0, last_span);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Unrot));
+                    note_op_span(op_spans, unrot_span);
                 }
             }
             TokenKind::Pop => {
                 self.advance();
+                note_op_span(op_spans, self.prev_span());
                 // A runtime pop, not a parse-time removal: the top `ops` entry
                 // may be a call/builtin that produces its value during
                 // compilation, so it cannot be discarded here.
@@ -925,6 +1094,7 @@ impl Parser {
             }
             TokenKind::Drop => {
                 self.advance();
+                note_op_span(op_spans, self.prev_span());
                 // Always a runtime drop. Parse-time `ops.clear()` would discard
                 // preceding calls/builtins that still need to run for their
                 // side effects (e.g. `foo call` then `drop`).
@@ -932,9 +1102,11 @@ impl Parser {
             }
             TokenKind::Not => {
                 self.advance();
+                let not_span = self.prev_span();
                 let can_combine = ops.last().is_some_and(is_value);
                 if can_combine {
                     let operand = ops.pop().unwrap();
+                    op_spans.pop();
                     ops.push(Expr::Unary {
                         op: UnOp::Not,
                         operand: Box::new(operand),
@@ -942,16 +1114,20 @@ impl Parser {
                 } else {
                     ops.push(Expr::ApplyUn(UnOp::Not));
                 }
+                note_op_span(op_spans, not_span);
             }
             _ => {
                 if let Some(op) = binary_op(kind) {
                     self.advance();
+                    let bin_span = self.prev_span();
                     let can_combine = ops.len() >= 2
                         && is_value(&ops[ops.len() - 1])
                         && is_value(&ops[ops.len() - 2]);
                     if can_combine {
                         let right = ops.pop().unwrap();
+                        op_spans.pop();
                         let left = ops.pop().unwrap();
+                        op_spans.pop();
                         ops.push(Expr::Binary {
                             op,
                             left: Box::new(left),
@@ -960,6 +1136,7 @@ impl Parser {
                     } else {
                         ops.push(Expr::ApplyBin(op));
                     }
+                    note_op_span(op_spans, bin_span);
                 } else {
                     return Err(ParseError::new(
                         format!("unexpected token '{kind:?}' in expression"),
@@ -1052,7 +1229,11 @@ impl Parser {
     // Token helpers
     // ------------------------------------------------------------------
 
-    fn pop_name(&mut self, ops: &mut Vec<Expr>) -> ParseResult<String> {
+    fn pop_name(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<(String, Span)> {
         let location = self.peek_location();
         let expr = ops.pop().ok_or_else(|| {
             ParseError::new(
@@ -1061,8 +1242,9 @@ impl Parser {
                 "E216",
             )
         })?;
+        let span = op_spans.pop().unwrap_or_default();
         match expr {
-            Expr::Variable { name } => Ok(name),
+            Expr::Variable { name } => Ok((name, span)),
             _ => Err(ParseError::new(
                 "expected an identifier name",
                 location,
@@ -1072,12 +1254,18 @@ impl Parser {
     }
 
     /// `Name [underlying] enum`: optional type value sits above the enum name.
-    fn pop_enum_head(&mut self, ops: &mut Vec<Expr>) -> ParseResult<(String, Option<Type>)> {
+    fn pop_enum_head(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<(String, Option<Type>, Span)> {
         let location = self.peek_location();
+        let mut head_span = Span::default();
         let underlying = match ops.last() {
             Some(Expr::TypeValue { name }) => {
                 let name = name.clone();
                 ops.pop();
+                head_span = op_spans.pop().unwrap_or_default();
                 let kind = if let Some(p) = Primitive::parse_name(&name) {
                     TypeKind::Primitive(p)
                 } else {
@@ -1089,6 +1277,7 @@ impl Parser {
                 // Named underlying type that is not a primitive.
                 let name = name.clone();
                 ops.pop();
+                head_span = op_spans.pop().unwrap_or_default();
                 Some(Type {
                     kind: TypeKind::Named(name),
                     location,
@@ -1096,8 +1285,9 @@ impl Parser {
             }
             _ => None,
         };
-        let name = self.pop_name(ops)?;
-        Ok((name, underlying))
+        let (name, name_span) = self.pop_name(ops, op_spans)?;
+        head_span = head_span.merge(name_span);
+        Ok((name, underlying, head_span))
     }
 
     fn parse_visibility(&mut self) -> Option<Visibility> {
@@ -1118,24 +1308,41 @@ impl Parser {
     fn parse_visible_decl(
         &mut self,
         ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
         visibility: Visibility,
     ) -> ParseResult<Stmt> {
         match self.peek_kind() {
             TokenKind::Unsafe => {
+                let start = self.peek_span();
                 self.advance();
-                let name = self.pop_name(ops)?;
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let fn_start = self.peek_span();
                 let func = self.parse_function(name, Some(visibility), true)?;
-                Ok(Stmt::Function(func))
+                let end = self.prev_span();
+                Ok(Stmt::new(
+                    StmtKind::Function(func),
+                    stack_span.merge(start).merge(fn_start).merge(end),
+                ))
             }
             TokenKind::Function => {
-                let name = self.pop_name(ops)?;
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
                 let func = self.parse_function(name, Some(visibility), false)?;
-                Ok(Stmt::Function(func))
+                let end = self.prev_span();
+                Ok(Stmt::new(
+                    StmtKind::Function(func),
+                    stack_span.merge(start).merge(end),
+                ))
             }
             TokenKind::Struct => {
-                let name = self.pop_name(ops)?;
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
                 let decl = self.parse_struct(name, Some(visibility))?;
-                Ok(Stmt::Struct(decl))
+                let end = self.prev_span();
+                Ok(Stmt::new(
+                    StmtKind::Struct(decl),
+                    stack_span.merge(start).merge(end),
+                ))
             }
             _ => Err(ParseError::new(
                 "visibility must precede 'function', 'unsafe function', or 'struct'",
@@ -1181,6 +1388,18 @@ impl Parser {
 
     fn peek_location(&self) -> Location {
         self.tokens[self.current].location
+    }
+
+    fn peek_span(&self) -> Span {
+        self.tokens[self.current].span()
+    }
+
+    fn prev_span(&self) -> Span {
+        if self.current == 0 {
+            self.tokens[0].span()
+        } else {
+            self.tokens[self.current - 1].span()
+        }
     }
 
     fn advance(&mut self) -> &Token {
@@ -1258,13 +1477,33 @@ fn take_size(args: &mut Vec<TypeArg>, index: usize) -> Option<u64> {
     }
 }
 
-fn drain_ops(ops: &mut Vec<Expr>) -> Option<Expr> {
+fn note_op_span(op_spans: &mut Vec<Span>, span: Span) {
+    op_spans.push(span);
+}
+
+/// Drain ops + spans. Returns `(expr, merged_span)`.
+fn drain_ops(ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> Option<(Expr, Span)> {
     match ops.len() {
-        0 => None,
-        1 => ops.pop(),
-        _ => {
+        0 => {
+            op_spans.clear();
+            None
+        }
+        1 => {
+            let e = ops.pop().unwrap();
+            let s = op_spans.pop().unwrap_or_default();
+            op_spans.clear();
+            Some((e, s))
+        }
+        n => {
+            debug_assert_eq!(op_spans.len(), n, "ops/op_spans length mismatch");
             let seq = std::mem::take(ops);
-            Some(Expr::Seq(seq))
+            let spans = std::mem::take(op_spans);
+            let merged = spans
+                .iter()
+                .copied()
+                .reduce(|a, b| a.merge(b))
+                .unwrap_or_default();
+            Some((Expr::Seq(seq.into_iter().zip(spans).collect()), merged))
         }
     }
 }
@@ -1275,28 +1514,32 @@ fn extract_fallback(body: Vec<Stmt>) -> (Vec<Stmt>, Option<Expr>) {
     let mut fallback = None;
     let mut stmts = Vec::with_capacity(body.len());
     for stmt in body {
-        match stmt {
-            Stmt::Fallback { value } => {
+        match stmt.kind {
+            StmtKind::Fallback { value } => {
                 if fallback.is_none() {
                     fallback = value;
                 }
             }
-            other => stmts.push(other),
+            _ => stmts.push(stmt),
         }
     }
     (stmts, fallback)
 }
 
-fn pop_target(ops: &mut Vec<Expr>) -> Option<Expr> {
+fn pop_target(ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> Option<(Expr, Span)> {
     let last = ops.last()?;
     if matches!(last, Expr::Variable { .. } | Expr::Member { .. }) {
-        return ops.pop();
+        let e = ops.pop()?;
+        let s = op_spans.pop().unwrap_or_default();
+        return Some((e, s));
     }
     // Fall back to the first variable/field anywhere in the operand list.
     let index = ops
         .iter()
         .position(|e| matches!(e, Expr::Variable { .. } | Expr::Member { .. }))?;
-    Some(ops.remove(index))
+    let e = ops.remove(index);
+    let s = op_spans.remove(index);
+    Some((e, s))
 }
 
 fn literal_expr(tok: &Token) -> ParseResult<Expr> {

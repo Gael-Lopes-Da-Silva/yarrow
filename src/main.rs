@@ -6,7 +6,10 @@
 
 use std::process::ExitCode;
 
-use yarrow_core::{Compiler, Parser, RunResult, Tokenizer};
+use yarrow_core::{
+    ColorChoice, CompileError, Compiler, Diagnostic, Parser, RunResult, SourceFile, Tokenizer,
+    render,
+};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -22,18 +25,24 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let file = SourceFile::new(path, source.clone());
+    let color = ColorChoice::Auto;
 
-    let tokens = match Tokenizer::new(source).tokenize() {
+    let tokens = match Tokenizer::new(source.clone()).tokenize() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("{e}");
+            let diag = Diagnostic::error(e.code, e.message)
+                .with_path(path)
+                .with_primary(yarrow_core::Span::from_location(e.location), "");
+            eprint!("{}", render(&diag, &file, color));
             return ExitCode::from(1);
         }
     };
     let program = match Parser::new(tokens).parse() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{e}");
+            let diag = e.into_diagnostic().with_path(path);
+            eprint!("{}", render(&diag, &file, color));
             return ExitCode::from(1);
         }
     };
@@ -41,10 +50,11 @@ fn main() -> ExitCode {
     let mut compiler = match Compiler::new() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{e}");
+            print_compile_error(&e, &file, color);
             return ExitCode::from(1);
         }
     };
+    compiler.set_source_path(path);
     if let Some(dir) = std::path::Path::new(path).parent()
         && !dir.as_os_str().is_empty()
     {
@@ -52,7 +62,7 @@ fn main() -> ExitCode {
     }
 
     if let Err(e) = compiler.compile(&program) {
-        eprintln!("{e}");
+        print_compile_error(&e, &file, color);
         return ExitCode::from(1);
     }
     match compiler.run_main() {
@@ -67,8 +77,16 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{e}");
+            print_compile_error(&e, &file, color);
             ExitCode::from(1)
         }
     }
+}
+
+fn print_compile_error(err: &CompileError, file: &SourceFile, color: ColorChoice) {
+    let mut diag = (*err.diagnostic).clone();
+    if diag.path.is_empty() {
+        diag.path = file.path.clone();
+    }
+    eprint!("{}", render(&diag, file, color));
 }

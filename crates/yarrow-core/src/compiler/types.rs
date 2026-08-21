@@ -1,7 +1,7 @@
 //! Mapping from Yarrow types to Cranelift IR types and layouts.
 
+use crate::diagnostics::Span;
 use crate::parser::ast::{Primitive, Type, TypeKind};
-use crate::tokenizer::token::Location;
 
 use super::errors::CompileError;
 
@@ -342,13 +342,13 @@ pub fn primitive_ty(p: Primitive) -> Option<Ty> {
 /// compiler's layout/enum tables. The `named` closure maps any other named
 /// type to a resolved `Ty` (or `None` for unknown names).
 pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
-    let loc = ty.location;
+    let span = Span::from_location(ty.location);
     match &ty.kind {
         TypeKind::Primitive(p) => match primitive_ty(*p) {
             Some(t) => Ok(t),
             None => Err(CompileError::unsupported(
                 format!("primitive type '{p:?}' is not yet supported"),
-                loc,
+                span,
                 "E303",
             )),
         },
@@ -362,7 +362,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
                 Some(t) => Ok(t),
                 None => Err(CompileError::unsupported(
                     format!("unknown or unsupported type '{name}'"),
-                    loc,
+                    span,
                     "E302",
                 )),
             }
@@ -372,7 +372,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             let code = elem.scalar_code().ok_or_else(|| {
                 CompileError::unsupported(
                     format!("array element type {elem:?} is not yet supported"),
-                    loc,
+                    span,
                     "E344",
                 )
             })?;
@@ -384,13 +384,13 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
         TypeKind::Reference { inner } => resolve(inner, named),
         TypeKind::List { element } => {
             let elem = resolve(element, named)?;
-            let code = container_elem_code(elem, loc)?;
+            let code = container_elem_code(elem, span)?;
             // The list elem code is shifted left 8 by kind_code; a code wider
             // than 56 bits would overflow the 64-bit kind register.
             if code >> 56 != 0 {
                 return Err(CompileError::unsupported(
                     format!("list element type {elem:?} is nested too deeply"),
-                    loc,
+                    span,
                     "E344",
                 ));
             }
@@ -399,21 +399,21 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
         TypeKind::Hashmap { key, value } => {
             let kt = resolve(key, named)?;
             let vt = resolve(value, named)?;
-            let key = container_elem_code(kt, loc)?;
-            let value = container_elem_code(vt, loc)?;
+            let key = container_elem_code(kt, span)?;
+            let value = container_elem_code(vt, span)?;
             // The kind-code format gives keys 32 bits (extracted with a mask)
             // and values 24 bits (bits 40..); larger codes would not round-trip.
             if key >> 32 != 0 {
                 return Err(CompileError::unsupported(
                     format!("hashmap key type {kt:?} is nested too deeply"),
-                    loc,
+                    span,
                     "E344",
                 ));
             }
             if value >> 24 != 0 {
                 return Err(CompileError::unsupported(
                     format!("hashmap value type {vt:?} is nested too deeply"),
-                    loc,
+                    span,
                     "E344",
                 ));
             }
@@ -432,7 +432,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
         }
         TypeKind::Union(_) => Err(CompileError::unsupported(
             "anonymous union types are only supported as fallible returns (|T Err|)",
-            loc,
+            span,
             "E308",
         )),
     }
@@ -453,7 +453,7 @@ pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
     if vals.len() > 1 {
         return Err(CompileError::new(
             "a fallible return may carry at most one success value",
-            Location::default(),
+            Span::default(),
             "E308",
         ));
     }
@@ -462,18 +462,18 @@ pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
 
 /// Encode an element/key/value type for a container, rejecting values wider
 /// than a pointer (128-bit scalars).
-fn container_elem_code(elem: Ty, loc: Location) -> CResult<u64> {
+fn container_elem_code(elem: Ty, span: Span) -> CResult<u64> {
     if elem.elem_size() > 8 {
         return Err(CompileError::unsupported(
             format!("container element type {elem:?} is wider than 8 bytes"),
-            loc,
+            span,
             "E344",
         ));
     }
     elem_code(elem).ok_or_else(|| {
         CompileError::unsupported(
             format!("container element type {elem:?} is not supported"),
-            loc,
+            span,
             "E344",
         )
     })
@@ -563,6 +563,7 @@ pub fn coerce(
     from: Ty,
     to: Ty,
     ptr_type: CLType,
+    span: Span,
 ) -> CResult<Value> {
     use cranelift_codegen::ir::InstBuilder;
     use cranelift_codegen::ir::condcodes::IntCC;
@@ -641,7 +642,7 @@ pub fn coerce(
         if from.bits() > 64 {
             return Err(CompileError::unsupported(
                 "conversion from 128-bit integers to floats is not supported yet",
-                Location::default(),
+                span,
                 "E310",
             ));
         }
@@ -671,17 +672,13 @@ pub fn coerce(
     }
 
     Err(CompileError::unsupported(
-        format!(
-            "cannot convert value from {from:?} to {to:?} (coerce called from {})",
-            std::backtrace::Backtrace::force_capture()
-                .to_string()
-                .lines()
-                .nth(2)
-                .unwrap_or("?")
-        ),
-        Location::default(),
+        format!("cannot convert value from {from:?} to {to:?}"),
+        span,
         "E309",
-    ))
+    )
+    .with_primary_message(format!("expected {to:?}, found {from:?}"))
+    .with_note("declaration and assignment types must match or coerce (e.g. integer widening)")
+    .with_help("change the value's type, or change the declared type to match"))
 }
 
 /// Pick a common type for binary operands: the wider of the two; when equally

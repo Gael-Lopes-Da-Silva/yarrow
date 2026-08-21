@@ -24,14 +24,14 @@ Tracks bringing `crates/yarrow-core` in line with the **current** language docs,
 
 ## Pipeline status (honest)
 
-| Component   | Status     | Reality                                                                              |
-| ----------- | ---------- | ------------------------------------------------------------------------------------ |
-| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing      |
-| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat`     |
-| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)               |
-| Diagnostics | ⬜ Stage 8 | One-line `[E…] msg at line, column`; many compile errors still `Location::default()` |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                    |
-| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic            |
+| Component   | Status     | Reality                                                                          |
+| ----------- | ---------- | -------------------------------------------------------------------------------- |
+| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
+| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
+| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)           |
+| Diagnostics | 🟢 Stage 9 | Rustc-style; teachable notes/helps; primary near `# ERROR:` lines                |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
+| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -272,56 +272,43 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 
 Language surface from Phase A is the baseline. Phase B improves how the compiler explains failures and how resilient the front end is. Target presentation is **full rustc-style** (not a single-line summary): primary span, secondary labels, source snippets with underlines, and `note` / `help` text.
 
-Today’s errors look like `[E373] … at line 1, column 1`. Many compiler sites still pass `Location::default()`. Phase B replaces that.
+Stage 8–9 landed the diagnostic pipeline and teachable notes. Stage 10 adds multi-error recovery.
 
-### Stage 8: Diagnostic infrastructure (full rustc-style) ⬜
+### Stage 8: Diagnostic infrastructure (full rustc-style) ✅
 
 Build the plumbing so every failure can render like rustc from day one (multi-label + notes), not a minimal “file:line” stub.
 
-1. **`Span`** - byte range (and derived line/column) on tokens; keep or extend `Location`
-2. **AST spans** - carry spans on exprs/stmts that participate in errors (at least calls, vars, ops, control heads, decls)
-3. **`Diagnostic`** - `code`, `message`, primary span, `labels[]` (span + message), `notes[]`, `helps[]`; severity if needed later
-4. **Renderer** - rustc layout: `error[E…]: …`, `--> path:line:col`, source line(s), `^` / `---` underlines for primary and secondary labels, then `= note:` / `= help:`
-5. **Source map** - compiler/driver hold the file path + full source so snippets are accurate (including tabs)
-6. **Kill `Location::default()`** - attribute each compile error to the offending construct’s span (batch by family if needed)
-7. **Wire driver** - `src/main.rs` prints via the renderer (color optional; respect `NO_COLOR`)
+1. **`Span`** - byte range (and cached line/column) on tokens; `Location` kept as the token start
+2. **AST spans** - `Stmt { kind, span }`; operand-stack coverage for expression statements
+3. **`Diagnostic`** - `code`, `message`, primary span, `labels[]` (span + message), `notes[]`, `helps[]`
+4. **Renderer** - rustc layout: `error[E…]: …`, `--> path:line:col`, source line(s), `^` / `-` underlines, `= note:` / `= help:`
+5. **Source map** - `SourceFile` with line index; driver holds path + source
+6. **Kill `Location::default()`** - compile errors use `st.current_span` / item spans (remaining `Span::default()` only where no source construct exists, e.g. JIT init)
+7. **Wire driver** - `src/main.rs` prints via the renderer; respects `NO_COLOR`
 
-Example shape (illustrative):
-
-```text
-error[E373]: use after move: `a` no longer owns its value
-  --> docs/examples/invalid/01_use_after_move.yar:12:2
-   |
-10 |     a b move
-   |     - value moved here
-12 |     a 4 list.push_last call
-   |     ^ value used here after move
-   |
-   = note: after `move`, the source name is empty; use the new owner instead
-```
-
-**Gate:** all `docs/examples/invalid/*` render with a primary underline on the annotated region (not `1:1`); at least one diagnostic shows a **secondary** label (e.g. move site + use site); `cargo check` / `clippy` green.
+**Gate:** all `docs/examples/invalid/*` render with a primary underline on the annotated region (not `1:1`); at least one diagnostic shows a **secondary** label (e.g. move site + use site); `cargo check` / `clippy` green. ✅
 
 ---
 
-### Stage 9: Teachable error catalog ⬜
+### Stage 9: Teachable error catalog ✅
 
 Make high-traffic codes explain the language model the way rustc teaches ownership.
 
-| Family               | Codes (approx)         | Labels / notes                                           |
-| -------------------- | ---------------------- | -------------------------------------------------------- |
-| Ownership / borrow   | E373–E376              | Secondary at move/borrow/free site; short “why” note     |
-| Unsafe               | E370                   | Point at call; hint nearest `unsafe` / `unsafe function` |
-| Types / stack        | E309, E324, E331, E343 | Expected vs found; stack top when useful                 |
-| Modules / visibility | E330, E380, E381       | Suggest alias qualification or `public`                  |
-| Fallible             | E308                   | Unwrap needs `\|T Err\|`; suggest `handle`               |
+| Family               | Codes (approx) | Labels / notes                                                    |
+| -------------------- | -------------- | ----------------------------------------------------------------- |
+| Ownership / borrow   | E373–E376      | Secondary at move/borrow site; note + help                        |
+| Unsafe               | E370           | Point at call; help to wrap in `unsafe` / `unsafe function`       |
+| Types / stack        | E309, E324     | Expected vs found; bool-condition help                            |
+| Modules / visibility | E381           | Suggest `public`                                                  |
+| Fallible / unions    | E308           | Unwrap needs `\|T Err\|` / suggest `handle`; union members listed |
 
-Also:
+Also landed:
 
-1. Align messages with `docs/examples/invalid/**` `# ERROR:` comments
-2. Optional: `yarrow explain E373` or `--explain E373` with a short paragraph + mini example (can land late in this stage)
+1. Per-op spans in `Expr::Seq` so primary underlines hit the bad word near `# ERROR:`
+2. `borrow_sites` tracking for secondary labels on E374/E375/E376
+3. Optional `--explain` deferred
 
-**Gate:** each invalid example’s primary span hits the `# ERROR:` line region; ownership/unsafe/fallible cases include a useful `note` or `help`; explain path optional but codes remain stable.
+**Gate:** each invalid example’s primary span hits the `# ERROR:` line region; ownership/unsafe/fallible cases include a useful `note` or `help`; explain path optional but codes remain stable. ✅
 
 ---
 

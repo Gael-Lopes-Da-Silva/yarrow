@@ -5,6 +5,7 @@
 //! parser works on an *operand stack* and emits one statement per region of
 //! the stack. See the parser docs for details.
 
+use crate::diagnostics::Span;
 use crate::tokenizer::token::Location;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,12 +240,22 @@ pub enum Expr {
     Array(Vec<Expr>),
     List(Vec<Expr>),
     Map(Vec<(Expr, Expr)>),
-    Seq(Vec<Expr>),
+    /// Multiple stack words flushed as one statement; each element keeps its span
+    /// so lowering can attribute errors to the failing word.
+    Seq(Vec<(Expr, Span)>),
 }
 
 impl Expr {
     pub fn variable(name: impl Into<String>) -> Expr {
         Expr::Variable { name: name.into() }
+    }
+
+    /// Span of a leaf expression when known; `Seq` uses the first element's span.
+    pub fn span_hint(&self) -> Option<Span> {
+        match self {
+            Expr::Seq(elems) => elems.first().map(|(_, s)| *s),
+            _ => None,
+        }
     }
 }
 
@@ -338,8 +349,21 @@ pub struct MatchCase {
     pub body: Vec<Stmt>,
 }
 
+/// A statement with its source span (keyword / name through the construct).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+impl Stmt {
+    pub fn new(kind: StmtKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StmtKind {
     Expr(Expr),
     VarDecl {
         name: String,
