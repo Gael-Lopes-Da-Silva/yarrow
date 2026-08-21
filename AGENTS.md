@@ -4,7 +4,7 @@ Yarrow is a typed, stack-based programming language with ownership, borrow check
 
 ## Source of truth
 
-- Language spec: `docs/syntax.yar`
+- Language spec: `docs/GRAMMAR.md`
 - Implementation roadmap + gates: `crates/**/PLAN.md`
 
 ## Layout
@@ -17,7 +17,7 @@ Yarrow is a typed, stack-based programming language with ownership, borrow check
 ## Agent rules
 
 - Do not write tests unless the user explicitly asks. Tests come later.
-- Treat `docs/syntax.yar` as authoritative.
+- Treat `docs/GRAMMAR.md` as authoritative.
 - Update `PLAN.md` status and gates when a stage is finished.
 - When spec and code diverge, follow the plan’s tasks to close the gap.
 - Keep the safe vs unsafe boundary strict:
