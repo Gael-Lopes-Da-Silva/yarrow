@@ -254,15 +254,15 @@ cp mem.free
 
 ```text
 create value
-    │
-    ├─ copy type ──► duplicate freely; drop is trivial
-    │
-    └─ non-copy
-           │
-           ├─ owned by stack ── pop / drop / consume ──► free
-           ├─ owned by variable ── set / scope / move away ──► free or transfer
-           ├─ borrowed ── one live reference<T> ── pop / consume ──► release
-           └─ put in region ── region.free ──► free as a unit
+	│
+	├─ copy type ──► duplicate freely; drop is trivial
+	│
+	└─ non-copy
+		│
+		├─ owned by stack ── pop / drop / consume ──► free
+		├─ owned by variable ── set / scope / move away ──► free or transfer
+		├─ borrowed ── one live reference<T> ── pop / consume ──► release
+		└─ put in region ── region.free ──► free as a unit
 
 pointer<T> / mem.* ── only inside unsafe ── validity unchecked by borrow rules
 ```

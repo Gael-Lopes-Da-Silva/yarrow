@@ -27,22 +27,22 @@ A program is a sequence of top-level items with exactly one `main` function. `ma
 
 ```rust
 Program {
-    items: Vec<TopLevel>,
-    main: MainFunction,
+	items: Vec<TopLevel>,
+	main: MainFunction,
 }
 
 TopLevel =
-      Require
-    | Function
-    | Struct
-    | Implement
-    | Enum
-    | Union
-    | Error
+		Require
+	| Function
+	| Struct
+	| Implement
+	| Enum
+	| Union
+	| Error
 
 MainFunction {
-    body: Vec<Statement>,
-    returns: Option<Type>,   // optional; integer/float return becomes the process exit code
+	body: Vec<Statement>,
+	returns: Option<Type>,   // optional; integer/float return becomes the process exit code
 }
 ```
 
@@ -72,23 +72,23 @@ Types appear in declarations, parameters, return clauses, `typeof` comparisons, 
 
 ```rust
 Type =
-      Primitive(Primitive)
-    | Named(QualifiedName)           // user type or scoped name
-    | Array { element: Type, size: Option<u64> }
-    | List { element: Type }
-    | Hashmap { key: Type, value: Type }
-    | Pointer { inner: Type }
-    | Reference { inner: Type }
-    | UnionLiteral(Vec<Type>)        // |T U ...| anonymous union
+		Primitive(Primitive)
+	| Named(QualifiedName)           // user type or scoped name
+	| Array { element: Type, size: Option<u64> }
+	| List { element: Type }
+	| Hashmap { key: Type, value: Type }
+	| Pointer { inner: Type }
+	| Reference { inner: Type }
+	| UnionLiteral(Vec<Type>)        // |T U ...| anonymous union
 
 Primitive =
-      Void | Bool | String | Rune
-    | I8 | I16 | I32 | I64
-    | U8 | U16 | U32 | U64
-    | F16 | F32 | F64
+		Void | Bool | String | Rune
+	| I8 | I16 | I32 | I64
+	| U8 | U16 | U32 | U64
+	| F16 | F32 | F64
 
 QualifiedName {
-    parts: Vec<Ident>,               // a.b.c
+	parts: Vec<Ident>,               // a.b.c
 }
 ```
 
@@ -107,26 +107,26 @@ An expression is one stack term: a push, a name lookup, an operator, or a keywor
 
 ```rust
 Expression =
-      Literal(Literal)
-    | Container(Container)
-    | Name(QualifiedName)            // variable, field path, scoped fn, enum member, ...
-    | TypeValue(Type)                // type used as a value (typeof / comparisons)
-    | Operator(Operator)
-    | StackOp(StackOp)
-    | MemoryOp(MemoryOp)
-    | CallOp(CallOp)
-    | Typeof                         // keyword `typeof`
+		Literal(Literal)
+	| Container(Container)
+	| Name(QualifiedName)            // variable, field path, scoped fn, enum member, ...
+	| TypeValue(Type)                // type used as a value (typeof / comparisons)
+	| Operator(Operator)
+	| StackOp(StackOp)
+	| MemoryOp(MemoryOp)
+	| CallOp(CallOp)
+	| Typeof                         // keyword `typeof`
 ```
 
 ### Literals
 
 ```rust
 Literal =
-      Integer { lexeme: String }     // decimal, 0b..., 0x...; underscores kept or normalized
-    | Float { lexeme: String }
-    | String { value: String }
-    | Rune { value: String }
-    | Bool { value: bool }
+		Integer { lexeme: String }     // decimal, 0b..., 0x...; underscores kept or normalized
+	| Float { lexeme: String }
+	| String { value: String }
+	| Rune { value: String }
+	| Bool { value: bool }
 ```
 
 Integer literals take the smallest fitting integer type (positive → unsigned, negative → signed). Floats take the smallest fitting float. That assignment is a type-check concern, not a distinct AST variant.
@@ -135,11 +135,11 @@ Integer literals take the smallest fitting integer type (positive → unsigned, 
 
 ```rust
 Container =
-      List(Vec<Expression>)          // ( ... )
-    | Array(Vec<Expression>)         // [ ... ]
-    | Hashmap(Vec<(Expression, Expression)>)   // { k v ... } with literal keys
-    | Struct(Vec<(Ident, Expression)>)         // { field value ... } with identifier keys
-    | EmptyMapOrStruct               // {} needs a typed context
+		List(Vec<Expression>)          // ( ... )
+	| Array(Vec<Expression>)         // [ ... ]
+	| Hashmap(Vec<(Expression, Expression)>)   // { k v ... } with literal keys
+	| Struct(Vec<(Ident, Expression)>)         // { field value ... } with identifier keys
+	| EmptyMapOrStruct               // {} needs a typed context
 ```
 
 Surface `{ ... }` is one production. The AST distinguishes hashmap vs struct by key shape (literal vs identifier), matching the grammar comments.
@@ -148,11 +148,11 @@ Surface `{ ... }` is one production. The AST distinguishes hashmap vs struct by 
 
 ```rust
 Operator =
-      Arithmetic(ArithmeticOp)
-    | Concat                               // `~`; string join, not overloaded `+`
-    | Logical(LogicalOp)
-    | Comparison(ComparisonOp)
-    | Bitwise(BitwiseOp)
+		Arithmetic(ArithmeticOp)
+	| Concat                               // `~`; string join, not overloaded `+`
+	| Logical(LogicalOp)
+	| Comparison(ComparisonOp)
+	| Bitwise(BitwiseOp)
 
 ArithmeticOp = Add | Sub | Mul | Div | FloorDiv | Mod | Pow
 LogicalOp    = And | Or | Not
@@ -186,18 +186,18 @@ Statements are the sequenced body of functions, blocks, and top-level items that
 
 ```rust
 Statement =
-      Require(Require)
-    | Function(Function)
-    | VarDecl(VarDecl)
-    | Assign(Assign)
-    | If(If)
-    | Match(Match)
-    | For(For)
-    | Defer(Defer)
-    | Unsafe(Unsafe)
-    | Handle(Handle)
-    | Return
-    | Word(Expression)               // one stack term as a statement
+		Require(Require)
+	| Function(Function)
+	| VarDecl(VarDecl)
+	| Assign(Assign)
+	| If(If)
+	| Match(Match)
+	| For(For)
+	| Defer(Defer)
+	| Unsafe(Unsafe)
+	| Handle(Handle)
+	| Return
+	| Word(Expression)               // one stack term as a statement
 ```
 
 Nested `function` declarations are allowed inside bodies; they are only callable from that enclosing body.
@@ -206,8 +206,8 @@ Nested `function` declarations are allowed inside bodies; they are only callable
 
 ```rust
 Require {
-    path: String,                    // string literal module path
-    alias: Option<Ident>,            // omit → import into current scope
+	path: String,                    // string literal module path
+	alias: Option<Ident>,            // omit → import into current scope
 }
 ```
 
@@ -217,17 +217,17 @@ Surface form: `"path" [alias] require`.
 
 ```rust
 Function {
-    name: Ident,
-    visibility: Option<Visibility>,
-    is_unsafe: bool,
-    params: Vec<Parameter>,
-    body: Vec<Statement>,
-    returns: Option<Type>,
+	name: Ident,
+	visibility: Option<Visibility>,
+	is_unsafe: bool,
+	params: Vec<Parameter>,
+	body: Vec<Statement>,
+	returns: Option<Type>,
 }
 
 Parameter {
-    ty: Type,
-    modifier: Option<ParamModifier>, // copy | mutable
+	ty: Type,
+	modifier: Option<ParamModifier>, // copy | mutable
 }
 ```
 
@@ -239,13 +239,13 @@ Parameters are moved onto the local stack in declaration order (first declared =
 
 ```rust
 VarDecl {
-    target: LValue,                  // value already on the stack
-    mutability: Mutability,
-    ty: Type,
+	target: LValue,                  // value already on the stack
+	mutability: Mutability,
+	ty: Type,
 }
 
 Assign {
-    target: LValue,                  // new value already on the stack
+	target: LValue,                  // new value already on the stack
 }
 
 LValue = QualifiedName               // name or field path (e.g. point.x)
@@ -259,39 +259,39 @@ LValue = QualifiedName               // name or field path (e.g. point.x)
 
 ```rust
 If {
-    // condition bool already on the stack before `if`
-    then_branch: Vec<Statement>,
-    else_branch: Option<Vec<Statement>>,
+	// condition bool already on the stack before `if`
+	then_branch: Vec<Statement>,
+	else_branch: Option<Vec<Statement>>,
 }
 
 Match {
-    // subject already on the stack before `match` (value, union, or error in handle)
-    cases: Vec<MatchCase>,
-    else_branch: Option<Vec<Statement>>,
+	// subject already on the stack before `match` (value, union, or error in handle)
+	cases: Vec<MatchCase>,
+	else_branch: Option<Vec<Statement>>,
 }
 
 MatchCase {
-    pattern: Pattern,
-    body: Vec<Statement>,
+	pattern: Pattern,
+	body: Vec<Statement>,
 }
 
 For {
-    // condition bool or iterable already on the stack before `for`
-    body: Vec<Statement>,
+	// condition bool or iterable already on the stack before `for`
+	body: Vec<Statement>,
 }
 
 Defer {
-    body: Vec<Statement>,            // run at scope exit; multiple defers run in reverse
+	body: Vec<Statement>,            // run at scope exit; multiple defers run in reverse
 }
 
 Unsafe {
-    body: Vec<Statement>,            // marks where unsafe ops occur
+	body: Vec<Statement>,            // marks where unsafe ops occur
 }
 
 Handle {
-    // wraps a preceding fallible call (typically `... call handle`)
-    body: Vec<Statement>,            // optional handler (often an inner Match)
-    fallback: Expression,            // word before `fallback`
+	// wraps a preceding fallible call (typically `... call handle`)
+	body: Vec<Statement>,            // optional handler (often an inner Match)
+	fallback: Expression,            // word before `fallback`
 }
 ```
 
@@ -311,8 +311,8 @@ Patterns appear only as match-case discriminators.
 
 ```rust
 Pattern =
-      Condition(Vec<Expression>)     // words before `case` producing a bool
-    | Type(Type)                     // union member type before `case`
+		Condition(Vec<Expression>)     // words before `case` producing a bool
+	| Type(Type)                     // union member type before `case`
 ```
 
 Examples:
@@ -335,15 +335,15 @@ These are both `TopLevel` variants and, where the grammar allows, embeddable sta
 
 ```rust
 Struct {
-    name: Ident,
-    visibility: Option<Visibility>,
-    fields: Vec<Field>,
+	name: Ident,
+	visibility: Option<Visibility>,
+	fields: Vec<Field>,
 }
 
 Field {
-    ty: Type,
-    name: Ident,
-    visibility: Option<Visibility>,
+	ty: Type,
+	name: Ident,
+	visibility: Option<Visibility>,
 }
 ```
 
@@ -351,8 +351,8 @@ Field {
 
 ```rust
 Implement {
-    target: Ident,                   // type being implemented
-    methods: Vec<Function>,
+	target: Ident,                   // type being implemented
+	methods: Vec<Function>,
 }
 ```
 
@@ -362,14 +362,14 @@ Methods are ordinary `Function` nodes. Receivers appear as the first parameter t
 
 ```rust
 Enum {
-    name: Ident,
-    underlying: Option<Type>,        // default i32 if absent
-    members: Vec<EnumMember>,
+	name: Ident,
+	underlying: Option<Type>,        // default i32 if absent
+	members: Vec<EnumMember>,
 }
 
 EnumMember {
-    name: Ident,
-    value: Option<IntegerLiteral>,   // explicit discriminant; else sequential
+	name: Ident,
+	value: Option<IntegerLiteral>,   // explicit discriminant; else sequential
 }
 ```
 
@@ -377,8 +377,8 @@ EnumMember {
 
 ```rust
 Union {
-    name: Ident,
-    members: Vec<Type>,              // at least one; member types must be distinct
+	name: Ident,
+	members: Vec<Type>,              // at least one; member types must be distinct
 }
 ```
 
@@ -386,9 +386,9 @@ Union {
 
 ```rust
 Error {
-    name: Ident,
-    inject: Option<QualifiedName>,   // optional: inject members from another error type
-    members: Vec<Ident>,
+	name: Ident,
+	inject: Option<QualifiedName>,   // optional: inject members from another error type
+	members: Vec<Ident>,
 }
 ```
 
@@ -449,18 +449,18 @@ AST (sketch):
 
 ```text
 Program
-  items:
-    Function
-      name: add
-      params: [i32, i32]
-      body: [Word(Operator(+)), Return]
-      returns: Some(i32)
-  main:
-    MainFunction
-      body:
-        Word(Literal(3))
-        Word(Literal(4))
-        Word(Name(add))
-        Word(CallOp(Call))
-      returns: None
+	items:
+	Function
+		name: add
+		params: [i32, i32]
+		body: [Word(Operator(+)), Return]
+		returns: Some(i32)
+	main:
+	MainFunction
+		body:
+		Word(Literal(3))
+		Word(Literal(4))
+		Word(Name(add))
+		Word(CallOp(Call))
+		returns: None
 ```
