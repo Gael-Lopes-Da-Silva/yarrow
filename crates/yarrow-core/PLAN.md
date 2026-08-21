@@ -24,11 +24,11 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 
 | Component   | Status     | Reality                                                                                                                |
 | ----------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Tokenizer   | 🟡 Partial | Most keywords/ops exist; missing `~`, `\|`, `public`/`private`, `error`, `copy`; still has language `break`/`continue` |
-| Parser/AST  | 🟡 Partial | Parses a large subset, but AST and surface forms diverge from `AST.md` / `SYNTAX.md`                                   |
-| Compiler    | 🟡 Partial | Cranelift JIT path works for many programs; semantics and APIs lag the spec                                            |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                                                      |
-| Std library | 🟡 Partial | Embedded via `build.rs`; names and modules do not match the grammar                                                    |
+| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing |
+| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
+| Compiler    | 🟡 Partial | Cranelift JIT; `~` concat wired; fallible `\|T Err\|` / named errors still Stage 4 |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                  |
+| Std library | 🟡 Partial | Embedded via `build.rs`; names and modules do not match the grammar                |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -138,53 +138,54 @@ Keep the host surface small. Prefer renaming/wrapping through std rather than gr
 
 Gates should prefer `docs/examples/valid/*` and `docs/examples/invalid/*`, then larger slices of the grammar tour. Do not mark a stage ✅ until its gate commands succeed.
 
-### Stage 0: Rebaseline ⬜
+### Stage 0: Rebaseline ✅
 
 - Point this plan (and comments) at `docs/GRAMMAR.md`, not `docs/syntax.yar`
 - Inventory stays as above; fix only blockers for `cargo check` / `cargo clippy`
-- Agree: 128-bit primitives (`i128`/`u128`/`f128`) are **out of spec**; remove or quarantine behind “unsupported”
+- Agree: 128-bit primitives (`i128`/`u128`/`f128`) are **out of spec**; removed from `Primitive` (Ty scalar slots kept for encoding stability)
 
 **Gate:** `cargo fmt --all && cargo check && cargo clippy` green; plan matches docs.
 
 ---
 
-### Stage 1: Tokenizer surface sync ⬜
+### Stage 1: Tokenizer surface sync ✅
 
 Bring lexing in line with `SYNTAX.md`.
 
 1. Add `TokenKind` + lexing for `~` (concat)
 2. Add `|` (pipe) for union type literals
 3. Add keywords: `public`, `private`, `error`, `copy`
-4. Plan removal or demotion of `break` / `continue` keywords once `std.loop` exists (Stage 5); until then, either keep as temporary sugar with a documented debt, or reject them and require `std.loop` early
+4. Keep `break` / `continue` as temporary language keywords until `std.loop` (Stage 5)
+5. Fix UTF-8 source scanning (byte vs char cursor) so grammar comments with `→` tokenize
 
 **Gate:** tokenizer accepts every token appearing in `docs/GRAMMAR.md` and `docs/examples/**/*.yar`; rejects unknown sigils cleanly.
 
 ---
 
-### Stage 2: Parser / AST toward the docs ⬜
+### Stage 2: Parser / AST toward the docs ✅
 
 Update `ast.rs` and `parser/mod.rs` to match `AST.md` / `SYNTAX.md` closely enough that the compiler can be honest.
 
 Priority order:
 
-1. **Concat** - parse `~` as its own op (not `Plus`)
+1. **Concat** - parse `~` as `BinOp::Concat`
 2. **Visibility** - optional `public`/`private` on functions, structs, fields
 3. **Param modifiers** - `type copy` / `type mutable` on parameters
-4. **Union type literals** - `|T U …|` in `with` and type positions; stop using `or` as a type separator
-5. **`error` declarations** - `Name [QualifiedName] error { Ident } end`
+4. **Union type literals** - `|T U …|` in `with` and type positions
+5. **`error` declarations** - `Name [QualifiedName] error { Ident } end` (`error` soft with `.` / `require`)
 6. **Enum underlying type** - `Name [type] enum`
-7. **`for` surface** - condition and iterable forms only (no binder names before `for`); prepare for `std.loop` words
-8. **Structural cleanup (can span stages)** - flatten toward stack words; distinguish `main`; struct vs hashmap literals by key shape
+7. **`for` surface** - condition and iterable forms only (no binder names before `for`)
+8. **Structural cleanup (can span stages)** - flatten toward stack words; distinguish `main`; struct vs hashmap literals by key shape — deferred
 
 **Gate:** parse all of `docs/examples/valid/*.yar` into AST without error (compile may still fail). Invalid examples that are purely syntactic still fail at parse when appropriate.
 
 ---
 
-### Stage 3: Core compiler semantics sync ⬜
+### Stage 3: Core compiler semantics sync 🟡
 
 Align lowering and type checking with `TYPE_SYSTEM.md` / `MEMORY_MODEL.md` / `RUNTIME.md`.
 
-1. **`~` concat** - string (+ autoderef `reference<string>`); reject string `+`
+1. **`~` concat** - ✅ string join via `str_join`; reject string `+` (`E335`)
 2. **Smallest-fit literals** - per type system rules
 3. **`copy` / `mutable` params** - deep-copy vs move-in; mutable reference receivers
 4. **Visibility** - non-`public` entities do not export across `require`

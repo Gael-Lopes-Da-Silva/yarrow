@@ -1222,7 +1222,7 @@ impl Compiler {
         let mut return_tys = Vec::with_capacity(f.returns.len());
         let mut sig = self.module.make_signature();
         for p in &f.params {
-            let ty = self.resolve_ty(p)?;
+            let ty = self.resolve_ty(&p.ty)?;
             sig.params.push(AbiParam::new(ty.clty(self.ptr_type)));
             param_tys.push(ty);
         }
@@ -1334,7 +1334,7 @@ impl Compiler {
         let params_ty: Vec<Ty> = f
             .params
             .iter()
-            .map(|p| self.resolve_ty(p))
+            .map(|p| self.resolve_ty(&p.ty))
             .collect::<CResult<_>>()?;
         let param_vals: Vec<Value> = b.block_params(entry).to_vec();
         let mut stack: Vec<Slot> = Vec::new();
@@ -1782,22 +1782,9 @@ impl Compiler {
                 st.terminated = prev;
             }
 
-            Stmt::For {
-                source,
-                value,
-                index,
-                body,
-            } => {
+            Stmt::For { source, body } => {
                 let prev = st.terminated;
-                self.emit_for(
-                    b,
-                    st,
-                    stack,
-                    source,
-                    value.as_deref(),
-                    index.as_deref(),
-                    body,
-                )?;
+                self.emit_for(b, st, stack, source, body)?;
                 st.terminated = prev;
             }
 
@@ -1827,6 +1814,7 @@ impl Compiler {
             | Stmt::Implement(_)
             | Stmt::Enum(_)
             | Stmt::Union(_)
+            | Stmt::Error(_)
             | Stmt::Require { .. } => {
                 // Only meaningful at program level; no-op inside a body.
             }
@@ -2812,16 +2800,28 @@ impl Compiler {
         Ok(())
     }
 
-    /// `for` has two shapes.
-    ///
-    /// Condition form (`value` and `index` both `None`): evaluate `source` as
-    /// a boolean each iteration and loop while it is truthy.
-    ///
-    /// Sequence form: `source` must be an array; `value` (if any) is bound to
-    /// each element in order and `index` (if any) to its offset. A var name of
-    /// `_` discards that binding.
-    #[allow(clippy::too_many_arguments)]
+    /// `for` is either a condition loop (`i 3 < for`) or an iterable loop
+    /// (`numbers for`). Binders before `for` are gone; use `std.loop` for
+    /// value/index (Stage 5). Until then, iterable loops still walk elements
+    /// without binding names.
     fn emit_for(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        source: &Expr,
+        body: &[Stmt],
+    ) -> CResult<()> {
+        if for_source_is_condition(source) {
+            return self.emit_cond_for(b, st, stack, source, body);
+        }
+        self.emit_iter_for(b, st, stack, source, None, None, body)
+    }
+
+    /// Sequence form: `source` must be an array or list. Optional `value` /
+    /// `index` names are legacy; prefer `std.loop`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_iter_for(
         &mut self,
         b: &mut FunctionBuilder,
         st: &mut FnState,
@@ -2831,10 +2831,6 @@ impl Compiler {
         index: Option<&str>,
         body: &[Stmt],
     ) -> CResult<()> {
-        if value.is_none() && index.is_none() {
-            return self.emit_cond_for(b, st, stack, source, body);
-        }
-
         let pre = stack.clone();
         self.compile_expr(b, st, stack, source)?;
         let iterable = self.pop_slot(stack, "'for' iterable")?;
@@ -4478,6 +4474,20 @@ impl Compiler {
 
         match op {
             Plus if common == Ty::String => {
+                return Err(CompileError::new(
+                    "string concatenation uses '~', not '+'",
+                    Location::default(),
+                    "E335",
+                ));
+            }
+            Concat => {
+                if common != Ty::String {
+                    return Err(CompileError::new(
+                        format!("'~' requires string operands, got {common:?}"),
+                        Location::default(),
+                        "E335",
+                    ));
+                }
                 let out = self.rt_call(b, st, "str_join", vec![l.value, r.value])?;
                 stack.push(Slot {
                     value: out[0],
@@ -4789,7 +4799,7 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
                 collect_strings(then_branch, out);
                 collect_strings(else_branch, out);
             }
-            Stmt::For { source, body, .. } => {
+            Stmt::For { source, body } => {
                 walk_expr(source, out);
                 collect_strings(body, out);
             }
@@ -4840,5 +4850,19 @@ fn merge_type(prev: Option<Ty>, next: Ty) -> CResult<Ty> {
                 "E345",
             )
         }),
+    }
+}
+
+/// Heuristic: condition `for` leaves a comparison/bool phrase; iterable `for`
+/// leaves a container name or other non-bool expression.
+fn for_source_is_condition(source: &Expr) -> bool {
+    use BinOp::*;
+    match source {
+        Expr::Bool { .. } => true,
+        Expr::Binary { op, .. } => matches!(op, Eq | Ne | Gt | Gte | Lt | Lte | And | Or),
+        Expr::Unary { .. } | Expr::ApplyUn(_) => true,
+        Expr::ApplyBin(op) => matches!(op, Eq | Ne | Gt | Gte | Lt | Lte | And | Or),
+        Expr::Seq(xs) => xs.last().is_some_and(for_source_is_condition),
+        _ => false,
     }
 }

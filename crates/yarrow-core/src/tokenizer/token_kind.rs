@@ -16,6 +16,10 @@ pub enum TokenKind {
     SlashSlash,
     Percent,
     Caret,
+    /// String concatenation (`~`).
+    Tilde,
+    /// Union type literal delimiters (`|T U|`).
+    Pipe,
     Dot,
 
     EqualEqual,
@@ -43,6 +47,7 @@ pub enum TokenKind {
     If,
     Else,
     For,
+    /// Temporary language keywords until `std.loop` (Stage 5).
     Break,
     Continue,
     Match,
@@ -63,6 +68,11 @@ pub enum TokenKind {
     Mutable,
     Set,
     Unsafe,
+
+    Public,
+    Private,
+    Copy,
+    Error,
 
     Struct,
     Implement,

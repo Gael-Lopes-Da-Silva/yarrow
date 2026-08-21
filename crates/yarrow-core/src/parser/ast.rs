@@ -19,6 +19,19 @@ pub enum Mutability {
     Static,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+/// Modifier on a function parameter type (`type copy` / `type mutable`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamModifier {
+    Copy,
+    Mutable,
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -44,6 +57,7 @@ pub enum TypeKind {
     Pointer {
         inner: Box<Type>,
     },
+    /// `|T U …|` anonymous union (also used for fallible `|T Err|` returns).
     Union(Vec<Type>),
 }
 
@@ -53,20 +67,18 @@ pub enum Primitive {
     I16,
     I32,
     I64,
-    I128,
     U8,
     U16,
     U32,
     U64,
-    U128,
     F16,
     F32,
     F64,
-    F128,
     String,
     Rune,
     Bool,
     Void,
+    /// Legacy catch-all error tag; prefer named `error` declarations.
     Error,
     Type,
 }
@@ -78,16 +90,13 @@ impl Primitive {
             "i16" => Primitive::I16,
             "i32" => Primitive::I32,
             "i64" => Primitive::I64,
-            "i128" => Primitive::I128,
             "u8" => Primitive::U8,
             "u16" => Primitive::U16,
             "u32" => Primitive::U32,
             "u64" => Primitive::U64,
-            "u128" => Primitive::U128,
             "f16" => Primitive::F16,
             "f32" => Primitive::F32,
             "f64" => Primitive::F64,
-            "f128" => Primitive::F128,
             "string" => Primitive::String,
             "rune" => Primitive::Rune,
             "bool" => Primitive::Bool,
@@ -118,6 +127,8 @@ pub enum BinOp {
     Fdiv,
     Mod,
     Pow,
+    /// String concatenation (`~`); not overloaded `+`.
+    Concat,
     Eq,
     Ne,
     Gt,
@@ -245,13 +256,22 @@ impl Expr {
 pub struct Field {
     pub name: String,
     pub ty: Type,
+    pub visibility: Option<Visibility>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parameter {
+    pub ty: Type,
+    pub modifier: Option<ParamModifier>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<Type>,
+    pub visibility: Option<Visibility>,
+    pub params: Vec<Parameter>,
     pub body: Vec<Stmt>,
+    /// Return types from `with …`. A `|T Err|` literal is one `TypeKind::Union`.
     pub returns: Vec<Type>,
     /// `name unsafe function`: marks the function as unsafe, so its body may
     /// use unsafe operations and calls to it require an unsafe context.
@@ -261,6 +281,7 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     pub name: String,
+    pub visibility: Option<Visibility>,
     pub fields: Vec<Field>,
 }
 
@@ -282,6 +303,8 @@ pub struct EnumMember {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     pub name: String,
+    /// Optional underlying type (`Name i32 enum`); default is `i32`.
+    pub underlying: Option<Type>,
     pub members: Vec<EnumMember>,
 }
 
@@ -289,6 +312,15 @@ pub struct EnumDecl {
 pub struct UnionDecl {
     pub name: String,
     pub types: Vec<Type>,
+}
+
+/// `Name [QualifiedName] error { member } end`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorDecl {
+    pub name: String,
+    /// Optional injected error type (`MyErr error.Error error … end`).
+    pub inject: Option<String>,
+    pub members: Vec<String>,
 }
 
 /// The condition of a `match` case. Either a boolean expression evaluated
@@ -333,17 +365,10 @@ pub enum Stmt {
         then_branch: Vec<Stmt>,
         else_branch: Vec<Stmt>,
     },
-    /// `for` comes in three forms:
-    /// - condition form (`counter 5 < for ... end`): `value`/`index` are `None`
-    ///   and `source` is the loop condition;
-    /// - value form (`numbers value for ... end`): `value` is the iteration
-    ///   variable and `source` the iterable;
-    /// - index form (`numbers value index for ... end`): both `value` and
-    ///   `index` are bound and `source` is the iterable.
+    /// `for` forms (docs): condition (`i 3 < for`) or iterable (`numbers for`).
+    /// Iteration value/index come from `std.loop`, not binder names before `for`.
     For {
         source: Expr,
-        value: Option<String>,
-        index: Option<String>,
         body: Vec<Stmt>,
     },
     Match {
@@ -373,8 +398,10 @@ pub enum Stmt {
     Return {
         value: Option<Expr>,
     },
+    /// Temporary: language `break`/`continue` until `std.loop` lands (Stage 5).
     Break,
     Continue,
+    Error(ErrorDecl),
     /// `unsafe ... end`: an unsafe block. Statements inside may perform
     /// operations that are normally restricted (pointer access, host calls).
     Unsafe {

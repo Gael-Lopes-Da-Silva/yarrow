@@ -44,6 +44,10 @@ impl Tokenizer {
         keywords.insert("static".to_string(), TokenKind::Static);
         keywords.insert("mutable".to_string(), TokenKind::Mutable);
         keywords.insert("set".to_string(), TokenKind::Set);
+        keywords.insert("public".to_string(), TokenKind::Public);
+        keywords.insert("private".to_string(), TokenKind::Private);
+        keywords.insert("copy".to_string(), TokenKind::Copy);
+        keywords.insert("error".to_string(), TokenKind::Error);
         keywords.insert("struct".to_string(), TokenKind::Struct);
         keywords.insert("implement".to_string(), TokenKind::Implement);
         keywords.insert("enum".to_string(), TokenKind::Enum);
@@ -159,6 +163,8 @@ impl Tokenizer {
                 }
             }
             '+' => self.add_token(TokenKind::Plus),
+            '~' => self.add_token(TokenKind::Tilde),
+            '|' => self.add_token(TokenKind::Pipe),
             c if c.is_ascii_digit() => self.handle_number()?,
             '"' => self.handle_string()?,
             '\'' => self.handle_rune()?,
@@ -383,7 +389,9 @@ impl Tokenizer {
 
     fn advance(&mut self) -> char {
         let c = self.peek();
-        self.current += 1;
+        if !self.is_at_end() {
+            self.current += c.len_utf8();
+        }
         c
     }
 
@@ -392,11 +400,13 @@ impl Tokenizer {
     }
 
     fn peek(&self) -> char {
-        self.source.chars().nth(self.current).unwrap_or('\0')
+        self.source[self.current..].chars().next().unwrap_or('\0')
     }
 
     fn peek_next(&self) -> char {
-        self.source.chars().nth(self.current + 1).unwrap_or('\0')
+        let mut chars = self.source[self.current..].chars();
+        chars.next();
+        chars.next().unwrap_or('\0')
     }
 
     fn is_digit(&self, c: char, radix: u32) -> bool {

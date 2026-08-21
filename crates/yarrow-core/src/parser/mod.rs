@@ -94,20 +94,16 @@ impl Parser {
 
                 TokenKind::Function => {
                     let name = self.pop_name(&mut ops)?;
-                    let func = self.parse_function(name, false)?;
+                    let func = self.parse_function(name, None, false)?;
                     stmts.push(Stmt::Function(func));
                 }
 
                 TokenKind::Load | TokenKind::Store => {
                     // `load`/`store` are keywords (the typed pointer words),
                     // but `std.mem` also exposes functions with these names.
-                    // When the next token is `function`/`unsafe function`, this
-                    // is a function declaration; otherwise it is the word.
-                    let next = self.peek_next_kind();
-                    let is_decl = next == TokenKind::Function
-                        || (next == TokenKind::Unsafe
-                            && self.peek_two_ahead() == TokenKind::Function);
-                    if is_decl {
+                    // When the next token is a function declaration head, this
+                    // is a function name; otherwise it is the word.
+                    if self.peek_is_function_head(1) {
                         ops.push(Expr::variable(self.peek_lexeme()));
                         self.advance();
                     } else {
@@ -115,13 +111,18 @@ impl Parser {
                     }
                 }
 
+                TokenKind::Public | TokenKind::Private => {
+                    let vis = self.parse_visibility().unwrap();
+                    let stmt = self.parse_visible_decl(&mut ops, vis)?;
+                    stmts.push(stmt);
+                }
+
                 TokenKind::Unsafe => {
                     if self.peek_next_kind() == TokenKind::Function {
-                        // `name unsafe function`: a function declared unsafe so
-                        // its body may use unsafe operations.
+                        // `name unsafe function`
                         let name = self.pop_name(&mut ops)?;
                         self.advance();
-                        let func = self.parse_function(name, true)?;
+                        let func = self.parse_function(name, None, true)?;
                         stmts.push(Stmt::Function(func));
                     } else {
                         // `unsafe ... end`: an unsafe block.
@@ -134,13 +135,13 @@ impl Parser {
 
                 TokenKind::Struct => {
                     let name = self.pop_name(&mut ops)?;
-                    let decl = self.parse_struct(name)?;
+                    let decl = self.parse_struct(name, None)?;
                     stmts.push(Stmt::Struct(decl));
                 }
 
                 TokenKind::Enum => {
-                    let name = self.pop_name(&mut ops)?;
-                    let decl = self.parse_enum(name)?;
+                    let (name, underlying) = self.pop_enum_head(&mut ops)?;
+                    let decl = self.parse_enum(name, underlying)?;
                     stmts.push(Stmt::Enum(decl));
                 }
 
@@ -148,6 +149,22 @@ impl Parser {
                     let name = self.pop_name(&mut ops)?;
                     let decl = self.parse_union(name)?;
                     stmts.push(Stmt::Union(decl));
+                }
+
+                TokenKind::Error => {
+                    // Soft keyword: `error.Name` is a path; `… error require`
+                    // is a module alias; otherwise `Name error … end`.
+                    match self.peek_next_kind() {
+                        TokenKind::Dot => self.process_expr_word(&mut ops)?,
+                        TokenKind::Require => {
+                            ops.push(Expr::variable("error"));
+                            self.advance();
+                        }
+                        _ => {
+                            let decl = self.parse_error_decl(&mut ops)?;
+                            stmts.push(Stmt::Error(decl));
+                        }
+                    }
                 }
 
                 TokenKind::Implement => {
@@ -308,46 +325,13 @@ impl Parser {
     }
 
     fn parse_for(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
-        let location = self.peek_location();
         self.advance();
-
-        // Distinguish the three `for` forms by the operand stack:
-        //   condition form:  `<condition> for`              (top is not a bare name)
-        //   value form:      `<iterable> <var> for`         (two operands, top is a name)
-        //   index form:      `<iterable> <var> <index> for` (three+ operands, top two are names)
-        let n = ops.len();
-        let top_is_var = matches!(ops.last(), Some(Expr::Variable { .. }));
-        let second_is_var = matches!(ops.get(n.saturating_sub(2)), Some(Expr::Variable { .. }));
-
-        let (source, value, index) = if n >= 2 && top_is_var && second_is_var {
-            if n == 2 {
-                let value = pop_var_name(ops, location)?;
-                let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
-                (source, Some(value), None)
-            } else {
-                let index = pop_var_name(ops, location)?;
-                let value = pop_var_name(ops, location)?;
-                let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
-                (source, Some(value), Some(index))
-            }
-        } else if n >= 2 && top_is_var {
-            let value = pop_var_name(ops, location)?;
-            let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
-            (source, Some(value), None)
-        } else {
-            let condition = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
-            (condition, None, None)
-        };
-
+        // Condition (`i 3 < for`) or iterable (`numbers for`). Binders before
+        // `for` are not part of the surface; use `std.loop` for value/index.
+        let source = drain_ops(ops).unwrap_or_else(|| Expr::variable(""));
         let body = self.body(&[TokenKind::End])?;
         self.expect(TokenKind::End, "expected 'end' after for block")?;
-
-        Ok(Stmt::For {
-            source,
-            value,
-            index,
-            body,
-        })
+        Ok(Stmt::For { source, body })
     }
 
     fn parse_match(&mut self, ops: &mut Vec<Expr>) -> ParseResult<Stmt> {
@@ -467,12 +451,17 @@ impl Parser {
     // Declarations
     // ------------------------------------------------------------------
 
-    fn parse_function(&mut self, name: String, is_unsafe: bool) -> ParseResult<Function> {
+    fn parse_function(
+        &mut self,
+        name: String,
+        visibility: Option<Visibility>,
+        is_unsafe: bool,
+    ) -> ParseResult<Function> {
         self.expect(TokenKind::Function, "expected 'function'")?;
 
         let mut params = Vec::new();
         while self.peek_kind() != TokenKind::Do {
-            params.push(self.parse_type()?);
+            params.push(self.parse_parameter()?);
         }
         self.expect(TokenKind::Do, "expected 'do' to start function body")?;
 
@@ -480,13 +469,14 @@ impl Parser {
         self.expect(TokenKind::End, "expected 'end' to close function body")?;
 
         let returns = if self.match_kind(TokenKind::With) {
-            self.parse_type_union()?
+            vec![self.parse_type()?]
         } else {
             Vec::new()
         };
 
         Ok(Function {
             name,
+            visibility,
             params,
             body,
             returns,
@@ -494,7 +484,23 @@ impl Parser {
         })
     }
 
-    fn parse_struct(&mut self, name: String) -> ParseResult<StructDecl> {
+    fn parse_parameter(&mut self) -> ParseResult<Parameter> {
+        let ty = self.parse_type()?;
+        let modifier = if self.match_kind(TokenKind::Copy) {
+            Some(ParamModifier::Copy)
+        } else if self.match_kind(TokenKind::Mutable) {
+            Some(ParamModifier::Mutable)
+        } else {
+            None
+        };
+        Ok(Parameter { ty, modifier })
+    }
+
+    fn parse_struct(
+        &mut self,
+        name: String,
+        visibility: Option<Visibility>,
+    ) -> ParseResult<StructDecl> {
         self.expect(TokenKind::Struct, "expected 'struct'")?;
 
         let mut fields = Vec::new();
@@ -504,17 +510,23 @@ impl Parser {
                 .expect(TokenKind::Identifier, "expected field name")?
                 .lexeme
                 .clone();
+            let field_vis = self.parse_visibility();
             fields.push(Field {
                 name: field_name,
                 ty,
+                visibility: field_vis,
             });
         }
         self.expect(TokenKind::End, "expected 'end' to close struct")?;
 
-        Ok(StructDecl { name, fields })
+        Ok(StructDecl {
+            name,
+            visibility,
+            fields,
+        })
     }
 
-    fn parse_enum(&mut self, name: String) -> ParseResult<EnumDecl> {
+    fn parse_enum(&mut self, name: String, underlying: Option<Type>) -> ParseResult<EnumDecl> {
         self.expect(TokenKind::Enum, "expected 'enum'")?;
 
         let mut members = Vec::new();
@@ -537,7 +549,43 @@ impl Parser {
         }
         self.expect(TokenKind::End, "expected 'end' to close enum")?;
 
-        Ok(EnumDecl { name, members })
+        Ok(EnumDecl {
+            name,
+            underlying,
+            members,
+        })
+    }
+
+    fn parse_error_decl(&mut self, ops: &mut Vec<Expr>) -> ParseResult<ErrorDecl> {
+        let location = self.peek_location();
+        self.expect(TokenKind::Error, "expected 'error'")?;
+
+        // Operand stack: `Name` or `Name InjectPath` before the `error` keyword.
+        let inject = match ops.last() {
+            Some(Expr::Member { .. }) | Some(Expr::Variable { .. }) if ops.len() >= 2 => {
+                Some(expr_to_path(ops.pop().unwrap())?)
+            }
+            _ => None,
+        };
+        let name = self.pop_name(ops).map_err(|_| {
+            ParseError::new("'error' declaration requires a type name", location, "E230")
+        })?;
+
+        let mut members = Vec::new();
+        while self.peek_kind() != TokenKind::End {
+            let member = self
+                .expect(TokenKind::Identifier, "expected error member")?
+                .lexeme
+                .clone();
+            members.push(member);
+        }
+        self.expect(TokenKind::End, "expected 'end' to close error")?;
+
+        Ok(ErrorDecl {
+            name,
+            inject,
+            members,
+        })
     }
 
     fn parse_union(&mut self, name: String) -> ParseResult<UnionDecl> {
@@ -565,7 +613,9 @@ impl Parser {
                 ));
             }
             let name = self.advance().lexeme.clone();
-            functions.push(self.parse_function(name, false)?);
+            let visibility = self.parse_visibility();
+            let is_unsafe = self.match_kind(TokenKind::Unsafe);
+            functions.push(self.parse_function(name, visibility, is_unsafe)?);
         }
         self.expect(TokenKind::End, "expected 'end' to close implement")?;
 
@@ -576,23 +626,36 @@ impl Parser {
     // Types
     // ------------------------------------------------------------------
 
-    fn parse_type_union(&mut self) -> ParseResult<Vec<Type>> {
-        let mut types = vec![self.parse_type()?];
-        while self.match_kind(TokenKind::Or) {
-            types.push(self.parse_type()?);
-        }
-        Ok(types)
-    }
-
     fn parse_type(&mut self) -> ParseResult<Type> {
         let location = self.peek_location();
 
-        let name = self
-            .expect(TokenKind::Identifier, "expected a type")?
-            .lexeme
-            .clone();
+        if self.match_kind(TokenKind::Pipe) {
+            let mut members = Vec::new();
+            while self.peek_kind() != TokenKind::Pipe {
+                if matches!(self.peek_kind(), TokenKind::End | TokenKind::Eof) {
+                    return Err(ParseError::new(
+                        "unterminated union type literal; expected '|'",
+                        location,
+                        "E231",
+                    ));
+                }
+                members.push(self.parse_type()?);
+            }
+            self.expect(TokenKind::Pipe, "expected '|' to close union type literal")?;
+            if members.is_empty() {
+                return Err(ParseError::new(
+                    "union type literal requires at least one member type",
+                    location,
+                    "E232",
+                ));
+            }
+            return Ok(Type {
+                kind: TypeKind::Union(members),
+                location,
+            });
+        }
 
-        // Module/error paths like `error.CustomError`.
+        let name = self.expect_type_name_start()?.to_string();
         let path = self.parse_type_path(name)?;
 
         let kind = if self.match_kind(TokenKind::Less) {
@@ -605,6 +668,22 @@ impl Parser {
         };
 
         Ok(Type { kind, location })
+    }
+
+    /// First token of a type name: identifier or the soft `error` keyword.
+    fn expect_type_name_start(&mut self) -> ParseResult<String> {
+        match self.peek_kind() {
+            TokenKind::Identifier => Ok(self.advance().lexeme.clone()),
+            TokenKind::Error => {
+                self.advance();
+                Ok("error".to_string())
+            }
+            _ => Err(ParseError::new(
+                "expected a type",
+                self.peek_location(),
+                "E207",
+            )),
+        }
     }
 
     fn parse_type_args(&mut self, location: Location) -> ParseResult<Vec<TypeArg>> {
@@ -701,8 +780,13 @@ impl Parser {
                 let expr = literal_expr(tok)?;
                 ops.push(expr);
             }
-            TokenKind::Identifier => {
-                let name = self.advance().lexeme.clone();
+            TokenKind::Identifier | TokenKind::Error => {
+                let name = if self.peek_kind() == TokenKind::Error {
+                    self.advance();
+                    "error".to_string()
+                } else {
+                    self.advance().lexeme.clone()
+                };
                 let mut expr = Expr::variable(&name);
                 while self.match_kind(TokenKind::Dot) {
                     let member = self.expect_member_name("expected member name after '.'")?;
@@ -998,6 +1082,99 @@ impl Parser {
         }
     }
 
+    /// `Name [underlying] enum`: optional type value sits above the enum name.
+    fn pop_enum_head(&mut self, ops: &mut Vec<Expr>) -> ParseResult<(String, Option<Type>)> {
+        let location = self.peek_location();
+        let underlying = match ops.last() {
+            Some(Expr::TypeValue { name }) => {
+                let name = name.clone();
+                ops.pop();
+                let kind = if let Some(p) = Primitive::parse_name(&name) {
+                    TypeKind::Primitive(p)
+                } else {
+                    TypeKind::Named(name)
+                };
+                Some(Type { kind, location })
+            }
+            Some(Expr::Variable { name }) if ops.len() >= 2 => {
+                // Named underlying type that is not a primitive.
+                let name = name.clone();
+                ops.pop();
+                Some(Type {
+                    kind: TypeKind::Named(name),
+                    location,
+                })
+            }
+            _ => None,
+        };
+        let name = self.pop_name(ops)?;
+        Ok((name, underlying))
+    }
+
+    fn parse_visibility(&mut self) -> Option<Visibility> {
+        match self.peek_kind() {
+            TokenKind::Public => {
+                self.advance();
+                Some(Visibility::Public)
+            }
+            TokenKind::Private => {
+                self.advance();
+                Some(Visibility::Private)
+            }
+            _ => None,
+        }
+    }
+
+    /// After an optional visibility token was consumed: finish the declaration.
+    fn parse_visible_decl(
+        &mut self,
+        ops: &mut Vec<Expr>,
+        visibility: Visibility,
+    ) -> ParseResult<Stmt> {
+        match self.peek_kind() {
+            TokenKind::Unsafe => {
+                self.advance();
+                let name = self.pop_name(ops)?;
+                let func = self.parse_function(name, Some(visibility), true)?;
+                Ok(Stmt::Function(func))
+            }
+            TokenKind::Function => {
+                let name = self.pop_name(ops)?;
+                let func = self.parse_function(name, Some(visibility), false)?;
+                Ok(Stmt::Function(func))
+            }
+            TokenKind::Struct => {
+                let name = self.pop_name(ops)?;
+                let decl = self.parse_struct(name, Some(visibility))?;
+                Ok(Stmt::Struct(decl))
+            }
+            _ => Err(ParseError::new(
+                "visibility must precede 'function', 'unsafe function', or 'struct'",
+                self.peek_location(),
+                "E233",
+            )),
+        }
+    }
+
+    /// True if tokens starting at `offset` from current form a function head
+    /// (`[public|private] [unsafe] function`).
+    fn peek_is_function_head(&self, offset: usize) -> bool {
+        let kind_at = |i: usize| {
+            self.tokens
+                .get(self.current + i)
+                .map(|t| t.kind)
+                .unwrap_or(TokenKind::Eof)
+        };
+        let mut i = offset;
+        if matches!(kind_at(i), TokenKind::Public | TokenKind::Private) {
+            i += 1;
+        }
+        if kind_at(i) == TokenKind::Unsafe {
+            i += 1;
+        }
+        kind_at(i) == TokenKind::Function
+    }
+
     fn peek_kind(&self) -> TokenKind {
         self.tokens[self.current].kind
     }
@@ -1005,13 +1182,6 @@ impl Parser {
     fn peek_next_kind(&self) -> TokenKind {
         self.tokens
             .get(self.current + 1)
-            .map(|t| t.kind)
-            .unwrap_or(TokenKind::Eof)
-    }
-
-    fn peek_two_ahead(&self) -> TokenKind {
-        self.tokens
-            .get(self.current + 2)
             .map(|t| t.kind)
             .unwrap_or(TokenKind::Eof)
     }
@@ -1110,17 +1280,6 @@ fn drain_ops(ops: &mut Vec<Expr>) -> Option<Expr> {
     }
 }
 
-fn pop_var_name(ops: &mut Vec<Expr>, location: Location) -> ParseResult<String> {
-    match ops.pop() {
-        Some(Expr::Variable { name }) => Ok(name),
-        _ => Err(ParseError::new(
-            "expected a variable name",
-            location,
-            "E204",
-        )),
-    }
-}
-
 /// Pull the `fallback` statement out of a `handle` body, returning the
 /// remaining statements and the fallback value (if any).
 fn extract_fallback(body: Vec<Stmt>) -> (Vec<Stmt>, Option<Expr>) {
@@ -1216,6 +1375,7 @@ fn binary_op(kind: TokenKind) -> Option<BinOp> {
         TokenKind::SlashSlash => BinOp::Fdiv,
         TokenKind::Percent => BinOp::Mod,
         TokenKind::Caret => BinOp::Pow,
+        TokenKind::Tilde => BinOp::Concat,
         TokenKind::EqualEqual => BinOp::Eq,
         TokenKind::NotEqual => BinOp::Ne,
         TokenKind::Greater => BinOp::Gt,
@@ -1229,6 +1389,21 @@ fn binary_op(kind: TokenKind) -> Option<BinOp> {
         TokenKind::RightShift => BinOp::Rshift,
         _ => return None,
     })
+}
+
+fn expr_to_path(expr: Expr) -> ParseResult<String> {
+    match expr {
+        Expr::Variable { name } => Ok(name),
+        Expr::Member { base, member } => {
+            let base = expr_to_path(*base)?;
+            Ok(format!("{base}.{member}"))
+        }
+        _ => Err(ParseError::new(
+            "expected a qualified name",
+            Location::default(),
+            "E234",
+        )),
+    }
 }
 
 pub fn parse(tokens: Vec<Token>) -> ParseResult<Program> {
