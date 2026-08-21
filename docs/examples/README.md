@@ -50,6 +50,7 @@ docs/examples
 | [`invalid/08_union_bad_case.yar`](invalid/08_union_bad_case.yar)                         | Union case not a member type       |
 | [`invalid/09_unwrap_non_fallible_caller.yar`](invalid/09_unwrap_non_fallible_caller.yar) | `unwrap` where caller cannot error |
 | [`invalid/10_missing_main.yar`](invalid/10_missing_main.yar)                             | Missing `main`                     |
+| [`invalid/11_region_escape.yar`](invalid/11_region_escape.yar)                           | Free region while borrow live      |
 
 ## Related docs
 

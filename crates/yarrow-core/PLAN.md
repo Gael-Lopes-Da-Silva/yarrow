@@ -26,7 +26,7 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 | ----------- | ---------- | -------------------------------------------------------------------------------- |
 | Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
 | Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 5 | JIT; std intrinsics (`region`/`list`/`map`); nested funcs; multi-module strings  |
+| Compiler    | 🟢 Stage 6 | JIT; ownership/borrow/region escape checks; unsafe boundary (`E370`)             |
 | Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
 | Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
 
@@ -234,17 +234,19 @@ Also fixed for the gate: multi-module string data (`yarrow.str.N` dedupe), parse
 
 ---
 
-### Stage 6: Ownership, regions, unsafe conformance ⬜
+### Stage 6: Ownership, regions, unsafe conformance ✅
 
 Finish compile-time checks; keep raw pointer validity programmer-owned inside `unsafe`.
 
-1. Use-after-move → error (`invalid/01`)
-2. Mutate / consume while borrowed → error (`invalid/02`)
-3. Pop/drop owner while borrowed → error (`invalid/03`)
-4. Second overlapping borrow → error (`invalid/07`)
-5. Region escape → error
-6. Unsafe call / op outside `unsafe` → `E370` (`invalid/04`)
-7. `pointer<T>` path matches grammar (`valid/11`)
+1. Use-after-move → error (`invalid/01`) - ✅ `moved_vars` + `E373`
+2. Mutate / consume while borrowed → error (`invalid/02`) - ✅ mutating builtins / `set` + `E374`
+3. Pop/drop owner while borrowed → error (`invalid/03`) - ✅ `consume` / `emit_drop` + `E374`
+4. Second overlapping borrow → error (`invalid/07`) - ✅ `E375`
+5. Region escape → error - ✅ free while borrow live / use after free (`invalid/11`, `E376`)
+6. Unsafe call / op outside `unsafe` → `E370` (`invalid/04`) - ✅
+7. `pointer<T>` path matches grammar (`valid/11`) - ✅
+
+Also: `if` / conditional `for` require `bool` (`invalid/05`).
 
 **Gate:** all `docs/examples/invalid/*.yar` fail as annotated; all `valid/*` that exercise memory succeed.
 

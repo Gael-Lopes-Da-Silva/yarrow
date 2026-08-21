@@ -106,10 +106,16 @@ struct FnState {
     /// Handles currently owned by this function, keyed by SSA value. Only heap
     /// values (strings/lists/hashmaps) ever appear here.
     owns: std::collections::HashSet<Value>,
-    /// Values with an active borrow (from `@borrow` or a heap-value `dup`).
+    /// Values with an active borrow (from `borrow` or a heap-value `dup`).
     borrowed: std::collections::HashSet<Value>,
-    /// Values moved away with `@move`; using or moving them again is an error.
+    /// Values moved away with `move` / region put; dropping them is skipped.
     moved: std::collections::HashSet<Value>,
+    /// Variable names whose owned value was transferred by `move`.
+    moved_vars: std::collections::HashSet<String>,
+    /// Heap values attached to a region: value → region handle.
+    region_attached: HashMap<Value, Value>,
+    /// Values freed with their region; further use is a compile error.
+    region_freed: std::collections::HashSet<Value>,
     /// `defer` bodies, run in reverse order at scope exit.
     deferred: Vec<Vec<Stmt>>,
     /// Struct layout ids whose field descriptors were already registered in
@@ -1563,6 +1569,9 @@ impl Compiler {
             owns: std::collections::HashSet::new(),
             borrowed: std::collections::HashSet::new(),
             moved: std::collections::HashSet::new(),
+            moved_vars: std::collections::HashSet::new(),
+            region_attached: HashMap::new(),
+            region_freed: std::collections::HashSet::new(),
             deferred: Vec::new(),
             registered_descs: std::collections::HashSet::new(),
             registered_unions: std::collections::HashSet::new(),
@@ -1917,6 +1926,7 @@ impl Compiler {
 
             Stmt::Set { target, value } => match target {
                 Expr::Variable { name } => {
+                    self.require_not_moved_var(st, name)?;
                     let (var, t, _old_own) = st.vars.get(name).cloned().ok_or_else(|| {
                         CompileError::new(
                             format!("unknown variable '{name}'"),
@@ -1924,6 +1934,9 @@ impl Compiler {
                             "E320",
                         )
                     })?;
+                    let cur = b.use_var(var);
+                    self.require_region_live(st, cur)?;
+                    self.require_not_borrowed(st, cur, "set")?;
                     // A struct literal set re-initializes the existing
                     // storage in place, so the old value must NOT be freed
                     // first (the pointer is reused).
@@ -1938,7 +1951,7 @@ impl Compiler {
                     // nothing, so their value is left for its true owner.
                     if self.is_heap(t) && !reuses_ptr {
                         let old = Slot {
-                            value: b.use_var(var),
+                            value: cur,
                             ty: t,
                             own: Own::Owned,
                         };
@@ -2516,6 +2529,54 @@ impl Compiler {
         Ok(())
     }
 
+    /// Reject use of a variable whose value was transferred by `move`.
+    fn require_not_moved_var(&self, st: &FnState, name: &str) -> CResult<()> {
+        if st.moved_vars.contains(name) {
+            return Err(CompileError::new(
+                format!("use after move: '{name}' no longer owns its value"),
+                Location::default(),
+                "E373",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject mutating or consuming a value while a borrow of it is live.
+    fn require_not_borrowed(&self, st: &FnState, value: Value, what: &str) -> CResult<()> {
+        if st.borrowed.contains(&value) {
+            return Err(CompileError::new(
+                format!("cannot {what} while a borrow is live; release the reference first"),
+                Location::default(),
+                "E374",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject a second overlapping borrow of the same value.
+    fn require_can_borrow(&self, st: &FnState, value: Value) -> CResult<()> {
+        if st.borrowed.contains(&value) {
+            return Err(CompileError::new(
+                "second overlapping borrow of the same value",
+                Location::default(),
+                "E375",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject use of a value after its region was freed.
+    fn require_region_live(&self, st: &FnState, value: Value) -> CResult<()> {
+        if st.region_freed.contains(&value) {
+            return Err(CompileError::new(
+                "use after region free: value was attached to a freed region",
+                Location::default(),
+                "E376",
+            ));
+        }
+        Ok(())
+    }
+
     /// Coerce `slot` to the 64-bit type runtime functions expect (pointers and
     /// ≤ 8-byte scalars round-trip through the low bytes).
     fn rt_arg(&self, b: &mut FunctionBuilder, slot: Slot) -> CResult<Value> {
@@ -2615,6 +2676,13 @@ impl Compiler {
         if !slot.own.is_owned() || !self.is_heap(slot.ty) || st.moved.contains(&slot.value) {
             return Ok(());
         }
+        if st.borrowed.contains(&slot.value) {
+            return Err(CompileError::new(
+                "cannot drop owner while a borrow is live; release the reference first",
+                Location::default(),
+                "E374",
+            ));
+        }
         let kind = b.ins().iconst(irtypes::I64, kind_code(slot.ty) as i64);
         self.rt_call(b, st, "free_value", vec![slot.value, kind])?;
         st.owns.remove(&slot.value);
@@ -2624,6 +2692,15 @@ impl Compiler {
     /// Consume a slot from the stack: release its borrow (if any) and drop it
     /// if it owns storage. Used wherever a popped value does not flow through.
     fn consume(&mut self, b: &mut FunctionBuilder, st: &mut FnState, slot: Slot) -> CResult<()> {
+        // Popping / dropping a non-borrow view of a value while a borrow is
+        // live would free (or discard) the owner too early.
+        if slot.own != Own::Borrow && st.borrowed.contains(&slot.value) {
+            return Err(CompileError::new(
+                "cannot pop/drop owner while a borrow is live; release the reference first",
+                Location::default(),
+                "E374",
+            ));
+        }
         if slot.own == Own::Borrow {
             st.borrowed.remove(&slot.value);
         }
@@ -2767,7 +2844,7 @@ impl Compiler {
             self.compile_body(b, st, stack, &body)?;
         }
         for slot in stack.drain(..) {
-            self.emit_drop(b, st, slot)?;
+            self.consume(b, st, slot)?;
         }
         let mut var_slots: Vec<Slot> = Vec::new();
         for (var, ty, own) in st.vars.values() {
@@ -2809,11 +2886,11 @@ impl Compiler {
             ));
         }
         let slot = stack.pop().unwrap();
-        if slot.ty.is_int() || slot.ty.is_bool() {
+        if slot.ty.is_bool() {
             Ok(slot.value)
         } else {
             Err(CompileError::new(
-                "condition must be a boolean or integer",
+                "condition must be bool",
                 Location::default(),
                 "E324",
             ))
@@ -3510,8 +3587,10 @@ impl Compiler {
             }
             Expr::String { value } => self.emit_string(b, st, stack, value)?,
             Expr::Variable { name } => {
+                self.require_not_moved_var(st, name)?;
                 if let Some((var, t, _own)) = st.vars.get(name).cloned() {
                     let v = b.use_var(var);
+                    self.require_region_live(st, v)?;
                     stack.push(Slot {
                         value: v,
                         ty: t,
@@ -4160,6 +4239,29 @@ impl Compiler {
             }
             "free_region" => {
                 let region = self.pop_slot(stack, "'@free_region'")?;
+                // Values still borrowed from this region would escape the free.
+                let attached: Vec<Value> = st
+                    .region_attached
+                    .iter()
+                    .filter_map(|(val, reg)| {
+                        if *reg == region.value {
+                            Some(*val)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for val in &attached {
+                    if st.borrowed.contains(val) {
+                        return Err(CompileError::new(
+                            "region escape: cannot free region while a borrow of an attached value is live",
+                            Location::default(),
+                            "E376",
+                        ));
+                    }
+                    st.region_attached.remove(val);
+                    st.region_freed.insert(*val);
+                }
                 self.rt_call(b, st, "region_free", vec![region.value])?;
             }
             "put_region" => {
@@ -4175,6 +4277,8 @@ impl Compiler {
                         "E372",
                     ));
                 }
+                self.require_region_live(st, value.value)?;
+                self.require_not_borrowed(st, value.value, "put into region")?;
                 let kind = b.ins().iconst(irtypes::I64, kind_code(value.ty) as i64);
                 self.rt_call(
                     b,
@@ -4184,6 +4288,8 @@ impl Compiler {
                 )?;
                 // The region now owns the value; the stack must not free it.
                 st.moved.insert(value.value);
+                st.region_attached.insert(value.value, region.value);
+                st.borrowed.insert(value.value);
                 stack.push(Slot {
                     value: value.value,
                     ty: value.ty,
@@ -4243,6 +4349,8 @@ impl Compiler {
                         "E372",
                     ));
                 };
+                self.require_region_live(st, list.value)?;
+                self.require_not_borrowed(st, list.value, "mutate")?;
                 let elem_ty = elem_ty(elem);
                 let val = coerce(b, value.value, value.ty, elem_ty, self.ptr_type)?;
                 let arg = self.rt_arg(
@@ -4318,6 +4426,8 @@ impl Compiler {
                         "E372",
                     ));
                 };
+                self.require_region_live(st, list.value)?;
+                self.require_not_borrowed(st, list.value, "mutate")?;
                 let elem_ty = elem_ty(elem);
                 let idx = coerce(b, idx.value, idx.ty, Ty::I64, self.ptr_type)?;
                 let len = self.rt_call(b, st, "list_len", vec![list.value])?;
@@ -4407,6 +4517,8 @@ impl Compiler {
                         "E372",
                     ));
                 };
+                self.require_region_live(st, map.value)?;
+                self.require_not_borrowed(st, map.value, "mutate")?;
                 let kt = elem_ty(kcode);
                 let vt = elem_ty(vcode);
                 let karg = coerce(b, key.value, key.ty, kt, self.ptr_type)?;
@@ -4750,6 +4862,8 @@ impl Compiler {
                 "E341",
             ));
         }
+        self.require_region_live(st, s.value)?;
+        self.require_can_borrow(st, s.value)?;
         if s.own.is_owned() {
             st.moved.insert(s.value);
         }
@@ -4774,6 +4888,13 @@ impl Compiler {
         target: &str,
         source: &Expr,
     ) -> CResult<()> {
+        let src_name = match source {
+            Expr::Variable { name } => {
+                self.require_not_moved_var(st, name)?;
+                Some(name.clone())
+            }
+            _ => None,
+        };
         self.compile_expr(b, st, stack, source)?;
         let src = self.pop_slot(stack, "'move' source")?;
         if !src.ty.is_pointer() {
@@ -4786,6 +4907,8 @@ impl Compiler {
                 "E341",
             ));
         }
+        self.require_region_live(st, src.value)?;
+        self.require_not_borrowed(st, src.value, "move")?;
         let (var, ty, _own) = st.vars.get(target).cloned().ok_or_else(|| {
             CompileError::new(
                 format!("unknown variable '{target}'"),
@@ -4806,6 +4929,12 @@ impl Compiler {
             self.emit_drop(b, st, old)?;
         }
         st.moved.insert(src.value);
+        if let Some(name) = src_name {
+            st.moved_vars.insert(name.clone());
+            if let Some((svar, sty, _)) = st.vars.get(&name).cloned() {
+                st.vars.insert(name, (svar, sty, Own::Trivial));
+            }
+        }
         self.claim(st, src.value, ty);
         b.def_var(var, src.value);
         let var_own = if st.borrowed.contains(&src.value) {
