@@ -101,7 +101,7 @@ end
 Bodies run at scope exit, in reverse registration order. Typical use: `region.free`, closing files, releasing borrows held only for the scope.
 
 ```yarrow
-myRegion region.create call
+region.create call myRegion const i64
 defer myRegion region.free call end
 ```
 
@@ -168,9 +168,10 @@ Regions group heap values so they can be freed **as a unit**. API surface is `st
 ### Lifecycle
 
 ```yarrow
-myRegion region.create call
+region.create call myRegion const i64
 (1 2 3) myListRegion mutable list<i32>
 myListRegion myRegion region.put call
+drop
 myRegion region.free call
 # attached values freed with the region
 ```
@@ -211,20 +212,20 @@ Safe by default: every escape is visible at both definition and use.
 ### Pointer operations (inside `unsafe`)
 
 ```yarrow
-16 mem.allocate p mutable pointer<i32>   # address coerces into typed pointer
+16 mem.allocate call p mutable pointer<i32>   # address coerces into typed pointer
 p 42 store
 p load                                  # 42
 p 4 + q const pointer<i32>            # byte offset; type stays pointer<i32>
-p 123 mem.store                         # untyped 64-bit word
-p mem.load
+p 123 mem.store call                         # untyped 64-bit word
+p mem.load call
 cp.value 7 set                          # member access autoderefs through pointer<Cell>
-cp mem.free
+cp mem.free call
 ```
 
 | Op                            | Meaning                                                             |
 | ----------------------------- | ------------------------------------------------------------------- |
-| `mem.allocate n`              | Allocate `n` bytes; push address (integer / pointer after coercion) |
-| `mem.free`                    | Return block to the allocator                                       |
+| `mem.allocate call`           | Allocate `n` bytes; push address (integer / pointer after coercion) |
+| `mem.free call`               | Return block to the allocator                                       |
 | `pointer value store`         | Typed write of pointee                                              |
 | `pointer load`                | Typed read of pointee                                               |
 | `pointer + int`               | Byte-offset arithmetic; result stays `pointer<T>`                   |

@@ -26,9 +26,9 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 | ----------- | ---------- | -------------------------------------------------------------------------------- |
 | Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
 | Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 4 | JIT; unions; `\|T Err\|` envelopes; unwrap/handle; named errors                  |
+| Compiler    | 🟢 Stage 5 | JIT; std intrinsics (`region`/`list`/`map`); nested funcs; multi-module strings  |
 | Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
-| Std library | 🟡 Partial | `public` APIs; `std.loop` stub; `std.error` baseline; region/fs still missing    |
+| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -118,15 +118,15 @@ Keep useful runtime/compiler machinery from the old stages (ownership sets, unsa
 | Module       | Spec expectation                      | Status                                              |
 | ------------ | ------------------------------------- | --------------------------------------------------- |
 | `std.io`     | `write_line`, …                       | Partial (`write_line`)                              |
-| `std.mem`    | `allocate`, `free`, `load`, `store`   | Present as `alloc` (rename)                         |
-| `std.list`   | `push_last`, `get`, `put`, `len`, …   | Present as `push` / `put` / … (rename + generalize) |
-| `std.map`    | hashmap helpers                       | Partial, fixed `hashmap<i64 i32>`                   |
+| `std.mem`    | `allocate`, `free`, `load`, `store`   | ✅ `public` wrappers over `@alloc` / …              |
+| `std.list`   | `push_last`, `get`, `put`, `len`, …   | ✅ intrinsics (any `list<T>`)                       |
+| `std.map`    | hashmap helpers                       | ✅ intrinsics (any `hashmap<K V>`)                  |
 | `std.string` | `len`, join helpers                   | Partial; join overlaps `~`                          |
 | `std.math`   | `sqrt`, …                             | Partial                                             |
-| `std.region` | `create`, `put`, `free`               | **Missing file**; builtins use old names            |
-| `std.loop`   | `break`, `continue`, `value`, `index` | **Missing**                                         |
-| `std.error`  | shared error members                  | **Missing**                                         |
-| `std.fs`     | file open/close/…                     | **Missing**                                         |
+| `std.region` | `create`, `put`, `free`               | ✅ intrinsics over host region ops                  |
+| `std.loop`   | `break`, `continue`, `value`, `index` | ✅ compiler intrinsics                              |
+| `std.error`  | shared error members                  | ✅ `Error` + common tags                            |
+| `std.fs`     | file open/close/…                     | Stub (`open_file` returns `NOT_FOUND`; no host I/O) |
 
 ### Runtime (`src/runtime.rs`)
 
@@ -215,18 +215,20 @@ Replace the old `Error` / `or` envelope story with the documented model.
 
 ---
 
-### Stage 5: Std library to match the grammar ⬜
+### Stage 5: Std library to match the grammar ✅
 
 Pure-Yarrow modules under `lib/std/`, names exactly as in `GRAMMAR.md`.
 
-1. Rename APIs: `mem.allocate`, `list.push_last`, …
-2. Add `std.region` (`create` / `put` / `free`) wrapping host region ops
-3. Add `std.loop` (`break` / `continue` / `value` / `index`)
-4. Add `std.error` baseline members - ✅ started in Stage 4 (`Error` + common tags)
-5. Add / extend `std.fs` as required by the grammar tour
-6. Generalize list/map beyond single hard-coded element types where the compiler allows
-7. Prefer: unsafe host → invariant → safe Yarrow API
-8. Shrink direct `@`-use in user-facing examples; keep host surface tiny
+1. Rename APIs: `mem.allocate`, `list.push_last`, … - ✅
+2. Add `std.region` (`create` / `put` / `free`) wrapping host region ops - ✅ intrinsics
+3. Add `std.loop` (`break` / `continue` / `value` / `index`) - ✅ (Stage 3/5)
+4. Add `std.error` baseline members - ✅ (Stage 4)
+5. Add / extend `std.fs` as required by the grammar tour - ✅ stub (`File`, `open_file`/`close_file`; open returns `NOT_FOUND` until host I/O)
+6. Generalize list/map beyond single hard-coded element types where the compiler allows - ✅ `std.list` / `std.map` as polymorphic intrinsics
+7. Prefer: unsafe host → invariant → safe Yarrow API - ✅ mem wrappers; region/list/map intrinsics
+8. Shrink direct `@`-use in user-facing examples; keep host surface tiny - ✅ examples use std names + `call`
+
+Also fixed for the gate: multi-module string data (`yarrow.str.N` dedupe), parse-time `drop` no longer discarding calls, nested function compilation, docs/`call` forms for `mem.*` and region binding.
 
 **Gate:** examples `08`, `09`, `11`, `12` plus grammar snippets that `require` these modules compile against the new names.
 

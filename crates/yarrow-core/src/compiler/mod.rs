@@ -130,6 +130,9 @@ struct FnState {
     /// compile-time stack). Reset after each compound statement whose merge
     /// block stays live.
     terminated: bool,
+    /// Nested functions declared in this body: short name → fully-qualified
+    /// name (`demo::add`). Only callable from the enclosing function.
+    local_funcs: HashMap<String, String>,
 }
 
 struct LoopCtx {
@@ -228,6 +231,8 @@ pub struct Compiler {
     unsafe_funcs: std::collections::HashSet<String>,
     /// Fully-qualified names declared `public` (exported across `require`).
     public_funcs: std::collections::HashSet<String>,
+    /// Function bodies already passed to `define_function` (nested helpers).
+    defined_funcs: std::collections::HashSet<String>,
     finalized: bool,
 }
 
@@ -269,6 +274,7 @@ impl Compiler {
             error_types: Vec::new(),
             unsafe_funcs: std::collections::HashSet::new(),
             public_funcs: std::collections::HashSet::new(),
+            defined_funcs: std::collections::HashSet::new(),
             finalized: false,
         })
     }
@@ -299,6 +305,8 @@ impl Compiler {
         self.error_types.clear();
         self.unsafe_funcs.clear();
         self.public_funcs.clear();
+        self.string_ids.clear();
+        self.defined_funcs.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
@@ -752,11 +760,18 @@ impl Compiler {
     }
 
     /// Declare and define a read-only data object per unique string literal.
+    /// Skips literals already interned from a previous unit so multi-module
+    /// programs do not redefine `yarrow.str.N`.
     fn declare_string_data(&mut self, program: &Program) -> CResult<()> {
         let mut seen: Vec<&str> = Vec::new();
         collect_strings(&program.items, &mut seen);
-        for (i, s) in seen.into_iter().enumerate() {
-            let name = format!("yarrow.str.{i}");
+        let mut next = self.string_ids.len();
+        for s in seen {
+            if self.string_ids.contains_key(s) {
+                continue;
+            }
+            let name = format!("yarrow.str.{next}");
+            next += 1;
             let id = self
                 .module
                 .declare_data(&name, Linkage::Local, false, false)?;
@@ -1487,6 +1502,38 @@ impl Compiler {
         module: Option<&str>,
         is_method: bool,
     ) -> CResult<()> {
+        // Nested functions are only callable from this body. Declare and
+        // compile them first so calls in the parent resolve.
+        let nested: Vec<Function> = f
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Function(nf) => Some(nf.clone()),
+                _ => None,
+            })
+            .collect();
+        for nf in &nested {
+            let nname = format!("{name}::{}", nf.name);
+            if !self.func_ids.contains_key(&nname) {
+                if nf.is_unsafe {
+                    self.unsafe_funcs.insert(nname.clone());
+                }
+                if matches!(nf.visibility, Some(Visibility::Public)) {
+                    self.public_funcs.insert(nname.clone());
+                }
+                self.declare_function(nf, &nname)?;
+            }
+        }
+        for nf in &nested {
+            let nname = format!("{name}::{}", nf.name);
+            // Compile each nested body once (parent is the only caller of this
+            // path; top-level Pass D never sees nested decls).
+            if self.sigs.contains_key(&nname) && !self.defined_funcs.contains(&nname) {
+                self.defined_funcs.insert(nname.clone());
+                self.compile_function(nf, &nname, module, false)?;
+            }
+        }
+
         let sig = self.sigs.get(name).cloned().unwrap();
         let id = *self.func_ids.get(name).unwrap();
 
@@ -1500,6 +1547,10 @@ impl Compiler {
         let error_value = error_return(&returns)?;
         // An unsafe function's whole body is an unsafe context.
         let unsafe_depth = u32::from(f.is_unsafe);
+        let mut local_funcs = HashMap::new();
+        for nf in &nested {
+            local_funcs.insert(nf.name.clone(), format!("{name}::{}", nf.name));
+        }
         let mut st = FnState {
             vars: HashMap::new(),
             loops: Vec::new(),
@@ -1516,6 +1567,7 @@ impl Compiler {
             registered_descs: std::collections::HashSet::new(),
             registered_unions: std::collections::HashSet::new(),
             terminated: false,
+            local_funcs,
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -4470,7 +4522,9 @@ impl Compiler {
     ) -> CResult<()> {
         let name = match target {
             Expr::Variable { name } => {
-                if let Some(mod_path) = &st.module {
+                if let Some(fq) = st.local_funcs.get(name) {
+                    fq.clone()
+                } else if let Some(mod_path) = &st.module {
                     let fq = format!("{mod_path}::{name}");
                     if self.func_ids.contains_key(&fq) {
                         fq
@@ -4502,14 +4556,19 @@ impl Compiler {
                             ));
                         }
                         let fq = format!("{path}::{member}");
-                        if !self.func_ids.contains_key(&fq) {
+                        // Intrinsic std APIs (`std.region::*`, generalized
+                        // `std.list::*`) are resolved without a Yarrow body.
+                        if self.is_std_intrinsic(&fq) {
+                            fq
+                        } else if !self.func_ids.contains_key(&fq) {
                             return Err(CompileError::new(
                                 format!("module '{path}' has no function '{member}'"),
                                 Location::default(),
                                 "E330",
                             ));
+                        } else {
+                            fq
                         }
-                        fq
                     } else {
                         self.method_name(st, base, member)?
                     }
@@ -4525,6 +4584,10 @@ impl Compiler {
                 ));
             }
         };
+        // Polymorphic / host-wrapping std calls: lower without a Yarrow body.
+        if self.is_std_intrinsic(&name) {
+            return self.emit_std_intrinsic(b, st, stack, &name);
+        }
         // Calling an `unsafe` function requires an unsafe context.
         if self.unsafe_funcs.contains(&name) {
             self.require_unsafe(st, &format!("call to '{name}'"))?;
@@ -4882,6 +4945,81 @@ impl Compiler {
 
     fn is_std_loop_alias(&self, alias: &str) -> bool {
         self.aliases.get(alias).is_some_and(|p| p == "std.loop")
+    }
+
+    /// Fully-qualified std APIs implemented as compiler intrinsics rather than
+    /// ordinary Yarrow bodies (polymorphic host wrappers).
+    fn is_std_intrinsic(&self, fq: &str) -> bool {
+        matches!(
+            fq,
+            "std.region::create"
+                | "std.region::put"
+                | "std.region::free"
+                | "std.list::push_last"
+                | "std.list::len"
+                | "std.list::get"
+                | "std.list::put"
+                | "std.map::len"
+                | "std.map::get"
+                | "std.map::put"
+        )
+    }
+
+    /// Lower a std intrinsic call (`region.*`, generalized `list.*` / `map.*`).
+    fn emit_std_intrinsic(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        stack: &mut Vec<Slot>,
+        fq: &str,
+    ) -> CResult<()> {
+        match fq {
+            "std.region::create" => {
+                self.emit_builtin(b, st, stack, "make_region")?;
+                Ok(())
+            }
+            "std.region::free" => {
+                self.emit_builtin(b, st, stack, "free_region")?;
+                Ok(())
+            }
+            "std.region::put" => {
+                self.emit_builtin(b, st, stack, "put_region")?;
+                Ok(())
+            }
+            "std.list::push_last" => {
+                self.emit_builtin(b, st, stack, "list_push")?;
+                Ok(())
+            }
+            "std.list::len" => {
+                self.emit_builtin(b, st, stack, "list_len")?;
+                Ok(())
+            }
+            "std.list::get" => {
+                self.emit_builtin(b, st, stack, "list_get")?;
+                Ok(())
+            }
+            "std.list::put" => {
+                self.emit_builtin(b, st, stack, "list_set")?;
+                Ok(())
+            }
+            "std.map::len" => {
+                self.emit_builtin(b, st, stack, "map_len")?;
+                Ok(())
+            }
+            "std.map::get" => {
+                self.emit_builtin(b, st, stack, "map_get")?;
+                Ok(())
+            }
+            "std.map::put" => {
+                self.emit_builtin(b, st, stack, "map_set")?;
+                Ok(())
+            }
+            _ => Err(CompileError::new(
+                format!("unknown std intrinsic '{fq}'"),
+                Location::default(),
+                "E330",
+            )),
+        }
     }
 
     /// Non-`public` functions do not export across `require`.

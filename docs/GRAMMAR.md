@@ -152,7 +152,7 @@ my_function private function do
 	# -------------------------------------------------------------------------
 	# Form: <value> <name> (mutable|const|static) <Type>
 	# Declaration pops the value (implicit coercion to Type allowed) and binds
-	# it. The variable owns non-copy storage.
+	# it. The variable owns non-copy storage. Names: camelCase (see STYLE_GUIDE).
 	#   mutable  - reassign with `name set` (old value dropped)
 	#   const    - set once at runtime
 	#   static   - compile-time constant; initializer must be known statically
@@ -437,9 +437,10 @@ memory_function function do
 	# myList2 pop                      # error: release the reference first
 
 	# Regions: attach heap values, free them as a unit (often via defer).
-	myRegion region.create call
+	region.create call myRegion const i64
 	(1 2 3) myListRegion mutable list<i32>
 	myListRegion myRegion region.put call
+	drop
 	myRegion region.free call
 end
 
@@ -462,7 +463,7 @@ pointer_function private unsafe function do
 	unsafe
 		# mem.allocate n → raw address (integer); coerce into pointer<T> by
 		# storing into a typed variable.
-		16 mem.allocate p mutable pointer<i32>
+		16 mem.allocate call p mutable pointer<i32>
 
 		# Typed store / load through pointer<T>
 		p 42 store
@@ -476,18 +477,18 @@ pointer_function private unsafe function do
 		drop
 
 		# mem.store / mem.load: untyped 64-bit words (no pointee check)
-		p 123 mem.store
-		p mem.load
+		p 123 mem.store call
+		p mem.load call
 		drop
 
 		# Field access autoderefs through pointer<Struct>
-		32 mem.allocate cp mutable pointer<Cell>
+		32 mem.allocate call cp mutable pointer<Cell>
 		cp.value 7 set
 		cp.value
 		drop
 
-		cp mem.free
-		p mem.free
+		cp mem.free call
+		p mem.free call
 	end
 end
 
@@ -575,12 +576,13 @@ example_function function do
 	"std.region" region require
 	"std.loop" loop require
 
-	myRegion region.create call
+	region.create call myRegion const i64
 	defer myRegion region.free call end
 
 	# Identifier keys → struct literal (not a hashmap).
 	{name "Alice" scores (10 20)} person mutable Person
 	person myRegion region.put call
+	drop
 
 	person borrow
 	person.greet call unwrap

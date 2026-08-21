@@ -43,8 +43,8 @@ One public module per file. Nested helpers may live in the same file or in a sib
 self.scores score list.push_last call unwrap
 
 # Long call: break before the callee / `call`
-very_long_argument_name
-other_arg
+veryLongArgumentName
+otherArg
 module.very_long_function_name call
 ```
 
@@ -104,17 +104,17 @@ end
 | ---------------------------------- | ----------------- | --------------------------------------- |
 | Types (struct, enum, union, error) | `PascalCase`      | `Point`, `Color`, `AppError`, `MyUnion` |
 | Functions and methods              | `snake_case`      | `write_line`, `push_last`, `open_file`  |
-| Variables and parameters           | `snake_case`      | `my_list`, `score`, `file`              |
+| Variables and parameters           | `camelCase`       | `myList`, `score`, `fileHandle`         |
 | Module aliases                     | `snake_case`      | `io`, `list`, `region`                  |
 | Enum / error members               | `SCREAMING_SNAKE` | `RED`, `NOT_FOUND`, `OUT_OF_MEMORY`     |
 | File / module path segments        | `snake_case`      | `"helpers.greet"`, `"std.mem"`          |
 
 ### Guidelines
 
-- Names are ASCII letters, digits, and underscores (identifiers).
+- Names are ASCII letters, digits, and underscores (identifiers). Prefer `camelCase` for variables and parameters (no underscores between words).
 - Prefer full words over cryptic abbreviations (`index` not `idx`, unless the domain standard is short).
 - Receiver bindings in methods: use `self` for the `reference<T>` (or `reference<T> mutable`) parameter after it is bound.
-- Boolean names read as predicates when practical (`found`, `done`); avoid `is_` / `has_` noise unless it clarifies.
+- Boolean names read as predicates when practical (`found`, `done`); avoid `is` / `has` prefixes unless they clarify (`ready` over `isReady` when both read well).
 - Fallible helpers name the success path; errors live in the `with |T Err|` type, not in the function name (`lookup` not `try_lookup`).
 
 ---
@@ -306,7 +306,7 @@ Form: `<value> <name> (mutable | const | static) <Type>`
 ```yarrow
 42 answer mutable i32
 7 limit const i32
-3 pi_approx static i32
+3 piApprox static i32
 ```
 
 - Prefer `const` when the binding is not reassigned; `mutable` only when `set` (or mutation through a mutable reference) is required; `static` only for compile-time constants.
@@ -352,8 +352,8 @@ end
 
 ```yarrow
 [10 20 30] numbers static array<i32 3>
-(43 54 65) my_list static list<i32>
-{"first" 4 "second" 5} my_map static hashmap<string i32>
+(43 54 65) myList static list<i32>
+{"first" 4 "second" 5} myMap static hashmap<string i32>
 {x 5 y 20} point mutable Point
 () empty mutable list<i32>
 ```
@@ -438,8 +438,8 @@ end
 - Prefer a one-line `defer … end` when the body is a single short call; otherwise use a block.
 
 ```yarrow
-my_region region.create call
-defer my_region region.free call end
+region.create call myRegion const i64
+defer myRegion region.free call end
 
 defer
 	file fs.close_file call
@@ -481,11 +481,11 @@ xs 4 list.push_last call unwrap
 ```yarrow
 touch private unsafe function do
 	unsafe
-		16 mem.allocate p mutable pointer<i32>
+		16 mem.allocate call p mutable pointer<i32>
 		p 42 store
 		p load
 		drop
-		p mem.free
+		p mem.free call
 	end
 end
 
@@ -540,7 +540,7 @@ end
 Before merging Yarrow code:
 
 - [ ] Tabs for indent; no trailing whitespace; final newline
-- [ ] `PascalCase` types, `snake_case` functions/values, `SCREAMING_SNAKE` enum/error members
+- [ ] `PascalCase` types, `snake_case` functions, `camelCase` variables/parameters, `SCREAMING_SNAKE` enum/error members
 - [ ] Requires grouped at the top (or function-local when scoped)
 - [ ] `public` / `unsafe` only where required
 - [ ] Functions: parameters between `function` and `do`; `end with Type` when returning

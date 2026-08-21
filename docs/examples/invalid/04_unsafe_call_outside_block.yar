@@ -4,8 +4,8 @@
 
 touch private unsafe function do
 	unsafe
-		8 mem.allocate
-		mem.free
+		8 mem.allocate call
+		mem.free call
 	end
 end
 

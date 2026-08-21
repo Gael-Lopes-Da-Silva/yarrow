@@ -14,7 +14,7 @@ main function do
 	v match
 		i32 case
 			dup *
-			drop
+			pop
 		end
 
 		string case

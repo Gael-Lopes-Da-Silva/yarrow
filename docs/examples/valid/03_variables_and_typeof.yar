@@ -8,7 +8,7 @@ main function do
 	100 answer set
 
 	7 limit const i32
-	3 pi_approx static i32
+	3 piApprox static i32
 
 	answer typeof i32 == if
 		"answer is i32" io.write_line call
@@ -18,5 +18,5 @@ main function do
 
 	drop
 	limit pop
-	pi_approx pop
+	piApprox pop
 end

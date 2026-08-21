@@ -8,11 +8,12 @@ Person struct
 end
 
 main function do
-	myRegion region.create call
+	region.create call myRegion const i64
 	defer myRegion region.free call end
 
 	{name "Ada"} person mutable Person
 	person myRegion region.put call
+	drop
 
 	defer
 		"leaving scope" io.write_line call

@@ -935,11 +935,10 @@ impl Parser {
             }
             TokenKind::Drop => {
                 self.advance();
-                if !ops.is_empty() {
-                    ops.clear();
-                } else {
-                    ops.push(Expr::StackOp(StackOp::Drop));
-                }
+                // Always a runtime drop. Parse-time `ops.clear()` would discard
+                // preceding calls/builtins that still need to run for their
+                // side effects (e.g. `foo call` then `drop`).
+                ops.push(Expr::StackOp(StackOp::Drop));
             }
             TokenKind::Not => {
                 self.advance();
