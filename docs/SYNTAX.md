@@ -1,6 +1,6 @@
 # Syntax
 
-EBNF for Yarrow, derived from [`assets/SYNTAX.md`](../assets/SYNTAX.md).
+EBNF for Yarrow, derived from [`GRAMMAR.md`](GRAMMAR.md).
 
 Notation:
 
