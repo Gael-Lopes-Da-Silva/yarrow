@@ -45,9 +45,9 @@ Yarrow
 
 ## Learn more
 
-- **Syntax** → [`SYNTAX.md`](docs/SYNTAX.md)
-- **AST** → [`AST.md`](docs/AST.md)
-- **Type system** → [`TYPE_SYSTEM.md`](docs/TYPE_SYSTEM.md)
-- **Memory model** → [`MEMORY_MODEL.md`](docs/MEMORY_MODEL.md)
-- **Runtime** → [`RUNTIME.md`](docs/RUNTIME.md)
-- **Examples** → [`examples`](docs/examples/README.md)
+- **Syntax** → [`SYNTAX.md`](SYNTAX.md)
+- **AST** → [`AST.md`](AST.md)
+- **Type system** → [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md)
+- **Memory model** → [`MEMORY_MODEL.md`](MEMORY_MODEL.md)
+- **Runtime** → [`RUNTIME.md`](RUNTIME.md)
+- **Examples** → [`examples`](examples/README.md)
