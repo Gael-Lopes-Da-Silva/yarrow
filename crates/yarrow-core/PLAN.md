@@ -1,6 +1,6 @@
 # Yarrow Core Implementation Plan
 
-Tracks bringing `crates/yarrow-core` in line with the **current** language docs.
+Tracks bringing `crates/yarrow-core` in line with the **current** language docs, then deepening the compiler (diagnostics, UX).
 
 ## Source of truth
 
@@ -16,19 +16,22 @@ Tracks bringing `crates/yarrow-core` in line with the **current** language docs.
 | Conformance corpus            | [`docs/examples/`](../../docs/examples/README.md)    |
 | Agent rules                   | [`AGENTS.md`](../../AGENTS.md)                       |
 
-Docs are up to date. The compiler is **not**. Prefer the docs when code and docs disagree. Do not invent features that are absent from the docs.
+**Phase A (Stages 0–7)** brought the tokenizer, parser, compiler, and std surface in line with the docs. Prefer the docs when code and docs disagree. Do not invent language features that are absent from the docs.
+
+**Phase B (Stages 8+)** focuses on compiler UX and depth: rustc-style diagnostics first, then multi-error recovery and related tooling. Language surface changes stay doc-driven.
 
 ---
 
 ## Pipeline status (honest)
 
-| Component   | Status     | Reality                                                                          |
-| ----------- | ---------- | -------------------------------------------------------------------------------- |
-| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
-| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)           |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
-| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
+| Component   | Status     | Reality                                                                              |
+| ----------- | ---------- | ------------------------------------------------------------------------------------ |
+| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing      |
+| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat`     |
+| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)               |
+| Diagnostics | ⬜ Stage 8 | One-line `[E…] msg at line, column`; many compile errors still `Location::default()` |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                    |
+| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic            |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -134,7 +137,7 @@ Keep the host surface small. Prefer renaming/wrapping through std rather than gr
 
 ---
 
-## Implementation stages
+## Phase A: Language surface (Stages 0–7)
 
 Gates should prefer `docs/examples/valid/*` and `docs/examples/invalid/*`, then larger slices of the grammar tour. Do not mark a stage ✅ until its gate commands succeed.
 
@@ -265,6 +268,85 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 
 ---
 
+## Phase B: Compiler UX and depth
+
+Language surface from Phase A is the baseline. Phase B improves how the compiler explains failures and how resilient the front end is. Target presentation is **full rustc-style** (not a single-line summary): primary span, secondary labels, source snippets with underlines, and `note` / `help` text.
+
+Today’s errors look like `[E373] … at line 1, column 1`. Many compiler sites still pass `Location::default()`. Phase B replaces that.
+
+### Stage 8: Diagnostic infrastructure (full rustc-style) ⬜
+
+Build the plumbing so every failure can render like rustc from day one (multi-label + notes), not a minimal “file:line” stub.
+
+1. **`Span`** - byte range (and derived line/column) on tokens; keep or extend `Location`
+2. **AST spans** - carry spans on exprs/stmts that participate in errors (at least calls, vars, ops, control heads, decls)
+3. **`Diagnostic`** - `code`, `message`, primary span, `labels[]` (span + message), `notes[]`, `helps[]`; severity if needed later
+4. **Renderer** - rustc layout: `error[E…]: …`, `--> path:line:col`, source line(s), `^` / `---` underlines for primary and secondary labels, then `= note:` / `= help:`
+5. **Source map** - compiler/driver hold the file path + full source so snippets are accurate (including tabs)
+6. **Kill `Location::default()`** - attribute each compile error to the offending construct’s span (batch by family if needed)
+7. **Wire driver** - `src/main.rs` prints via the renderer (color optional; respect `NO_COLOR`)
+
+Example shape (illustrative):
+
+```text
+error[E373]: use after move: `a` no longer owns its value
+  --> docs/examples/invalid/01_use_after_move.yar:12:2
+   |
+10 |     a b move
+   |     - value moved here
+12 |     a 4 list.push_last call
+   |     ^ value used here after move
+   |
+   = note: after `move`, the source name is empty; use the new owner instead
+```
+
+**Gate:** all `docs/examples/invalid/*` render with a primary underline on the annotated region (not `1:1`); at least one diagnostic shows a **secondary** label (e.g. move site + use site); `cargo check` / `clippy` green.
+
+---
+
+### Stage 9: Teachable error catalog ⬜
+
+Make high-traffic codes explain the language model the way rustc teaches ownership.
+
+| Family               | Codes (approx)         | Labels / notes                                           |
+| -------------------- | ---------------------- | -------------------------------------------------------- |
+| Ownership / borrow   | E373–E376              | Secondary at move/borrow/free site; short “why” note     |
+| Unsafe               | E370                   | Point at call; hint nearest `unsafe` / `unsafe function` |
+| Types / stack        | E309, E324, E331, E343 | Expected vs found; stack top when useful                 |
+| Modules / visibility | E330, E380, E381       | Suggest alias qualification or `public`                  |
+| Fallible             | E308                   | Unwrap needs `\|T Err\|`; suggest `handle`               |
+
+Also:
+
+1. Align messages with `docs/examples/invalid/**` `# ERROR:` comments
+2. Optional: `yarrow explain E373` or `--explain E373` with a short paragraph + mini example (can land late in this stage)
+
+**Gate:** each invalid example’s primary span hits the `# ERROR:` line region; ownership/unsafe/fallible cases include a useful `note` or `help`; explain path optional but codes remain stable.
+
+---
+
+### Stage 10: Multi-error reporting and recovery ⬜
+
+1. **Parser recovery** - where cheap, skip to a sync point and continue; report several syntax errors
+2. **Compiler collection** - accumulate diagnostics in a function body instead of always bailing on the first `?` (at least for independent statements)
+3. **Output cap** - stop after N errors (configurable later) so cascades stay readable
+
+**Gate:** a deliberately broken file reports ≥2 distinct diagnostics in one run; valid corpus still clean.
+
+---
+
+### After Stage 10 (backlog, not scheduled)
+
+Not required to close Phase B; pick when diagnostics feel solid:
+
+- Stack-effect dumps on underflow / join mismatch (`[i32, string]` vs expected)
+- `--emit-ir` / richer `YARROW_DBG_IR` with source comments
+- Deferred Stage 2 cleanups (flatten stack words; `Program.main`; struct vs hashmap `{}` by key shape)
+- Literal / numeric polish (`f16` smallest-fit; clearer float `%` / `^` rejects)
+- Std depth (host `std.fs` I/O; richer `io` / `string`)
+- CLI: `yarrow check`, exit codes, multi-file
+- AOT / object emit (only after JIT demos and diagnostics feel solid)
+
 ---
 
 ## Mapping from the old stages
@@ -283,6 +365,8 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 
 ## Definition of done
 
+### Phase A (language surface)
+
 1. Docs remain authoritative; code matches `GRAMMAR.md` / `SYNTAX.md`.
 2. Tokenizer, parser, and AST expose the documented surface (`~`, `\|T U\|`, visibility, `error`, `copy`, …).
 3. Compiler enforces stack types, ownership, borrow, regions, and unsafe boundaries as documented.
@@ -292,6 +376,13 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 7. `unsafe` never disables type, stack, ownership, or borrow checking.
 8. `cargo fmt --all`, `cargo check`, and `cargo clippy` stay green.
 
+### Phase B (diagnostics)
+
+9. Failures render rustc-style: path, primary and secondary spans, source underlines, `note` / `help`.
+10. Compile errors carry real spans (no systematic `Location::default()` for user-facing codes).
+11. Invalid examples point at the annotated bad line; ownership/unsafe/fallible codes teach the rule briefly.
+12. Multi-error runs report more than one distinct diagnostic when recovery applies (Stage 10).
+
 ---
 
 ## Working rules
@@ -300,3 +391,4 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 - When renaming std or syntax, update compiler and `lib/std` in the same stage; do not leave the grammar examples stranded.
 - Do not add tests unless explicitly asked (`AGENTS.md`); use example programs as gates instead.
 - Update this file’s stage checkboxes and pipeline table when a gate lands.
+- For Phase B, prefer improving diagnostic quality over new language features unless the docs change first.
