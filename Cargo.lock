@@ -553,3 +553,11 @@ dependencies = [
  "cranelift-native",
  "libc",
 ]
+
+[[package]]
+name = "yarrow_fmt"
+version = "0.1.0"
+
+[[package]]
+name = "yarrow_lsp"
+version = "0.1.0"
