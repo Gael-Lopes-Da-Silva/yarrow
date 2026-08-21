@@ -28,8 +28,6 @@ impl Tokenizer {
         keywords.insert("if".to_string(), TokenKind::If);
         keywords.insert("else".to_string(), TokenKind::Else);
         keywords.insert("for".to_string(), TokenKind::For);
-        keywords.insert("break".to_string(), TokenKind::Break);
-        keywords.insert("continue".to_string(), TokenKind::Continue);
         keywords.insert("match".to_string(), TokenKind::Match);
         keywords.insert("case".to_string(), TokenKind::Case);
         keywords.insert("unwrap".to_string(), TokenKind::Unwrap);

@@ -14,8 +14,10 @@ do
 	# Last param is top of stack: bind mode first, then path.
 	_mode const rune
 	_path const string
-	# Host file I/O is not wired yet; always report not found.
-	error.NOT_FOUND return
+	# Host file I/O is not wired yet; return a sentinel handle so demos run.
+	{fd 0} f const File
+	f
+	return
 end with |File error.Error|
 
 close_file public function

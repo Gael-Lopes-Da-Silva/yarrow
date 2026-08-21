@@ -43,8 +43,6 @@ use types::{
 
 /// A variable binding that a `for` loop clobbered, so it can be restored at
 /// loop end: the name plus the previous binding (if any).
-type SavedLoopVar = (String, Option<(Variable, Ty, Own)>);
-
 /// The result of running a program's `main`, in a driver-displayable form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunResult {
@@ -124,7 +122,7 @@ struct FnState {
     /// Union ids whose member-kind tables were already registered in the
     /// runtime this function.
     registered_unions: std::collections::HashSet<u32>,
-    /// Payload type of this function's `with T or Error` return envelope, if
+    /// Payload type of this function's fallible `|T Err|` return envelope, if
     /// it returns an error. `None` means the function cannot error.
     error_value: Option<Ty>,
     /// Number of active `unsafe ... end` blocks around the current statement.
@@ -224,6 +222,9 @@ pub struct Compiler {
     /// Module alias -> the single item it exposes, for item imports under a
     /// scope (`"std.math.sqrt" s require` -> only `s.sqrt` resolves).
     item_aliases: HashMap<String, String>,
+    /// Extra plain item imports recorded when the parent module was already
+    /// loaded (e.g. `"std.math" math require` then `"std.math.sqrt" require`).
+    extra_plain_items: Vec<(String, String)>,
     /// Error kind name (`AppError.NOT_FOUND`, `OUT_OF_MEMORY`, ...) ->
     /// program-unique tag. Tags are interned once per program so comparisons
     /// and envelope propagation agree across functions.
@@ -275,6 +276,7 @@ impl Compiler {
             plain_funcs: HashMap::new(),
             loaded: HashMap::new(),
             item_aliases: HashMap::new(),
+            extra_plain_items: Vec::new(),
             error_ids: HashMap::new(),
             error_type_ids: HashMap::new(),
             error_types: Vec::new(),
@@ -300,6 +302,7 @@ impl Compiler {
         self.plain_funcs.clear();
         self.loaded.clear();
         self.item_aliases.clear();
+        self.extra_plain_items.clear();
         self.enum_ids.clear();
         self.enums.clear();
         self.enum_consts.clear();
@@ -642,7 +645,14 @@ impl Compiler {
                 if let Some(existing) = out.iter_mut().find(|m| m.path == module_path) {
                     existing.item = None;
                 }
-                self.loaded.insert(module_path, None);
+                self.loaded.insert(module_path.clone(), None);
+            }
+            // A later bare item import still needs a plain-name binding even
+            // when the module was already loaded under an alias.
+            if alias.is_none()
+                && let Some(item_name) = item
+            {
+                self.extra_plain_items.push((module_path, item_name));
             }
             return Ok(());
         }
@@ -761,6 +771,19 @@ impl Compiler {
                     }
                 }
             }
+        }
+        for (path, item) in self.extra_plain_items.clone() {
+            let fq = format!("{path}::{item}");
+            if let Some(prev) = self.plain_funcs.get(&item)
+                && prev != &fq
+            {
+                return Err(CompileError::new(
+                    format!("function '{item}' is exported by both '{prev}' and '{fq}'"),
+                    Location::default(),
+                    "E380",
+                ));
+            }
+            self.plain_funcs.insert(item, fq);
         }
         Ok(())
     }
@@ -1129,11 +1152,25 @@ impl Compiler {
         ))
     }
 
-    /// Tag for an error member written as a type case (`AppError.NOT_FOUND`).
+    /// Tag for an error member written as a type case (`AppError.NOT_FOUND`,
+    /// or the soft `error.TAG` form inside `handle`).
     fn error_member_tag_from_type(&self, ty: &crate::parser::ast::Type) -> Option<u32> {
         let crate::parser::ast::TypeKind::Named(path) = &ty.kind else {
             return None;
         };
+        // Soft `error.TAG` form (module alias or keyword): look up the member
+        // across declared error types / interned tags.
+        if let Some(member) = path.strip_prefix("error.") {
+            if let Some(tag) = self.error_ids.get(member) {
+                return Some(*tag);
+            }
+            for info in &self.error_types {
+                if let Some((_, tag)) = info.members.iter().find(|(n, _)| n == member) {
+                    return Some(*tag);
+                }
+            }
+            return None;
+        }
         let (type_name, member) = path.rsplit_once('.')?;
         let id = self
             .error_type_ids
@@ -2163,22 +2200,6 @@ impl Compiler {
                 st.terminated = true;
             }
 
-            Stmt::Break => {
-                let loop_ctx = st.loops.last().ok_or_else(|| {
-                    CompileError::new("'break' outside of a loop", Location::default(), "E321")
-                })?;
-                b.ins().jump(loop_ctx.break_to, &[]);
-                self.dead_block(b);
-            }
-
-            Stmt::Continue => {
-                let loop_ctx = st.loops.last().ok_or_else(|| {
-                    CompileError::new("'continue' outside of a loop", Location::default(), "E322")
-                })?;
-                b.ins().jump(loop_ctx.continue_to, &[]);
-                self.dead_block(b);
-            }
-
             Stmt::Function(_)
             | Stmt::Struct(_)
             | Stmt::Implement(_)
@@ -2247,7 +2268,7 @@ impl Compiler {
         stack: &mut Vec<Slot>,
     ) -> CResult<Vec<Value>> {
         if let Some(payload_ty) = st.error_value {
-            // `with T or Error`: the body leaves either the success value or
+            // Fallible `|T Err|`: the body leaves either the success value or
             // an error value on the stack.
             let zero = b.ins().iconst(irtypes::I64, 0);
             if matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
@@ -2432,9 +2453,15 @@ impl Compiler {
         });
         let err_idx = stack.len() - 1;
         self.compile_body(b, st, stack, body)?;
-        // Drop the error slot if the body did not consume it.
-        if stack.len() > err_idx && stack[err_idx].ty == Ty::Error && stack[err_idx].value == err {
+        // Drop the error slot if the body did not consume it. Match / other
+        // control flow may replace the SSA value, so compare by slot index and
+        // type rather than Value identity.
+        if stack.len() > err_idx && stack[err_idx].ty == Ty::Error {
             stack.remove(err_idx);
+        } else if let Some(i) = stack.iter().rposition(|s| s.ty == Ty::Error)
+            && i >= pre.len()
+        {
+            stack.remove(i);
         }
         // A `fallback` value is pushed only on the error path, after the body.
         if let Some(fb) = fallback {
@@ -3257,6 +3284,12 @@ impl Compiler {
             self.match_merge(b, merge, &mut results_ty, results)?;
         }
 
+        // No cases: fall straight through to `else` (otherwise `else_blk` is
+        // unreachable and the current block has no terminator).
+        if cases.is_empty() {
+            b.ins().jump(else_blk, &[]);
+        }
+
         b.switch_to_block(else_blk);
         *stack = sub_stack.clone();
         self.compile_body(b, st, stack, else_branch)?;
@@ -3337,20 +3370,17 @@ impl Compiler {
         if for_source_is_condition(source) {
             return self.emit_cond_for(b, st, stack, source, body);
         }
-        self.emit_iter_for(b, st, stack, source, None, None, body)
+        self.emit_iter_for(b, st, stack, source, body)
     }
 
-    /// Sequence form: `source` must be an array or list. Optional `value` /
-    /// `index` names are legacy; prefer `std.loop`.
-    #[allow(clippy::too_many_arguments)]
+    /// Sequence form: `source` must be an array or list. Element and index are
+    /// available via `std.loop` (`loop.value` / `loop.index`).
     fn emit_iter_for(
         &mut self,
         b: &mut FunctionBuilder,
         st: &mut FnState,
         stack: &mut Vec<Slot>,
         source: &Expr,
-        value: Option<&str>,
-        index: Option<&str>,
         body: &[Stmt],
     ) -> CResult<()> {
         let pre = stack.clone();
@@ -3420,27 +3450,6 @@ impl Compiler {
             addr,
             0,
         );
-        let mut saved: Vec<SavedLoopVar> = Vec::new();
-        if let Some(name) = index
-            && name != "_"
-        {
-            let idx_var = b.declare_var(irtypes::I64);
-            b.def_var(idx_var, idx);
-            let prev = st
-                .vars
-                .insert(name.to_string(), (idx_var, Ty::I64, Own::Trivial));
-            saved.push((name.to_string(), prev));
-        }
-        if let Some(name) = value
-            && name != "_"
-        {
-            let loop_var = b.declare_var(elem.clty(self.ptr_type));
-            b.def_var(loop_var, elem_val);
-            let prev = st
-                .vars
-                .insert(name.to_string(), (loop_var, elem, Own::Trivial));
-            saved.push((name.to_string(), prev));
-        }
         st.loops.push(LoopCtx {
             break_to: end,
             continue_to: step,
@@ -3449,16 +3458,6 @@ impl Compiler {
         });
         self.compile_body(b, st, stack, body)?;
         st.loops.pop();
-        for (name, prev) in saved {
-            match prev {
-                Some(p) => {
-                    st.vars.insert(name, p);
-                }
-                None => {
-                    st.vars.remove(&name);
-                }
-            }
-        }
         if stack.len() != pre.len() {
             return Err(CompileError::new(
                 "'for' body must leave the stack balanced",
@@ -4732,6 +4731,11 @@ impl Compiler {
         let mut args: Vec<Value> = Vec::with_capacity(n);
         let mut owned_temps: Vec<Slot> = Vec::new();
         for (i, slot) in tail.iter().enumerate() {
+            // Passing a borrow into a callee consumes that stack borrow from
+            // the caller's point of view (the reference lives in the callee).
+            if slot.own == Own::Borrow {
+                st.borrowed.remove(&slot.value);
+            }
             // An owned value passed by value to a callee is borrowed by the
             // callee (never freed there). The caller drops it once the call
             // returns; this frees immediately (in the current block) so the
@@ -4763,7 +4767,7 @@ impl Compiler {
         let call_inst = b.ins().call(fref, &args);
         let results: Vec<Value> = b.inst_results(call_inst).to_vec();
         if let Some(payload_ty) = error_return(&return_tys)? {
-            // `with T or Error` callee: results are `(env, payload)`. Push the
+            // Fallible `|T Err|` callee: results are `(env, payload)`. Push the
             // payload (as its declared type) followed by the envelope tag so
             // `unwrap`/`handle` pop the tag first.
             let env = results[0];

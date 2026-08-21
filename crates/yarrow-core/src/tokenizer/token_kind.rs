@@ -47,9 +47,6 @@ pub enum TokenKind {
     If,
     Else,
     For,
-    /// Temporary language keywords until `std.loop` (Stage 5).
-    Break,
-    Continue,
     Match,
     Case,
 

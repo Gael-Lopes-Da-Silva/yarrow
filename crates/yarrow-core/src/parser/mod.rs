@@ -262,16 +262,6 @@ impl Parser {
                     stmts.push(Stmt::Return { value: None });
                 }
 
-                TokenKind::Break => {
-                    self.advance();
-                    stmts.push(Stmt::Break);
-                }
-
-                TokenKind::Continue => {
-                    self.advance();
-                    stmts.push(Stmt::Continue);
-                }
-
                 _ => self.process_expr_word(&mut ops)?,
             }
         }

@@ -398,9 +398,6 @@ pub enum Stmt {
     Return {
         value: Option<Expr>,
     },
-    /// Temporary: language `break`/`continue` until `std.loop` lands (Stage 5).
-    Break,
-    Continue,
     Error(ErrorDecl),
     /// `unsafe ... end`: an unsafe block. Statements inside may perform
     /// operations that are normally restricted (pointer access, host calls).

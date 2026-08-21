@@ -79,7 +79,7 @@ pub enum Ty {
     Union(u32),
     /// An error value: a program-unique tag (u32) identifying the error kind
     /// (`error.CustomError`, `error.OutOfMemory`, ...). Also the runtime
-    /// envelope discriminator of `with T or Error` calls: 0 means success,
+    /// envelope discriminator of fallible `|T Err|` calls: 0 means success,
     /// any other value is the propagated error tag.
     Error,
 }
@@ -353,7 +353,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             )),
         },
         TypeKind::Named(name) => {
-            // `Error` (capitalized, as in `with T or Error`) is the error
+            // `Error` (capitalized) is the error envelope tag type used in
             // type; `error` lowercase parses as `Primitive::Error`.
             if name == "Error" || name == "error" {
                 return Ok(Ty::Error);
@@ -440,8 +440,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
 
 /// Classify a function's return types for the error envelope. Returns
 /// `Ok(None)` when the function cannot error; `Ok(Some(payload))` when it
-/// returns `with |T Err|` (or the legacy `T` + `Error` form) — `Ty::Void`
-/// means no value on success.
+/// returns `with |T Err|` — `Ty::Void` means no value on success.
 pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
     if !returns.contains(&Ty::Error) {
         return Ok(None);

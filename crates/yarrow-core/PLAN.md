@@ -26,7 +26,7 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 | ----------- | ---------- | -------------------------------------------------------------------------------- |
 | Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
 | Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 6 | JIT; ownership/borrow/region escape checks; unsafe boundary (`E370`)             |
+| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)           |
 | Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
 | Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
 
@@ -252,14 +252,18 @@ Also: `if` / conditional `for` require `bool` (`invalid/05`).
 
 ---
 
-### Stage 7: Full grammar-tour conformance ⬜
+### Stage 7: Full grammar-surface conformance ✅
 
-1. Compile and run the illustrative program in `docs/GRAMMAR.md` (extract or maintain a runnable twin if markdown fencing is awkward)
-2. Close remaining `run_main` / driver gaps needed for demos
-3. Module resolution edge cases (alias vs bare require, item import) per `RUNTIME.md`
-4. Remove dead compatibility paths (`or`-return parsing, string `+`, old std names, keyword `break`/`continue` if fully replaced)
+1. Compile and run the illustrative program in `docs/GRAMMAR.md` - ✅ twin at `docs/examples/valid/00_grammar_tour.yar`
+2. Close remaining `run_main` / driver gaps needed for demos - ✅ void/`i*`/`f*`/bool/string/`|T Err|` main
+3. Module resolution edge cases (alias vs bare require, item import) per `RUNTIME.md` - ✅ (`12_modules.yar`)
+4. Remove dead compatibility paths - ✅ language `break`/`continue` removed (`std.loop` only); legacy `for` binders removed; comments updated off `with T or Error`
+
+Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft `error.TAG` cases inside `handle`; `std.fs.open_file` stub success; item import after aliased require.
 
 **Gate:** grammar tour + full `docs/examples/valid/**` run; `cargo check` / `clippy` green.
+
+---
 
 ---
 

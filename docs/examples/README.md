@@ -22,6 +22,7 @@ docs/examples
 
 | File                                                                       | Topic                                                                      |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [`valid/00_grammar_tour.yar`](valid/00_grammar_tour.yar)             | Full illustrative program (twin of [`GRAMMAR.md`](../GRAMMAR.md)) |
 | [`valid/01_hello.yar`](valid/01_hello.yar)                                 | Entry point, `require`, `io.write_line`                                    |
 | [`valid/02_arithmetic_and_stack.yar`](valid/02_arithmetic_and_stack.yar)   | Operators, `dup` / `swap` / `rot`, `drop`                                  |
 | [`valid/03_variables_and_typeof.yar`](valid/03_variables_and_typeof.yar)   | `mutable` / `const` / `static`, coercion, `typeof`                         |
@@ -33,7 +34,7 @@ docs/examples
 | [`valid/09_regions_and_defer.yar`](valid/09_regions_and_defer.yar)         | `region.put` / `free`, `defer`                                             |
 | [`valid/10_errors.yar`](valid/10_errors.yar)                               | `error`, `\|T Err\|`, `unwrap`, `handle`                                   |
 | [`valid/11_unsafe_pointers.yar`](valid/11_unsafe_pointers.yar)             | `unsafe function`, `pointer<T>`, `std.mem`                                 |
-| [`valid/12_modules.yar`](valid/12_modules.yar)                             | Aliased / local `require` ([`helpers/greet.yar`](valid/helpers/greet.yar)) |
+| [`valid/12_modules.yar`](valid/12_modules.yar)                             | Aliased / bare / item `require` ([`helpers/greet.yar`](valid/helpers/greet.yar)) |
 | [`valid/13_containers.yar`](valid/13_containers.yar)                       | Array, list, hashmap literals                                              |
 
 ## Invalid programs

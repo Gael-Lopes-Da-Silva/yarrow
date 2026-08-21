@@ -1,8 +1,5 @@
-# Grammar
+# Runnable twin of the illustrative program in docs/GRAMMAR.md.
 
-Illustrative Yarrow program. Comments explain language rules; the code is the runnable shape of the language. Formal EBNF lives in [`SYNTAX.md`](SYNTAX.md).
-
-```yarrow
 # =============================================================================
 # Yarrow at a glance
 # =============================================================================
@@ -649,4 +646,3 @@ main function do
 
 	"Hello, Yarrow!" io.write_line call
 end
-```
