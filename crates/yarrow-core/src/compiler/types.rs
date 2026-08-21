@@ -431,7 +431,7 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
             Ok(Ty::Ptr(code as u32))
         }
         TypeKind::Union(_) => Err(CompileError::unsupported(
-            "union types are not yet supported",
+            "anonymous union types are only supported as fallible returns (|T Err|)",
             loc,
             "E308",
         )),
@@ -440,8 +440,8 @@ pub fn resolve(ty: &Type, named: &dyn Fn(&str) -> Option<Ty>) -> CResult<Ty> {
 
 /// Classify a function's return types for the error envelope. Returns
 /// `Ok(None)` when the function cannot error; `Ok(Some(payload))` when it
-/// returns `with T or Error` — `Ty::Void` means no value on success, `Some(t)`
-/// means the single success value's type.
+/// returns `with |T Err|` (or the legacy `T` + `Error` form) — `Ty::Void`
+/// means no value on success.
 pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
     if !returns.contains(&Ty::Error) {
         return Ok(None);
@@ -453,7 +453,7 @@ pub fn error_return(returns: &[Ty]) -> CResult<Option<Ty>> {
         .collect();
     if vals.len() > 1 {
         return Err(CompileError::new(
-            "a 'with T or Error' return may carry at most one value",
+            "a fallible return may carry at most one success value",
             Location::default(),
             "E308",
         ));

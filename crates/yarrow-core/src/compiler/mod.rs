@@ -157,6 +157,13 @@ struct UnionInfo {
     members: Vec<Ty>,
 }
 
+/// A named `error` type: members map to program-unique envelope tags.
+#[derive(Debug, Clone)]
+struct ErrorInfo {
+    name: String,
+    members: Vec<(String, u32)>,
+}
+
 /// JIT compiler that turns a whole `Program` into a single linked module.
 pub struct Compiler {
     module: JITModule,
@@ -208,10 +215,14 @@ pub struct Compiler {
     /// Module alias -> the single item it exposes, for item imports under a
     /// scope (`"std.math.sqrt" s require` -> only `s.sqrt` resolves).
     item_aliases: HashMap<String, String>,
-    /// Error kind name (`CustomError`, `OutOfMemory`, ...) -> program-unique
-    /// tag. Tags are interned once per program so `error.X ==` comparisons
-    /// and `with T or Error` propagation agree across functions.
+    /// Error kind name (`AppError.NOT_FOUND`, `OUT_OF_MEMORY`, ...) ->
+    /// program-unique tag. Tags are interned once per program so comparisons
+    /// and envelope propagation agree across functions.
     error_ids: HashMap<String, u32>,
+    /// Error type name -> index into `error_types`.
+    error_type_ids: HashMap<String, u32>,
+    /// Every named `error` declaration.
+    error_types: Vec<ErrorInfo>,
     /// Fully-qualified names of functions declared `unsafe`; calling them from
     /// a non-unsafe context is rejected.
     unsafe_funcs: std::collections::HashSet<String>,
@@ -254,6 +265,8 @@ impl Compiler {
             loaded: HashMap::new(),
             item_aliases: HashMap::new(),
             error_ids: HashMap::new(),
+            error_type_ids: HashMap::new(),
+            error_types: Vec::new(),
             unsafe_funcs: std::collections::HashSet::new(),
             public_funcs: std::collections::HashSet::new(),
             finalized: false,
@@ -282,6 +295,8 @@ impl Compiler {
         self.unions.clear();
         self.union_desc_ids.clear();
         self.error_ids.clear();
+        self.error_type_ids.clear();
+        self.error_types.clear();
         self.unsafe_funcs.clear();
         self.public_funcs.clear();
         let mut loaded = Vec::new();
@@ -365,6 +380,43 @@ impl Compiler {
                         name: d.name.clone(),
                         members,
                     });
+                }
+            }
+        }
+
+        // Pass A3: register every named `error` type (names first, then members
+        // so injection can copy tags from another error type).
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Error(d) = item {
+                    self.error_type_ids
+                        .entry(d.name.clone())
+                        .or_insert_with(|| {
+                            let id = self.error_types.len() as u32;
+                            self.error_types.push(ErrorInfo {
+                                name: d.name.clone(),
+                                members: Vec::new(),
+                            });
+                            id
+                        });
+                }
+            }
+        }
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Error(d) = item
+                    && d.inject.is_none()
+                {
+                    self.fill_error_type(d)?;
+                }
+            }
+        }
+        for (_, prog) in &units {
+            for item in &prog.items {
+                if let Stmt::Error(d) = item
+                    && d.inject.is_some()
+                {
+                    self.fill_error_type(d)?;
                 }
             }
         }
@@ -809,13 +861,22 @@ impl Compiler {
         let sig = self.sigs.get("main").cloned().ok_or_else(|| {
             CompileError::new("missing signature for 'main'", Location::default(), "E360")
         })?;
-        // A `with T or Error` main returns an envelope we cannot surface yet.
+        // A fallible `main` returns an envelope `(env, payload)`. Run it and
+        // surface a non-zero env as a runtime failure; success is void.
         if error_return(&return_tys)?.is_some() {
-            return Err(CompileError::new(
-                "'main' may not return an error yet",
-                Location::default(),
-                "E360",
-            ));
+            let ptr = self.module.get_finalized_function(id);
+            unsafe {
+                let f: extern "C" fn() -> (i64, i64) = std::mem::transmute(ptr);
+                let (env, _payload) = f();
+                if env != 0 {
+                    return Err(CompileError::new(
+                        format!("main returned error tag {env}"),
+                        Location::default(),
+                        "E360",
+                    ));
+                }
+            }
+            return Ok(RunResult::Void);
         }
         let ptr = self.module.get_finalized_function(id);
         unsafe {
@@ -911,8 +972,157 @@ impl Compiler {
             if let Some(id) = self.union_ids.get(n) {
                 return Some(Ty::Union(*id));
             }
+            if self.error_type_ids.contains_key(n) || self.is_error_type_path(n) {
+                return Some(Ty::Error);
+            }
             self.enum_ids.get(n).map(|id| Ty::Enum(*id))
         })
+    }
+
+    /// `error.Error` / bare `Error` / other named error types used in `|T Err|`.
+    fn is_error_type_path(&self, path: &str) -> bool {
+        let name = path.rsplit('.').next().unwrap_or(path);
+        self.error_type_ids.contains_key(name) || self.error_type_ids.contains_key(path)
+    }
+
+    /// Expand function `with` types: a single `|T Err|` union literal becomes
+    /// `[payload, Error]` for the envelope ABI; other forms resolve normally.
+    fn resolve_return_tys(&self, returns: &[crate::parser::ast::Type]) -> CResult<Vec<Ty>> {
+        if returns.len() == 1
+            && let crate::parser::ast::TypeKind::Union(members) = &returns[0].kind
+        {
+            return self.fallible_union_returns(members);
+        }
+        returns.iter().map(|r| self.resolve_ty(r)).collect()
+    }
+
+    fn fallible_union_returns(&self, members: &[crate::parser::ast::Type]) -> CResult<Vec<Ty>> {
+        if members.len() != 2 {
+            return Err(CompileError::new(
+                "a fallible return `|T Err|` must have exactly two members",
+                Location::default(),
+                "E308",
+            ));
+        }
+        let left = self.resolve_ty(&members[0])?;
+        let right = self.resolve_ty(&members[1])?;
+        let left_err = self.type_is_error(&members[0], left);
+        let right_err = self.type_is_error(&members[1], right);
+        match (left_err, right_err) {
+            (false, true) => Ok(vec![left, Ty::Error]),
+            (true, false) => Ok(vec![right, Ty::Error]),
+            (true, true) => Err(CompileError::new(
+                "a fallible return needs one success type and one error type",
+                Location::default(),
+                "E308",
+            )),
+            (false, false) => Err(CompileError::new(
+                "a fallible return `|T Err|` requires an error type as one member",
+                Location::default(),
+                "E308",
+            )),
+        }
+    }
+
+    fn type_is_error(&self, ast: &crate::parser::ast::Type, ty: Ty) -> bool {
+        if ty == Ty::Error {
+            return true;
+        }
+        match &ast.kind {
+            crate::parser::ast::TypeKind::Named(n) => self.is_error_type_path(n),
+            crate::parser::ast::TypeKind::Primitive(crate::parser::ast::Primitive::Error) => true,
+            _ => false,
+        }
+    }
+
+    /// Fill members for an `error` declaration, copying injected tags first.
+    fn fill_error_type(&mut self, d: &crate::parser::ast::ErrorDecl) -> CResult<()> {
+        let id = *self.error_type_ids.get(&d.name).ok_or_else(|| {
+            CompileError::new(
+                format!("unknown error type '{}'", d.name),
+                Location::default(),
+                "E302",
+            )
+        })?;
+        if !self.error_types[id as usize].members.is_empty() {
+            return Ok(());
+        }
+        let mut members = Vec::new();
+        if let Some(inject) = &d.inject {
+            let inj_id = self.lookup_error_type(inject)?;
+            self.ensure_error_filled(inj_id)?;
+            for (name, tag) in &self.error_types[inj_id as usize].members {
+                members.push((name.clone(), *tag));
+            }
+        }
+        for m in &d.members {
+            // `Error.OUT_OF_MEMORY` shares the short tag `OUT_OF_MEMORY` so
+            // `error.OUT_OF_MEMORY` comparisons agree after injection.
+            let key = if d.name == "Error" {
+                m.clone()
+            } else {
+                format!("{}.{}", d.name, m)
+            };
+            let tag = self.error_tag(&key)?;
+            if members.iter().any(|(n, _)| n == m) {
+                return Err(CompileError::new(
+                    format!("error type '{}' has duplicate member '{m}'", d.name),
+                    Location::default(),
+                    "E308",
+                ));
+            }
+            members.push((m.clone(), tag));
+        }
+        self.error_types[id as usize].members = members;
+        Ok(())
+    }
+
+    fn lookup_error_type(&self, path: &str) -> CResult<u32> {
+        let name = path.rsplit('.').next().unwrap_or(path);
+        self.error_type_ids
+            .get(path)
+            .or_else(|| self.error_type_ids.get(name))
+            .copied()
+            .ok_or_else(|| {
+                CompileError::new(
+                    format!("unknown error type '{path}'"),
+                    Location::default(),
+                    "E302",
+                )
+            })
+    }
+
+    fn ensure_error_filled(&mut self, id: u32) -> CResult<()> {
+        if !self.error_types[id as usize].members.is_empty() {
+            return Ok(());
+        }
+        // Members are filled in declaration order; an empty inject target means
+        // the source declaration has not been visited yet.
+        Err(CompileError::new(
+            format!(
+                "error type '{}' has no members to inject (declare it before dependents)",
+                self.error_types[id as usize].name
+            ),
+            Location::default(),
+            "E308",
+        ))
+    }
+
+    /// Tag for an error member written as a type case (`AppError.NOT_FOUND`).
+    fn error_member_tag_from_type(&self, ty: &crate::parser::ast::Type) -> Option<u32> {
+        let crate::parser::ast::TypeKind::Named(path) = &ty.kind else {
+            return None;
+        };
+        let (type_name, member) = path.rsplit_once('.')?;
+        let id = self
+            .error_type_ids
+            .get(type_name)
+            .or_else(|| self.error_type_ids.get(path))?;
+        self.error_types[*id as usize]
+            .members
+            .iter()
+            .find(|(n, _)| n == member)
+            .map(|(_, tag)| *tag)
     }
 
     /// Intern an error kind name (`error.CustomError`) to a program-unique
@@ -1239,26 +1449,24 @@ impl Compiler {
 
     fn declare_function(&mut self, f: &Function, name: &str) -> CResult<()> {
         let mut param_tys = Vec::with_capacity(f.params.len());
-        let mut return_tys = Vec::with_capacity(f.returns.len());
         let mut sig = self.module.make_signature();
         for p in &f.params {
             let ty = self.resolve_ty(&p.ty)?;
             sig.params.push(AbiParam::new(ty.clty(self.ptr_type)));
             param_tys.push(ty);
         }
-        for r in &f.returns {
-            let ty = self.resolve_ty(r)?;
-            if ty == Ty::Void {
-                // `void` means "no value"; it contributes no return slot
-                // (error envelopes already filter it via `error_return`).
+        let mut return_tys = self.resolve_return_tys(&f.returns)?;
+        return_tys.retain(|t| *t != Ty::Void);
+        for ty in &return_tys {
+            if *ty == Ty::Error {
+                // Envelope ABI replaces individual slots below.
                 continue;
             }
             sig.returns.push(AbiParam::new(ty.clty(self.ptr_type)));
-            return_tys.push(ty);
         }
-        // A `with T or Error` function returns an envelope `(i64 env, i64
-        // payload)`: env is 0 on success or the error tag on failure, and
-        // payload carries the success value (or 0).
+        // A fallible function returns an envelope `(i64 env, i64 payload)`:
+        // env is 0 on success or the error tag on failure, and payload carries
+        // the success value (or 0).
         if error_return(&return_tys)?.is_some() {
             sig.returns.clear();
             sig.returns.push(AbiParam::new(irtypes::I64));
@@ -1285,11 +1493,7 @@ impl Compiler {
         let mut ctx = self.module.make_context();
         ctx.func.signature = sig;
 
-        let returns = f
-            .returns
-            .iter()
-            .map(|r| self.resolve_ty(r))
-            .collect::<CResult<Vec<_>>>()?;
+        let returns = self.resolve_return_tys(&f.returns)?;
         // `void` means "no value"; it contributes no return slot (matching
         // `declare_function`, which skips it in the signature).
         let returns: Vec<Ty> = returns.into_iter().filter(|t| *t != Ty::Void).collect();
@@ -1867,7 +2071,10 @@ impl Compiler {
             } => {
                 let prev = st.terminated;
                 self.emit_if(b, st, stack, condition, then_branch, else_branch)?;
-                st.terminated = prev;
+                // `emit_if` sets `terminated` when both branches return/break.
+                if !st.terminated {
+                    st.terminated = prev;
+                }
             }
 
             Stmt::Match {
@@ -2022,9 +2229,10 @@ impl Compiler {
     }
 
     /// `value unwrap`: if the top of the stack is an error envelope from a
-    /// `with T or Error` call, keep the success payload or propagate the error
-    /// (return it when this function itself returns an error, otherwise trap).
-    /// Applied to anything that cannot fail, `unwrap` is an identity.
+    /// fallible call, keep the success payload or propagate the error when this
+    /// function itself returns `|T Err|`. Applied to anything that cannot fail,
+    /// `unwrap` is an identity. Rejected at compile time when the caller cannot
+    /// error.
     fn emit_unwrap(
         &mut self,
         b: &mut FunctionBuilder,
@@ -2034,6 +2242,13 @@ impl Compiler {
         // Only error envelopes sit on the stack as `Ty::Error`.
         if !matches!(stack.last(), Some(s) if s.ty == Ty::Error) {
             return Ok(());
+        }
+        if st.error_value.is_none() {
+            return Err(CompileError::new(
+                "'unwrap' requires the caller to declare a fallible return (|T Err|)",
+                Location::default(),
+                "E308",
+            ));
         }
         let env = stack.pop().unwrap();
         let payload = stack.pop().unwrap();
@@ -2063,20 +2278,14 @@ impl Compiler {
         b.ins()
             .brif(ok, ok_blk, &ok_args, err_blk, &[BlockArg::Value(env.value)]);
 
-        // Error: propagate as this function's error return, or trap. Filling
-        // this block first lets the success block below remain the live
-        // continuation for the rest of the function.
+        // Error: propagate as this function's fallible return.
         b.switch_to_block(err_blk);
-        if st.error_value.is_some() {
-            stack.push(Slot {
-                value: err_env_param,
-                ty: Ty::Error,
-                own: Own::Trivial,
-            });
-            self.emit_return(b, st, stack)?;
-        } else {
-            b.ins().trap(TrapCode::unwrap_user(1));
-        }
+        stack.push(Slot {
+            value: err_env_param,
+            ty: Ty::Error,
+            own: Own::Trivial,
+        });
+        self.emit_return(b, st, stack)?;
         self.dead_block(b);
 
         // Success: the payload flows out of the merge with its declared type.
@@ -2605,51 +2814,81 @@ impl Compiler {
         let merge = b.create_block();
         b.ins().brif(cond, then_blk, &[], else_blk, &[]);
 
-        // Compile the `then` branch and immediately jump out of its block so it
-        // is terminated before we switch away.
         b.switch_to_block(then_blk);
         *stack = pre.clone();
+        st.terminated = false;
         self.compile_body(b, st, stack, then_branch)?;
+        let then_terminated = st.terminated;
         let then_stack = stack.clone();
-        let then_extra = &then_stack[pre.len()..];
+        let then_extra: Vec<Slot> = then_stack[pre.len()..].to_vec();
 
-        // Merge params must exist before any jump targets `merge`.
-        let mut params: Vec<Value> = Vec::with_capacity(then_extra.len());
-        for s in then_extra {
-            params.push(b.append_block_param(merge, s.ty.clty(self.ptr_type)));
+        // When the then-branch continues, fix merge params from it and jump.
+        let mut params: Vec<Value> = Vec::new();
+        let mut merge_tys: Vec<Ty> = Vec::new();
+        if !then_terminated {
+            for s in &then_extra {
+                params.push(b.append_block_param(merge, s.ty.clty(self.ptr_type)));
+                merge_tys.push(s.ty);
+            }
+            let tv: Vec<BlockArg> = then_extra
+                .iter()
+                .map(|s| BlockArg::Value(s.value))
+                .collect();
+            b.ins().jump(merge, &tv);
         }
-        let tv: Vec<BlockArg> = then_extra
-            .iter()
-            .map(|s| BlockArg::Value(s.value))
-            .collect();
-        b.ins().jump(merge, &tv);
 
         b.switch_to_block(else_blk);
         *stack = pre.clone();
+        st.terminated = false;
         self.compile_body(b, st, stack, else_branch)?;
+        let else_terminated = st.terminated;
         let else_stack = stack.clone();
-        if else_stack.len() != then_stack.len() {
-            return Err(CompileError::new(
-                "if/else branches must leave the same number of values",
-                Location::default(),
-                "E328",
-            ));
+        let else_extra: Vec<Slot> = else_stack[pre.len()..].to_vec();
+
+        if then_terminated && else_terminated {
+            st.terminated = true;
+            b.switch_to_block(merge);
+            self.dead_block(b);
+            *stack = pre;
+            return Ok(());
         }
-        // Coerce the else-branch values to the then-branch's merge types so
-        // branches that differ only by width (I32 vs I64) still merge.
-        let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
-        for (s, want) in else_stack[pre.len()..].iter().zip(then_extra) {
-            let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type)?;
-            ev.push(BlockArg::Value(v));
+
+        if !else_terminated {
+            if then_terminated {
+                // Merge shape comes from the else branch alone.
+                for s in &else_extra {
+                    params.push(b.append_block_param(merge, s.ty.clty(self.ptr_type)));
+                    merge_tys.push(s.ty);
+                }
+                let ev: Vec<BlockArg> = else_extra
+                    .iter()
+                    .map(|s| BlockArg::Value(s.value))
+                    .collect();
+                b.ins().jump(merge, &ev);
+            } else {
+                if else_extra.len() != then_extra.len() {
+                    return Err(CompileError::new(
+                        "if/else branches must leave the same number of values",
+                        Location::default(),
+                        "E328",
+                    ));
+                }
+                let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
+                for (s, want) in else_extra.iter().zip(&then_extra) {
+                    let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type)?;
+                    ev.push(BlockArg::Value(v));
+                }
+                b.ins().jump(merge, &ev);
+            }
         }
-        b.ins().jump(merge, &ev);
 
         b.switch_to_block(merge);
+        st.terminated = false;
         *stack = pre;
-        for (i, s) in then_extra.iter().enumerate() {
+        for (i, ty) in merge_tys.iter().enumerate() {
             stack.push(Slot {
                 value: params[i],
-                ty: s.ty,
+                ty: *ty,
                 own: Own::Trivial,
             });
         }
@@ -2695,12 +2934,39 @@ impl Compiler {
             sub_stack.push(s);
         }
 
-        // Prepare union type dispatch: the subject must be a union, and its
-        // active-member tag is loaded once, before the branch structure.
-        let has_type_case = cases
+        // Type cases are either union member types (`i32 case`) or error
+        // members written as paths (`AppError.NOT_FOUND case`).
+        let has_union_type_case = cases.iter().any(|c| {
+            matches!(&c.kind, MatchCaseKind::Type(ty) if self.error_member_tag_from_type(ty).is_none())
+        });
+        let has_error_type_case = cases
             .iter()
-            .any(|c| matches!(c.kind, MatchCaseKind::Type(_)));
-        let subject_union: Option<(Slot, u32, Value)> = if has_type_case {
+            .any(|c| matches!(&c.kind, MatchCaseKind::Type(ty) if self.error_member_tag_from_type(ty).is_some()));
+
+        // Error match inside `handle`: no explicit subject; the error tag is
+        // already on the stack.
+        let error_subject: Option<Slot> = if has_error_type_case {
+            if let Some(s) = subject.filter(|s| s.ty == Ty::Error) {
+                Some(s)
+            } else if subject.is_none() {
+                sub_stack.last().copied().filter(|s| s.ty == Ty::Error)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if has_error_type_case && error_subject.is_none() {
+            return Err(CompileError::new(
+                "error member case requires an error subject (inside handle, or a fallible value)",
+                Location::default(),
+                "E308",
+            ));
+        }
+
+        // Union type dispatch: the subject must be a union; its active-member
+        // tag is loaded once before the branch structure.
+        let subject_union: Option<(Slot, u32, Value)> = if has_union_type_case {
             let s = subject.ok_or_else(|| {
                 CompileError::new(
                     "match type dispatch requires a subject value",
@@ -2739,9 +3005,19 @@ impl Compiler {
         let mut results_ty: Option<Vec<Ty>> = None;
 
         for (i, case) in cases.iter().enumerate() {
-            let case_member: Option<Ty> = match &case.kind {
-                MatchCaseKind::Type(ty) => {
-                    let (_, id, _) = subject_union.as_ref().unwrap();
+            let error_tag = match &case.kind {
+                MatchCaseKind::Type(ty) => self.error_member_tag_from_type(ty),
+                MatchCaseKind::Condition(_) => None,
+            };
+            let case_member: Option<Ty> = match (&case.kind, error_tag) {
+                (MatchCaseKind::Type(ty), None) => {
+                    let (_, id, _) = subject_union.as_ref().ok_or_else(|| {
+                        CompileError::new(
+                            "union member case requires a union subject",
+                            Location::default(),
+                            "E308",
+                        )
+                    })?;
                     let t = self.resolve_ty(ty)?;
                     let members = &self.unions[*id as usize].members;
                     if !members.contains(&t) {
@@ -2756,14 +3032,14 @@ impl Compiler {
                     }
                     Some(t)
                 }
-                MatchCaseKind::Condition(_) => None,
+                _ => None,
             };
             if i > 0 {
                 b.switch_to_block(cond_blks[i - 1]);
             }
             *stack = sub_stack.clone();
-            let cond = match (&case.kind, case_member) {
-                (MatchCaseKind::Condition(expr), _) => {
+            let cond = match (&case.kind, case_member, error_tag) {
+                (MatchCaseKind::Condition(expr), _, _) => {
                     let cond = self.eval_match_cond(b, st, stack, expr)?;
                     // The condition may keep the subject on the stack
                     // (`dup X ==`) or consume stack values (`error.X ==`
@@ -2778,7 +3054,7 @@ impl Compiler {
                     }
                     cond
                 }
-                (MatchCaseKind::Type(_), Some(mt)) => {
+                (MatchCaseKind::Type(_), Some(mt), None) => {
                     let (_, id, tag) = subject_union.as_ref().unwrap();
                     let idx = self.unions[*id as usize]
                         .members
@@ -2787,6 +3063,11 @@ impl Compiler {
                         .unwrap();
                     let want = b.ins().iconst(irtypes::I64, idx as i64);
                     b.ins().icmp(IntCC::Equal, *tag, want)
+                }
+                (MatchCaseKind::Type(_), None, Some(tag)) => {
+                    let err = error_subject.as_ref().unwrap();
+                    let want = b.ins().iconst(irtypes::I64, i64::from(tag));
+                    b.ins().icmp(IntCC::Equal, err.value, want)
                 }
                 _ => unreachable!(),
             };
@@ -2836,6 +3117,13 @@ impl Compiler {
             {
                 stack.remove(sub_stack.len());
             }
+            if stack.len() < sub_stack.len() {
+                return Err(CompileError::new(
+                    "'match' branch underflowed the subject stack",
+                    Location::default(),
+                    "E343",
+                ));
+            }
             let results = stack.split_off(sub_stack.len());
             self.match_merge(b, merge, &mut results_ty, results)?;
         }
@@ -2843,6 +3131,13 @@ impl Compiler {
         b.switch_to_block(else_blk);
         *stack = sub_stack.clone();
         self.compile_body(b, st, stack, else_branch)?;
+        if stack.len() < sub_stack.len() {
+            return Err(CompileError::new(
+                "'match' branch underflowed the subject stack",
+                Location::default(),
+                "E343",
+            ));
+        }
         let results = stack.split_off(sub_stack.len());
         self.match_merge(b, merge, &mut results_ty, results)?;
 
@@ -3204,6 +3499,30 @@ impl Compiler {
                 {
                     let tag = self.error_tag(member)?;
                     let v = b.ins().iconst(irtypes::I64, i64::from(tag));
+                    stack.push(Slot {
+                        value: v,
+                        ty: Ty::Error,
+                        own: Own::Trivial,
+                    });
+                    return Ok(());
+                }
+                // `AppError.NOT_FOUND` resolves a named error member.
+                if let Expr::Variable { name } = base.as_ref()
+                    && let Some(id) = self.error_type_ids.get(name)
+                {
+                    let info = &self.error_types[*id as usize];
+                    let (_, tag) =
+                        info.members
+                            .iter()
+                            .find(|(n, _)| n == member)
+                            .ok_or_else(|| {
+                                CompileError::new(
+                                    format!("error type '{}' has no member '{member}'", info.name),
+                                    Location::default(),
+                                    "E320",
+                                )
+                            })?;
+                    let v = b.ins().iconst(irtypes::I64, i64::from(*tag));
                     stack.push(Slot {
                         value: v,
                         ty: Ty::Error,
@@ -4684,6 +5003,36 @@ impl Compiler {
             });
             return Ok(());
         }
+
+        // String concatenation before the pointer-like rejection: `string` is a
+        // heap handle (`is_pointer`), but `~` is defined on it.
+        if op == Concat {
+            let lt = l.ty;
+            let rt = r.ty;
+            if lt != Ty::String || rt != Ty::String {
+                return Err(CompileError::new(
+                    format!("'~' requires string operands, got {lt:?} and {rt:?}"),
+                    Location::default(),
+                    "E335",
+                ));
+            }
+            let out = self.rt_call(b, st, "str_join", vec![l.value, r.value])?;
+            self.claim(st, out[0], Ty::String);
+            stack.push(Slot {
+                value: out[0],
+                ty: Ty::String,
+                own: Own::Owned,
+            });
+            return Ok(());
+        }
+        if op == Plus && (l.ty == Ty::String || r.ty == Ty::String) {
+            return Err(CompileError::new(
+                "string concatenation uses '~', not '+'",
+                Location::default(),
+                "E335",
+            ));
+        }
+
         if l.ty.is_pointer() || r.ty.is_pointer() {
             return Err(CompileError::new(
                 format!(
@@ -4716,19 +5065,8 @@ impl Compiler {
                 ));
             }
             Concat => {
-                if common != Ty::String {
-                    return Err(CompileError::new(
-                        format!("'~' requires string operands, got {common:?}"),
-                        Location::default(),
-                        "E335",
-                    ));
-                }
-                let out = self.rt_call(b, st, "str_join", vec![l.value, r.value])?;
-                stack.push(Slot {
-                    value: out[0],
-                    ty: Ty::String,
-                    own: Own::Trivial,
-                });
+                // Handled above.
+                unreachable!()
             }
             Plus | Minus | Mul | Mod | Pow => {
                 if common.is_float() {

@@ -22,13 +22,13 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 
 ## Pipeline status (honest)
 
-| Component   | Status     | Reality                                                                                                                |
-| ----------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing |
+| Component   | Status     | Reality                                                                          |
+| ----------- | ---------- | -------------------------------------------------------------------------------- |
+| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
 | Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 3 | JIT; `~` concat; drop clears stack; smallest-fit ints; visibility; loop intrinsics |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist |
-| Std library | 🟡 Partial | `public` APIs; `push_last` / `allocate`; `std.loop` stub; region/error/fs still missing |
+| Compiler    | 🟢 Stage 4 | JIT; unions; `\|T Err\|` envelopes; unwrap/handle; named errors                  |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
+| Std library | 🟡 Partial | `public` APIs; `std.loop` stub; `std.error` baseline; region/fs still missing    |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -198,18 +198,18 @@ Align lowering and type checking with `TYPE_SYSTEM.md` / `MEMORY_MODEL.md` / `RU
 
 ---
 
-### Stage 4: Unions, errors, unwrap/handle ⬜
+### Stage 4: Unions, errors, unwrap/handle ✅
 
 Replace the old `Error` / `or` envelope story with the documented model.
 
-1. Named `error` types + member tags
-2. Optional injection (`Name other.error error … end`)
-3. Fallible returns `|T Err|` / `|void Err|` as union literals
-4. Envelope ABI as in `RUNTIME.md` (env tag + payload)
-5. `unwrap` propagate vs reject when caller cannot error
-6. `handle` + `fallback` + error `match` inside handle
-7. Named union values + `Type case` arms yielding `reference<Member>`
-8. Wire `std.error` members used by the grammar (`error.Error`, `OUT_OF_MEMORY`, …)
+1. Named `error` types + member tags - ✅ `ErrorDecl` registration; `AppError.NOT_FOUND`
+2. Optional injection (`Name other.error error … end`) - ✅ copies tags from inject source
+3. Fallible returns `|T Err|` / `|void Err|` as union literals - ✅ expands to envelope ABI
+4. Envelope ABI as in `RUNTIME.md` (env tag + payload) - ✅ unchanged `(env, payload)`
+5. `unwrap` propagate vs reject when caller cannot error - ✅ compile error (`E308`) if caller cannot fail
+6. `handle` + `fallback` + error `match` inside handle - ✅ `AppError.MEMBER case` tag dispatch
+7. Named union values + `Type case` arms yielding `reference<Member>` - ✅ (also fixed `~` on strings)
+8. Wire `std.error` members - ✅ `lib/std/error.yar` (`OUT_OF_MEMORY`, …)
 
 **Gate:** `docs/examples/valid/07_unions.yar`, `10_errors.yar`, and invalid `08`/`09` behave as documented.
 
@@ -222,7 +222,7 @@ Pure-Yarrow modules under `lib/std/`, names exactly as in `GRAMMAR.md`.
 1. Rename APIs: `mem.allocate`, `list.push_last`, …
 2. Add `std.region` (`create` / `put` / `free`) wrapping host region ops
 3. Add `std.loop` (`break` / `continue` / `value` / `index`)
-4. Add `std.error` baseline members
+4. Add `std.error` baseline members - ✅ started in Stage 4 (`Error` + common tags)
 5. Add / extend `std.fs` as required by the grammar tour
 6. Generalize list/map beyond single hard-coded element types where the compiler allows
 7. Prefer: unsafe host → invariant → safe Yarrow API
