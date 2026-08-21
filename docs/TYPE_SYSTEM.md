@@ -204,7 +204,7 @@ Nested functions are typed in their own stack frame; they are only callable from
 | Class                                  | Operands                                         | Result                                                                        |
 | -------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- |
 | Arithmetic `+ - * / // % ^`            | numeric (or `pointer + int`)                     | common numeric type, or `pointer<T>`                                          |
-| String `+`                             | `string` (autoderef through `reference<string>`) | `string`                                                                      |
+| Concatenation `~`                      | `string` (autoderef through `reference<string>`) | `string`                                                                      |
 | Comparison                             | comparable operands                              | `bool`                                                                        |
 | Logical `and or not`                   | `bool`                                           | `bool`                                                                        |
 | Bitwise `and or xor lshift rshift not` | integers                                         | integer (common / same width rules)                                           |
@@ -216,9 +216,9 @@ Nested functions are typed in their own stack frame; they are only callable from
 | `call`                                 | function + args                                  | per signature                                                                 |
 | `unwrap`                               | `\|T Err\|`                                      | `T` on success; on error propagates or is rejected if the caller cannot error |
 
-`and` / `or` / `not` overload on `bool` (logical) vs integer (bitwise).
+`and` / `or` / `not` overload on `bool` (logical) vs integer (bitwise). `+` is not overloaded: strings concatenate with `~`.
 
-Autoderef: reads through `reference<T>` (and, in `unsafe`, `pointer<T>` field access) behave like `T` for arithmetic, comparison, and concatenation.
+Autoderef: reads through `reference<T>` (and, in `unsafe`, `pointer<T>` field access) behave like `T` for arithmetic, comparison, and concatenation (`~`).
 
 ### Functions and returns
 

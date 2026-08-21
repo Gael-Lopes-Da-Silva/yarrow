@@ -14,6 +14,10 @@ main function do
 	2 3 ^
 	drop
 
+	# `~` concatenates strings; `+` is numeric only
+	"hello" " world" ~
+	drop
+
 	true false and
 	true false or
 	true not

@@ -20,7 +20,7 @@
 greet function
   string
 do
-  "Hello, " swap + io.write_line call
+  "Hello, " swap ~ io.write_line call
 end
 
 main function do

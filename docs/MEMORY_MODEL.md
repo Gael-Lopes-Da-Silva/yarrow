@@ -133,7 +133,7 @@ There can be **only one active borrow** of a given value, but that borrow may mo
 
 ### Autoderef
 
-Reads through `reference<T>` behave like `T` for arithmetic, comparison, field access, and concatenation. The reference remains a borrow until released.
+Reads through `reference<T>` behave like `T` for arithmetic, comparison, field access, and concatenation (`~`). The reference remains a borrow until released.
 
 ```yarrow
 self.x self.x *    # autoderef on reference<Point>

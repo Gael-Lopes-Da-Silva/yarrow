@@ -50,6 +50,15 @@ my_function private function do
 	drop
 
 	# -------------------------------------------------------------------------
+	# Concatenation
+	# -------------------------------------------------------------------------
+	# `~` joins strings (autoderef through reference<string>). `+` is arithmetic
+	# (and pointer byte-offset) only; it is not overloaded for strings.
+	"hello" " world" ~    # "hello world"
+	# Stack: ["hello world"]
+	drop
+
+	# -------------------------------------------------------------------------
 	# Logical (bool)
 	# -------------------------------------------------------------------------
 	# `and` / `or` / `not` on bools are logical. The same words on integers are
@@ -356,7 +365,7 @@ union_function function do
 		string case
 			# Stack: [reference<string>]
 			greeting const reference<string>
-			greeting " says hello!" +
+			greeting " says hello!" ~
 			# Stack: ["Myself says hello!"]
 			drop
 		end
@@ -558,7 +567,7 @@ Person implement
 	do
 		self const reference<Person>
 
-		self.name " says hello!" +
+		self.name " says hello!" ~
 		return
 	end with |string error.Error|
 end

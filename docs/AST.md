@@ -149,6 +149,7 @@ Surface `{ ... }` is one production. The AST distinguishes hashmap vs struct by 
 ```rust
 Operator =
       Arithmetic(ArithmeticOp)
+    | Concat                               // `~`; string join, not overloaded `+`
     | Logical(LogicalOp)
     | Comparison(ComparisonOp)
     | Bitwise(BitwiseOp)
@@ -158,6 +159,7 @@ LogicalOp    = And | Or | Not
 ComparisonOp = Eq | Ne | Gt | Lt | Ge | Le
 BitwiseOp    = And | Or | Xor | Lshift | Rshift | Not
 // `and` / `or` / `not` are overloaded: bool → logical, integer → bitwise
+// `+` is arithmetic / pointer offset only; concatenation is `~`
 
 StackOp  = Drop | Dup | Swap | Rot | Unrot | Pop
 MemoryOp = Borrow | Move | Load | Store

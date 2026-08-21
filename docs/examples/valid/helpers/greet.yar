@@ -5,6 +5,6 @@ hello public function
 do
 	"std.io" io require
 	name const string
-	"Hello, " name + "!" +
+	"Hello, " name ~ "!" ~
 	io.write_line call
 end

@@ -236,6 +236,7 @@ map_or_struct_literal =
 
 operator =
 		arithmetic_op
+	| concatenation_op
 	| logical_op
 	| comparison_op
 	| bitwise_op
@@ -243,6 +244,10 @@ operator =
 
 arithmetic_op =
 	"+" | "-" | "*" | "/" | "//" | "%" | "^" ;
+
+(* String join only. `+` is never overloaded for concatenation. *)
+concatenation_op =
+	"~" ;
 
 logical_op =
 	"and" | "or" | "not" ;

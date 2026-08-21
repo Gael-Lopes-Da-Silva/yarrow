@@ -19,7 +19,7 @@ main function do
 
 		string case
 			msg const reference<string>
-			msg "!" +
+			msg "!" ~
 			io.write_line call
 		end
 
