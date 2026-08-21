@@ -1,6 +1,6 @@
-write_line function
-    string
+write_line public function
+	string
 do
-    @print
-    @print_newline
+	@print
+	@print_newline
 end

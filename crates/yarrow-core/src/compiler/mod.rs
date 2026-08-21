@@ -21,7 +21,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
 use crate::parser::ast::{
-    BinOp, Expr, Function, MatchCase, MatchCaseKind, Primitive, Program, StackOp, Stmt, UnOp,
+    BinOp, Expr, Function, MatchCase, MatchCaseKind, ParamModifier, Primitive, Program, StackOp,
+    Stmt, UnOp, Visibility,
 };
 use crate::parser::literals::{
     decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
@@ -134,6 +135,10 @@ struct FnState {
 struct LoopCtx {
     break_to: Block,
     continue_to: Block,
+    /// Current iterable element for `std.loop` `value` (set each iteration).
+    value: Option<(Value, Ty)>,
+    /// Current iterable index for `std.loop` `index`.
+    index: Option<Value>,
 }
 
 /// A program-wide enum declaration: each member name bound to its value
@@ -210,6 +215,8 @@ pub struct Compiler {
     /// Fully-qualified names of functions declared `unsafe`; calling them from
     /// a non-unsafe context is rejected.
     unsafe_funcs: std::collections::HashSet<String>,
+    /// Fully-qualified names declared `public` (exported across `require`).
+    public_funcs: std::collections::HashSet<String>,
     finalized: bool,
 }
 
@@ -248,6 +255,7 @@ impl Compiler {
             item_aliases: HashMap::new(),
             error_ids: HashMap::new(),
             unsafe_funcs: std::collections::HashSet::new(),
+            public_funcs: std::collections::HashSet::new(),
             finalized: false,
         })
     }
@@ -275,6 +283,7 @@ impl Compiler {
         self.union_desc_ids.clear();
         self.error_ids.clear();
         self.unsafe_funcs.clear();
+        self.public_funcs.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
@@ -423,6 +432,9 @@ impl Compiler {
                         if f.is_unsafe {
                             self.unsafe_funcs.insert(name.clone());
                         }
+                        if matches!(f.visibility, Some(Visibility::Public)) {
+                            self.public_funcs.insert(name.clone());
+                        }
                         self.declare_function(f, &name)?;
                     }
                     Stmt::Implement(imp) => {
@@ -434,6 +446,11 @@ impl Compiler {
                                 // Method calls resolve to `Type::method` without
                                 // the module prefix.
                                 self.unsafe_funcs
+                                    .insert(format!("{}::{}", imp.target, f.name));
+                            }
+                            if matches!(f.visibility, Some(Visibility::Public)) {
+                                self.public_funcs.insert(name.clone());
+                                self.public_funcs
                                     .insert(format!("{}::{}", imp.target, f.name));
                             }
                             self.declare_function(f, &name)?;
@@ -648,6 +665,9 @@ impl Compiler {
             } else {
                 for item in &m.program.items {
                     if let Stmt::Function(f) = item {
+                        if !matches!(f.visibility, Some(Visibility::Public)) {
+                            continue;
+                        }
                         if self.func_ids.contains_key(&f.name) {
                             return Err(CompileError::new(
                                 format!(
@@ -1339,18 +1359,22 @@ impl Compiler {
         let param_vals: Vec<Value> = b.block_params(entry).to_vec();
         let mut stack: Vec<Slot> = Vec::new();
         for (i, t) in params_ty.iter().enumerate() {
-            // Heap-typed params are borrowed from the caller; the callee must
-            // not free them.
-            let own = if self.is_heap(*t) {
-                Own::Borrow
+            let modifier = f.params[i].modifier;
+            // `copy` deep-copies heap values into an owned local; other heap
+            // params are borrowed from the caller. Scalars are always trivial.
+            let (value, own) = if matches!(modifier, Some(ParamModifier::Copy)) && self.is_heap(*t)
+            {
+                let cloned = self.emit_deep_copy(&mut b, &mut st, param_vals[i], *t)?;
+                (cloned, Own::Owned)
+            } else if self.is_heap(*t) {
+                (param_vals[i], Own::Borrow)
             } else {
-                Own::Trivial
+                (param_vals[i], Own::Trivial)
             };
-            stack.push(Slot {
-                value: param_vals[i],
-                ty: *t,
-                own,
-            });
+            // `mutable` on `reference<T>` is checked when the reference is
+            // formed at the call site; the callee still receives a borrow.
+            let _ = matches!(modifier, Some(ParamModifier::Mutable));
+            stack.push(Slot { value, ty: *t, own });
         }
 
         // In a method body, the receiver is param 0. Bind `self` to it so a
@@ -1427,7 +1451,13 @@ impl Compiler {
         s: &Stmt,
     ) -> CResult<()> {
         match s {
-            Stmt::Expr(e) => self.compile_expr(b, st, stack, e)?,
+            Stmt::Expr(e) => {
+                if self.emit_loop_control(b, st, e)? {
+                    // `loop.break` / `loop.continue` terminate this block.
+                } else {
+                    self.compile_expr(b, st, stack, e)?;
+                }
+            }
 
             Stmt::VarDecl {
                 name,
@@ -1489,6 +1519,74 @@ impl Compiler {
                             }
                             let slot = self.pop_slot(stack, "value")?;
                             (slot, slot.value, slot.ty)
+                        }
+                    }
+                    Some(Expr::Seq(elems))
+                        if matches!(t, Ty::Hashmap { .. } | Ty::List { .. } | Ty::Array { .. }) =>
+                    {
+                        // Same as struct: prior words (e.g. `… call unwrap`) are
+                        // side effects; the trailing container is the value.
+                        for el in &elems[..elems.len().saturating_sub(1)] {
+                            self.compile_expr(b, st, stack, el)?;
+                        }
+                        let last = elems.last().ok_or_else(|| {
+                            CompileError::new(
+                                "empty initializer sequence",
+                                Location::default(),
+                                "E306",
+                            )
+                        })?;
+                        match (t, last) {
+                            (Ty::Hashmap { .. }, Expr::Map(pairs)) => {
+                                let (handle, _, _) =
+                                    self.emit_map_literal(b, st, stack, pairs, Some(t))?;
+                                (
+                                    Slot {
+                                        value: handle,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    handle,
+                                    t,
+                                )
+                            }
+                            (Ty::List { elem }, Expr::List(list_elems)) => {
+                                let (handle, _) = self.emit_list_literal(
+                                    b,
+                                    st,
+                                    stack,
+                                    list_elems,
+                                    Some(elem_ty(elem)),
+                                )?;
+                                (
+                                    Slot {
+                                        value: handle,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    handle,
+                                    t,
+                                )
+                            }
+                            (Ty::Array { elem, count }, Expr::Array(arr_elems)) => {
+                                let elem = scalar_ty(elem);
+                                let ptr = self.alloc_array(b, st, elem, count)?;
+                                self.init_array_elements(b, st, stack, elem, ptr, arr_elems)?;
+                                (
+                                    Slot {
+                                        value: ptr,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    ptr,
+                                    t,
+                                )
+                            }
+                            _ => {
+                                self.compile_expr(b, st, stack, last)?;
+                                let slot = self.pop_slot(stack, "value")?;
+                                (slot, slot.value, slot.ty)
+                            }
                         }
                     }
                     Some(Expr::Array(elems)) if matches!(t, Ty::Array { .. }) => {
@@ -2888,6 +2986,16 @@ impl Compiler {
         b.switch_to_block(body_blk);
         *stack = pre.clone();
         let idx = b.use_var(idx_v);
+        let base = b.use_var(ptr_v);
+        let stride = b.ins().iconst(irtypes::I64, elem_size);
+        let off = b.ins().imul(idx, stride);
+        let addr = b.ins().iadd(base, off);
+        let elem_val = b.ins().load(
+            elem.clty(self.ptr_type),
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            addr,
+            0,
+        );
         let mut saved: Vec<SavedLoopVar> = Vec::new();
         if let Some(name) = index
             && name != "_"
@@ -2902,18 +3010,8 @@ impl Compiler {
         if let Some(name) = value
             && name != "_"
         {
-            let base = b.use_var(ptr_v);
-            let stride = b.ins().iconst(irtypes::I64, elem_size);
-            let off = b.ins().imul(idx, stride);
-            let addr = b.ins().iadd(base, off);
-            let val = b.ins().load(
-                elem.clty(self.ptr_type),
-                cranelift_codegen::ir::MemFlagsData::trusted(),
-                addr,
-                0,
-            );
             let loop_var = b.declare_var(elem.clty(self.ptr_type));
-            b.def_var(loop_var, val);
+            b.def_var(loop_var, elem_val);
             let prev = st
                 .vars
                 .insert(name.to_string(), (loop_var, elem, Own::Trivial));
@@ -2922,6 +3020,8 @@ impl Compiler {
         st.loops.push(LoopCtx {
             break_to: end,
             continue_to: step,
+            value: Some((elem_val, elem)),
+            index: Some(idx),
         });
         self.compile_body(b, st, stack, body)?;
         st.loops.pop();
@@ -2981,6 +3081,8 @@ impl Compiler {
         st.loops.push(LoopCtx {
             break_to: end,
             continue_to: header,
+            value: None,
+            index: None,
         });
         self.compile_body(b, st, stack, body)?;
         st.loops.pop();
@@ -3019,20 +3121,25 @@ impl Compiler {
                         "E364",
                     ));
                 }
-                let v = b.ins().iconst(irtypes::I64, n as i64);
+                let ty = int_literal_ty(n);
+                let v = b.ins().iconst(ty.clty(self.ptr_type), n as i64);
                 stack.push(Slot {
                     value: v,
-                    ty: Ty::I64,
+                    ty,
                     own: Own::Trivial,
                 });
             }
             Expr::Float { value } => {
                 let n = decode_float_literal(value)
                     .map_err(|m| CompileError::new(m, Location::default(), "E363"))?;
-                let v = b.ins().f64const(n);
+                let ty = float_literal_ty(n);
+                let v = match ty {
+                    Ty::F32 => b.ins().f32const(n as f32),
+                    _ => b.ins().f64const(n),
+                };
                 stack.push(Slot {
                     value: v,
-                    ty: Ty::F64,
+                    ty,
                     own: Own::Trivial,
                 });
             }
@@ -3081,6 +3188,16 @@ impl Compiler {
                 }
             }
             Expr::Member { base, member } => {
+                // `std.loop` helpers: `loop.value` / `loop.index` push the
+                // current iterable binding (no `call`).
+                if let Some((v, ty)) = self.loop_intrinsic_value(st, base, member) {
+                    stack.push(Slot {
+                        value: v,
+                        ty,
+                        own: Own::Trivial,
+                    });
+                    return Ok(());
+                }
                 // `error.CustomError` creates a tagged error value.
                 if let Expr::Variable { name } = base.as_ref()
                     && name == "error"
@@ -4093,6 +4210,7 @@ impl Compiler {
         if self.unsafe_funcs.contains(&name) {
             self.require_unsafe(st, &format!("call to '{name}'"))?;
         }
+        self.require_public_export(&name, st.module.as_deref())?;
         // Undefined function names fall back to the host registry: the call
         // is lowered generically from the table's signature.
         if !self.sig_tys.contains_key(&name) {
@@ -4370,12 +4488,129 @@ impl Compiler {
                 stack.push(third);
                 stack.push(a);
             }
-            StackOp::Pop | StackOp::Drop => {
-                let slot = self.pop_slot(stack, "pop/drop")?;
+            StackOp::Pop => {
+                let slot = self.pop_slot(stack, "pop")?;
                 self.consume(b, st, slot)?;
+            }
+            StackOp::Drop => {
+                // `drop` clears the whole stack and releases borrows on it.
+                while let Some(slot) = stack.pop() {
+                    self.consume(b, st, slot)?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// `loop.break` / `loop.continue` as expression statements.
+    /// Returns `true` when `e` was a loop-control intrinsic.
+    fn emit_loop_control(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        e: &Expr,
+    ) -> CResult<bool> {
+        let Some((alias, member)) = loop_helper_parts(e) else {
+            return Ok(false);
+        };
+        if !self.is_std_loop_alias(alias) {
+            return Ok(false);
+        }
+        match member {
+            "break" => {
+                let loop_ctx = st.loops.last().ok_or_else(|| {
+                    CompileError::new(
+                        "'loop.break' outside of a loop",
+                        Location::default(),
+                        "E321",
+                    )
+                })?;
+                b.ins().jump(loop_ctx.break_to, &[]);
+                self.dead_block(b);
+                Ok(true)
+            }
+            "continue" => {
+                let loop_ctx = st.loops.last().ok_or_else(|| {
+                    CompileError::new(
+                        "'loop.continue' outside of a loop",
+                        Location::default(),
+                        "E322",
+                    )
+                })?;
+                b.ins().jump(loop_ctx.continue_to, &[]);
+                self.dead_block(b);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Resolve `loop.value` / `loop.index` to the current iterable binding.
+    fn loop_intrinsic_value(&self, st: &FnState, base: &Expr, member: &str) -> Option<(Value, Ty)> {
+        let Expr::Variable { name } = base else {
+            return None;
+        };
+        if !self.is_std_loop_alias(name) {
+            return None;
+        }
+        let loop_ctx = st.loops.last()?;
+        match member {
+            "value" => loop_ctx.value,
+            "index" => loop_ctx.index.map(|v| (v, Ty::I64)),
+            _ => None,
+        }
+    }
+
+    fn is_std_loop_alias(&self, alias: &str) -> bool {
+        self.aliases.get(alias).is_some_and(|p| p == "std.loop")
+    }
+
+    /// Non-`public` functions do not export across `require`.
+    fn require_public_export(&self, fq: &str, caller_module: Option<&str>) -> CResult<()> {
+        let Some((mod_path, _)) = fq.split_once("::") else {
+            return Ok(());
+        };
+        // `Type::method` in the main program has no module path dots-only form;
+        // module paths contain `.` (e.g. `std.io`, `helpers.greet`).
+        if !mod_path.contains('.') {
+            return Ok(());
+        }
+        if caller_module == Some(mod_path) {
+            return Ok(());
+        }
+        if self.public_funcs.contains(fq) {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            format!("'{fq}' is not public and cannot be used across 'require'"),
+            Location::default(),
+            "E381",
+        ))
+    }
+
+    /// Deep-copy a heap value for a `copy` parameter. Scalars never reach here.
+    fn emit_deep_copy(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut FnState,
+        value: Value,
+        ty: Ty,
+    ) -> CResult<Value> {
+        match ty {
+            Ty::String => {
+                // Clone by joining with an empty string.
+                let zero = b.ins().iconst(self.ptr_type, 0);
+                let zlen = b.ins().iconst(irtypes::I64, 0);
+                let empty = self.rt_call(b, st, "str_new", vec![zero, zlen])?;
+                let out = self.rt_call(b, st, "str_join", vec![value, empty[0]])?;
+                Ok(out[0])
+            }
+            other => Err(CompileError::unsupported(
+                format!("'copy' for {other:?} is not yet supported"),
+                Location::default(),
+                "E336",
+            )),
+        }
     }
 
     fn emit_not(
@@ -4864,5 +5099,46 @@ fn for_source_is_condition(source: &Expr) -> bool {
         Expr::ApplyBin(op) => matches!(op, Eq | Ne | Gt | Gte | Lt | Lte | And | Or),
         Expr::Seq(xs) => xs.last().is_some_and(for_source_is_condition),
         _ => false,
+    }
+}
+
+/// Smallest unsigned/signed integer type that fits `n` (TYPE_SYSTEM.md).
+fn int_literal_ty(n: i128) -> Ty {
+    if n >= 0 {
+        if n <= u8::MAX as i128 {
+            Ty::U8
+        } else if n <= u16::MAX as i128 {
+            Ty::U16
+        } else if n <= u32::MAX as i128 {
+            Ty::U32
+        } else {
+            Ty::U64
+        }
+    } else if n >= i8::MIN as i128 {
+        Ty::I8
+    } else if n >= i16::MIN as i128 {
+        Ty::I16
+    } else if n >= i32::MIN as i128 {
+        Ty::I32
+    } else {
+        Ty::I64
+    }
+}
+
+/// Float literals: prefer `f64` for Cranelift lowering for now.
+fn float_literal_ty(_n: f64) -> Ty {
+    Ty::F64
+}
+
+fn loop_helper_parts(e: &Expr) -> Option<(&str, &str)> {
+    match e {
+        Expr::Member { base, member } => {
+            if let Expr::Variable { name } = base.as_ref() {
+                Some((name.as_str(), member.as_str()))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }

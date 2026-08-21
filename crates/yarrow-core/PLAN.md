@@ -26,9 +26,9 @@ Docs are up to date. The compiler is **not**. Prefer the docs when code and docs
 | ----------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing |
 | Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟡 Partial | Cranelift JIT; `~` concat wired; fallible `\|T Err\|` / named errors still Stage 4 |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                  |
-| Std library | 🟡 Partial | Embedded via `build.rs`; names and modules do not match the grammar                |
+| Compiler    | 🟢 Stage 3 | JIT; `~` concat; drop clears stack; smallest-fit ints; visibility; loop intrinsics |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist |
+| Std library | 🟡 Partial | `public` APIs; `push_last` / `allocate`; `std.loop` stub; region/error/fs still missing |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -181,17 +181,18 @@ Priority order:
 
 ---
 
-### Stage 3: Core compiler semantics sync 🟡
+### Stage 3: Core compiler semantics sync ✅
 
 Align lowering and type checking with `TYPE_SYSTEM.md` / `MEMORY_MODEL.md` / `RUNTIME.md`.
 
 1. **`~` concat** - ✅ string join via `str_join`; reject string `+` (`E335`)
-2. **Smallest-fit literals** - per type system rules
-3. **`copy` / `mutable` params** - deep-copy vs move-in; mutable reference receivers
-4. **Visibility** - non-`public` entities do not export across `require`
-5. **Field `set`** - finish struct field assignment
-6. **Numeric gaps** - float `%` / `^` or documented reject matching spec
-7. **Drop / stack hygiene** - `drop` clears and releases borrows as specified
+2. **Smallest-fit literals** - ✅ integers pick smallest unsigned/signed; floats still `f64` for Cranelift
+3. **`copy` / `mutable` params** - ✅ `copy` deep-copies strings (other heap types still `E336`); scalars trivial
+4. **Visibility** - ✅ non-`public` functions do not export across `require` (`E381`); std APIs marked `public`
+5. **Field `set`** - already implemented for struct/pointer members; remaining E301 paths unchanged
+6. **Numeric gaps** - float `%` / `^` still `E334` (documented reject)
+7. **Drop / stack hygiene** - ✅ `drop` clears the whole stack; `pop` removes one
+8. **Gate support** - `std.loop` intrinsics (`value`/`index`/`break`/`continue`); `list.push_last`; Seq-trailing container initializers
 
 **Gate:** `docs/examples/valid/01`–`06`, `13` compile and run; string examples use `~`.
 

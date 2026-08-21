@@ -3,35 +3,35 @@
 # `unsafe` block. The implementation wraps the compiler-level primitives
 # (`@alloc`/`@free`/`@load`/`@store`) inside explicit `unsafe` regions.
 
-alloc unsafe function
-    i64
+allocate public unsafe function
+	i64
 do
-    unsafe
-        @alloc
-    end
+	unsafe
+		@alloc
+	end
 end with i64
 
-free unsafe function
-    i64
+free public unsafe function
+	i64
 do
-    unsafe
-        @free
-    end
+	unsafe
+		@free
+	end
 end
 
-load unsafe function
-    i64
+load public unsafe function
+	i64
 do
-    unsafe
-        @load
-    end
+	unsafe
+		@load
+	end
 end with i64
 
-store unsafe function
-    i64
-    i64
+store public unsafe function
+	i64
+	i64
 do
-    unsafe
-        @store
-    end
+	unsafe
+		@store
+	end
 end
