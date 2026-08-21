@@ -1,123 +1,292 @@
 # Yarrow Core Implementation Plan
 
-Tracks progress against `docs/syntax.yar` (source of truth). Context and rules live in `AGENTS.md`.
+Tracks bringing `crates/yarrow-core` in line with the **current** language docs.
 
-## Pipeline status
+## Source of truth
 
-| Component           | Status                               | Notes                               |
-| ------------------- | ------------------------------------ | ----------------------------------- |
-| Tokenizer           | ✅ Complete                          | `crates/yarrow-core/src/tokenizer/` |
-| Parser              | ✅ Complete                          | Current AST + `require` forms       |
-| Compiler            | 🟡 Stages 0–5 mostly done            | Stage 6 next                        |
-| Runtime             | ✅ Complete                          | Host heap + `Safety` metadata       |
-| Std library         | 🟡 Pure-Yarrow migration in progress | Stage 5                             |
-| Unsafe memory model | ✅ Complete                          | Stage 4                             |
+| Role                          | Path                                                 |
+| ----------------------------- | ---------------------------------------------------- |
+| Language tour (authoritative) | [`docs/GRAMMAR.md`](../../docs/GRAMMAR.md)           |
+| Formal syntax                 | [`docs/SYNTAX.md`](../../docs/SYNTAX.md)             |
+| Intended AST shape            | [`docs/AST.md`](../../docs/AST.md)                   |
+| Types / checking              | [`docs/TYPE_SYSTEM.md`](../../docs/TYPE_SYSTEM.md)   |
+| Ownership / unsafe            | [`docs/MEMORY_MODEL.md`](../../docs/MEMORY_MODEL.md) |
+| Runtime / errors / modules    | [`docs/RUNTIME.md`](../../docs/RUNTIME.md)           |
+| Source style                  | [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md)   |
+| Conformance corpus            | [`docs/examples/`](../../docs/examples/README.md)    |
+| Agent rules                   | [`AGENTS.md`](../../AGENTS.md)                       |
+
+Docs are up to date. The compiler is **not**. Prefer the docs when code and docs disagree. Do not invent features that are absent from the docs.
 
 ---
 
-## Stage 0: Restore the build ✅
+## Pipeline status (honest)
 
-Port compiler to the new AST. Done.
+| Component   | Status     | Reality                                                                                                                |
+| ----------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Tokenizer   | 🟡 Partial | Most keywords/ops exist; missing `~`, `\|`, `public`/`private`, `error`, `copy`; still has language `break`/`continue` |
+| Parser/AST  | 🟡 Partial | Parses a large subset, but AST and surface forms diverge from `AST.md` / `SYNTAX.md`                                   |
+| Compiler    | 🟡 Partial | Cranelift JIT path works for many programs; semantics and APIs lag the spec                                            |
+| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                                                      |
+| Std library | 🟡 Partial | Embedded via `build.rs`; names and modules do not match the grammar                                                    |
 
-## Stage 1: New operators ✅
+Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
-- `unrot`, `typeof`, `borrow`, `move`
-- Ownership / borrow / use-after-move tracking
+---
 
-Done.
+## What changed since the old plan
 
-## Stage 2: Control flow ✅
+The previous plan tracked `docs/syntax.yar` and treated stages 0–4 as complete. The language surface has moved. Important deltas:
 
-Done.
+| Topic            | Old / current code                         | Current docs                                       |
+| ---------------- | ------------------------------------------ | -------------------------------------------------- |
+| Concatenation    | `+` on strings                             | `~` only; `+` is numeric / pointer offset          |
+| Fallible returns | `with T or Error` (keyword `or`)           | `with \|T Err\|` union type literal                |
+| Errors           | Ad hoc `error.*` tags / `Primitive::Error` | `Name error … end` (+ optional injection)          |
+| Visibility       | Not parsed                                 | `public` / `private` on types, fields, functions   |
+| Params           | Bare types only                            | `type [copy \| mutable]`                           |
+| Loop control     | Keywords `break` / `continue`              | `std.loop` helpers (`loop.break`, `loop.value`, …) |
+| Iterable `for`   | Optional binder names before `for`         | Iterable on stack; value/index via `std.loop`      |
+| `std.mem`        | `alloc`                                    | `allocate`                                         |
+| `std.list`       | `push`                                     | `push_last`                                        |
+| `std.region`     | `make_region` / `put_region` / …           | `create` / `put` / `free`                          |
+| Gate program     | `docs/syntax.yar`                          | `docs/GRAMMAR.md` tour + `docs/examples/**`        |
+| 128-bit types    | Present in AST primitives                  | Not in `SYNTAX.md` primitives (drop or defer)      |
 
-## Stage 3: Unions ✅
+Keep useful runtime/compiler machinery from the old stages (ownership sets, unsafe contexts, module loader, Cranelift pipeline). Re-aim it at the new surface.
 
-Done. Member borrows use normal `reference<T>`.
+---
 
-## Stage 4: Memory access and unsafe ✅
+## Gap inventory
 
-- `unsafe` keyword, `unsafe … end`, `name unsafe function`
-- `Safety { Safe, Unsafe }` on host functions
-- Reject unsafe ops outside unsafe context (`E370`)
-- Typed `load`/`store`, pointer arithmetic, member access through `pointer<T>`, raw alloc/free
+### Tokenizer (`src/tokenizer/`)
 
-Gate: `pointer_function` + `unsafe … end` compile and run; bare unsafe ops fail with `E370`.
+**Present and still valid:** arithmetic and comparison ops, `//`, logical/bitwise words, stack ops (`drop`/`dup`/`swap`/`rot`/`unrot`/`pop`), `typeof`, `borrow`/`move`, `load`/`store`, control keywords (`if`/`else`/`for`/`match`/`case`/`defer`/`handle`/`fallback`/`unwrap`), `function`/`do`/`with`/`end`/`call`/`return`, mutability (`mutable`/`const`/`static`/`set`), `struct`/`implement`/`enum`/`union`, `require`, `unsafe`, literals, `@` builtins, comments `#`.
 
-Done.
+**Missing vs docs:**
 
-## Stage 5: Std library in pure Yarrow 🟡
+- `~` → concatenation operator
+- `|` → union type literal delimiters (`|i32 AppError|`)
+- `public` / `private`
+- `error` (error-type declaration keyword)
+- `copy` (parameter modifier)
 
-Move std to `crates/yarrow-core/lib/std/` via `build.rs` / `STD_MODULES`.
+**Extra vs docs (decide in Stage 1):**
 
-### 5.1 Build infrastructure ✅
+- `break` / `continue` as language keywords (docs put these in `std.loop`)
 
-- Recursive glob of `lib/std/**/*.yar`
-- Emit `STD_MODULES` table
-- Verified: `"std.io" io require`, `"std.math" require`, etc.
+### Parser / AST (`src/parser/`)
 
-### 5.2 `std.mem` ✅
+**Roughly working:** program of statements; functions (`unsafe function`); structs/enums/unions/implement; require; var decl / set; if/else; match (value + type case); for (condition + iterable, with old binder forms); defer; handle/fallback; move; unwrap/call; containers; generics `array`/`list`/`hashmap`/`pointer`/`reference`; nested functions.
 
-- `alloc`, `free`, `load`, `store` as `unsafe function`s wrapping `@`-primitives
-- Parser disambiguation for `load`/`store` as both keywords and member names
+**Diverges from `AST.md` / `SYNTAX.md`:**
 
-### 5.3 Item-import resolution ✅
+| Spec                                     | Code today                                                     |
+| ---------------------------------------- | -------------------------------------------------------------- |
+| Flat stack `word`s (`ApplyBin`, …)       | Often builds nested `Expr::Binary` trees from an operand stack |
+| `Program { items, main }`                | Flat `items: Vec<Stmt>`; `main` not distinguished              |
+| `Visibility` on functions/structs/fields | Absent                                                         |
+| `Error` top-level / `error_decl`         | Absent                                                         |
+| `ParamModifier` (`copy` / `mutable`)     | Params are bare `Type` only                                    |
+| `Operator::Concat` / `~`                 | Absent; string join via `BinOp::Plus`                          |
+| `\|T U\|` union literals                 | `with` parsed as `T or U or …` via keyword `or`                |
+| Enum optional underlying type            | `EnumDecl` has no carrier type                                 |
+| Struct vs hashmap `{}` by key shape      | Map-oriented; struct literals incomplete relative to grammar   |
+| Iterable `for` without binders           | Still accepts `iterable name [index] for`                      |
 
-- Parent-first: `"std.math.sqrt" require` imports only the function
-- Function wins over module file; warn on ambiguity
+### Compiler (`src/compiler/`)
 
-### 5.4 Remaining standard modules
+**Working enough to build on:** JIT module, function signatures, many operators, calls, unwrap/handle envelope (old shape), borrow/move tracking seeds, unsafe gate (`E370`), typed pointer load/store + arithmetic, regions via host builtins, list/map/string host ops, module/`require` resolution (std embed + item import), enums, some union match, structs/methods, defer.
 
-| Module       | Status  | Notes                                                           |
-| ------------ | ------- | --------------------------------------------------------------- |
-| `std.io`     | Partial | `write_line`, `print`, …; keep low-level OS unsafe where needed |
-| `std.string` | Partial | `len`, `join`, comparisons                                      |
-| `std.list`   | Partial | `push`, `get`, `set`, `len`                                     |
-| `std.map`    | Partial | `get`, `set`, `len`                                             |
-| `std.region` | Partial | `make_region`, `put_region`, `free_region`                      |
-| `std.math`   | Partial | `sqrt` and pure arithmetic                                      |
-| `std.fs`     | Partial | High-level file ops; raw OS may be unsafe                       |
+**Known holes / mismatches:**
 
-### 5.5 Safe abstractions over unsafe
+- String `+` concat → must become `~` only
+- Anonymous / `|T U|` union types still rejected in places (`E308`)
+- Field `set` unsupported (`E301`)
+- Float `%` / `^` unsupported (`E334`)
+- Fallible ABI still “success or `Error`”, not named `error` types + `|T Err|`
+- Visibility / export checks missing
+- `copy` parameters missing
+- Smallest-fit integer/float literal typing incomplete vs type system
+- Ownership gates not fully aligned with `docs/examples/invalid/*`
+- Region escape not fully checked
+- `run_main` limited return types (`E360`)
+- Internals still expose old builtin names (`make_region`, `list_push`, `alloc`, …)
 
-Prefer the pattern: unsafe implementation → establish invariant → safe public API.
-The user should not need unsafe merely because an implementation internally uses raw memory.
-This is an important part of keeping the language pleasant while still allowing systems-level programming.
+### Std (`lib/std/`)
 
-### 5.6 Host surface cleanup
+| Module       | Spec expectation                      | Status                                              |
+| ------------ | ------------------------------------- | --------------------------------------------------- |
+| `std.io`     | `write_line`, …                       | Partial (`write_line`)                              |
+| `std.mem`    | `allocate`, `free`, `load`, `store`   | Present as `alloc` (rename)                         |
+| `std.list`   | `push_last`, `get`, `put`, `len`, …   | Present as `push` / `put` / … (rename + generalize) |
+| `std.map`    | hashmap helpers                       | Partial, fixed `hashmap<i64 i32>`                   |
+| `std.string` | `len`, join helpers                   | Partial; join overlaps `~`                          |
+| `std.math`   | `sqrt`, …                             | Partial                                             |
+| `std.region` | `create`, `put`, `free`               | **Missing file**; builtins use old names            |
+| `std.loop`   | `break`, `continue`, `value`, `index` | **Missing**                                         |
+| `std.error`  | shared error members                  | **Missing**                                         |
+| `std.fs`     | file open/close/…                     | **Missing**                                         |
 
-- Remove redundant `emit_builtin` helpers once pure-Yarrow std covers them
-- Keep only the tiny host surface (`@alloc`/`@free`/`@load`/`@store` behind `std.mem`)
-- Honor `require` alias vs main-scope semantics everywhere
+### Runtime (`src/runtime.rs`)
 
-### Stage 5 gate
+Keep the host surface small. Prefer renaming/wrapping through std rather than growing new raw builtins. Host may keep `@alloc` while Yarrow exposes `mem.allocate`.
 
-`docs/syntax.yar` compiles and runs end-to-end, including `unsafe` regions and `mem.*` calls.
+---
 
-## Stage 6: Remaining spec conformance
+## Implementation stages
 
-- Smallest-fit literal typing
-- `drop` semantics
-- 128-bit numbers
-- Float `%` / `^`
-- `run_main` coverage
-- Full `docs/syntax.yar` execution
-- Ownership/borrow validation:
-  - Use-after-move → compile error
-  - Borrowed mutation → compile error
-  - Borrowed pop → compile error
-  - Region escape → compile error
-  - Raw pointer validity stays the programmer’s responsibility inside `unsafe`
+Gates should prefer `docs/examples/valid/*` and `docs/examples/invalid/*`, then larger slices of the grammar tour. Do not mark a stage ✅ until its gate commands succeed.
+
+### Stage 0: Rebaseline ⬜
+
+- Point this plan (and comments) at `docs/GRAMMAR.md`, not `docs/syntax.yar`
+- Inventory stays as above; fix only blockers for `cargo check` / `cargo clippy`
+- Agree: 128-bit primitives (`i128`/`u128`/`f128`) are **out of spec**; remove or quarantine behind “unsupported”
+
+**Gate:** `cargo fmt --all && cargo check && cargo clippy` green; plan matches docs.
+
+---
+
+### Stage 1: Tokenizer surface sync ⬜
+
+Bring lexing in line with `SYNTAX.md`.
+
+1. Add `TokenKind` + lexing for `~` (concat)
+2. Add `|` (pipe) for union type literals
+3. Add keywords: `public`, `private`, `error`, `copy`
+4. Plan removal or demotion of `break` / `continue` keywords once `std.loop` exists (Stage 5); until then, either keep as temporary sugar with a documented debt, or reject them and require `std.loop` early
+
+**Gate:** tokenizer accepts every token appearing in `docs/GRAMMAR.md` and `docs/examples/**/*.yar`; rejects unknown sigils cleanly.
+
+---
+
+### Stage 2: Parser / AST toward the docs ⬜
+
+Update `ast.rs` and `parser/mod.rs` to match `AST.md` / `SYNTAX.md` closely enough that the compiler can be honest.
+
+Priority order:
+
+1. **Concat** - parse `~` as its own op (not `Plus`)
+2. **Visibility** - optional `public`/`private` on functions, structs, fields
+3. **Param modifiers** - `type copy` / `type mutable` on parameters
+4. **Union type literals** - `|T U …|` in `with` and type positions; stop using `or` as a type separator
+5. **`error` declarations** - `Name [QualifiedName] error { Ident } end`
+6. **Enum underlying type** - `Name [type] enum`
+7. **`for` surface** - condition and iterable forms only (no binder names before `for`); prepare for `std.loop` words
+8. **Structural cleanup (can span stages)** - flatten toward stack words; distinguish `main`; struct vs hashmap literals by key shape
+
+**Gate:** parse all of `docs/examples/valid/*.yar` into AST without error (compile may still fail). Invalid examples that are purely syntactic still fail at parse when appropriate.
+
+---
+
+### Stage 3: Core compiler semantics sync ⬜
+
+Align lowering and type checking with `TYPE_SYSTEM.md` / `MEMORY_MODEL.md` / `RUNTIME.md`.
+
+1. **`~` concat** - string (+ autoderef `reference<string>`); reject string `+`
+2. **Smallest-fit literals** - per type system rules
+3. **`copy` / `mutable` params** - deep-copy vs move-in; mutable reference receivers
+4. **Visibility** - non-`public` entities do not export across `require`
+5. **Field `set`** - finish struct field assignment
+6. **Numeric gaps** - float `%` / `^` or documented reject matching spec
+7. **Drop / stack hygiene** - `drop` clears and releases borrows as specified
+
+**Gate:** `docs/examples/valid/01`–`06`, `13` compile and run; string examples use `~`.
+
+---
+
+### Stage 4: Unions, errors, unwrap/handle ⬜
+
+Replace the old `Error` / `or` envelope story with the documented model.
+
+1. Named `error` types + member tags
+2. Optional injection (`Name other.error error … end`)
+3. Fallible returns `|T Err|` / `|void Err|` as union literals
+4. Envelope ABI as in `RUNTIME.md` (env tag + payload)
+5. `unwrap` propagate vs reject when caller cannot error
+6. `handle` + `fallback` + error `match` inside handle
+7. Named union values + `Type case` arms yielding `reference<Member>`
+8. Wire `std.error` members used by the grammar (`error.Error`, `OUT_OF_MEMORY`, …)
+
+**Gate:** `docs/examples/valid/07_unions.yar`, `10_errors.yar`, and invalid `08`/`09` behave as documented.
+
+---
+
+### Stage 5: Std library to match the grammar ⬜
+
+Pure-Yarrow modules under `lib/std/`, names exactly as in `GRAMMAR.md`.
+
+1. Rename APIs: `mem.allocate`, `list.push_last`, …
+2. Add `std.region` (`create` / `put` / `free`) wrapping host region ops
+3. Add `std.loop` (`break` / `continue` / `value` / `index`)
+4. Add `std.error` baseline members
+5. Add / extend `std.fs` as required by the grammar tour
+6. Generalize list/map beyond single hard-coded element types where the compiler allows
+7. Prefer: unsafe host → invariant → safe Yarrow API
+8. Shrink direct `@`-use in user-facing examples; keep host surface tiny
+
+**Gate:** examples `08`, `09`, `11`, `12` plus grammar snippets that `require` these modules compile against the new names.
+
+---
+
+### Stage 6: Ownership, regions, unsafe conformance ⬜
+
+Finish compile-time checks; keep raw pointer validity programmer-owned inside `unsafe`.
+
+1. Use-after-move → error (`invalid/01`)
+2. Mutate / consume while borrowed → error (`invalid/02`)
+3. Pop/drop owner while borrowed → error (`invalid/03`)
+4. Second overlapping borrow → error (`invalid/07`)
+5. Region escape → error
+6. Unsafe call / op outside `unsafe` → `E370` (`invalid/04`)
+7. `pointer<T>` path matches grammar (`valid/11`)
+
+**Gate:** all `docs/examples/invalid/*.yar` fail as annotated; all `valid/*` that exercise memory succeed.
+
+---
+
+### Stage 7: Full grammar-tour conformance ⬜
+
+1. Compile and run the illustrative program in `docs/GRAMMAR.md` (extract or maintain a runnable twin if markdown fencing is awkward)
+2. Close remaining `run_main` / driver gaps needed for demos
+3. Module resolution edge cases (alias vs bare require, item import) per `RUNTIME.md`
+4. Remove dead compatibility paths (`or`-return parsing, string `+`, old std names, keyword `break`/`continue` if fully replaced)
+
+**Gate:** grammar tour + full `docs/examples/valid/**` run; `cargo check` / `clippy` green.
+
+---
+
+## Mapping from the old stages
+
+| Old stage                         | Disposition                                          |
+| --------------------------------- | ---------------------------------------------------- |
+| 0 Restore build                   | Absorbed into Stage 0                                |
+| 1 New operators / ownership seeds | Keep machinery; re-verify under Stages 3 and 6       |
+| 2 Control flow                    | Keep; adjust `for` / loop helpers in Stages 2 and 5  |
+| 3 Unions                          | Reopen under Stage 4 (spec changed)                  |
+| 4 Unsafe / pointers               | Keep; re-gate under Stage 6                          |
+| 5 Pure-Yarrow std                 | Reopen as Stage 5 with **new** API names and modules |
+| 6 Remaining conformance           | Split across Stages 3–7                              |
 
 ---
 
 ## Definition of done
 
-1. `docs/syntax.yar` is the language source of truth and runs.
-2. Stack ownership and safe borrowing are compile-time checked.
-3. Regions provide structured heap lifetime management.
-4. Safe references cannot escape their owner/region.
-5. No user-visible lifetime parameters.
-6. Raw memory ops require `unsafe`; `unsafe` does not disable type/stack/ownership/borrow checks.
-7. Std library is pure Yarrow except for a tiny host surface.
-8. `require` follows `"<path>" [<scope>] require` and its resolution rules.
-9. `cargo check` and `cargo clippy` stay green.
+1. Docs remain authoritative; code matches `GRAMMAR.md` / `SYNTAX.md`.
+2. Tokenizer, parser, and AST expose the documented surface (`~`, `\|T U\|`, visibility, `error`, `copy`, …).
+3. Compiler enforces stack types, ownership, borrow, regions, and unsafe boundaries as documented.
+4. Std module names used in the grammar exist and behave.
+5. `docs/examples/valid/**` compile and run; `docs/examples/invalid/**` are rejected for the stated reason.
+6. No user-visible lifetime parameters.
+7. `unsafe` never disables type, stack, ownership, or borrow checking.
+8. `cargo fmt --all`, `cargo check`, and `cargo clippy` stay green.
+
+---
+
+## Working rules
+
+- Prefer minimal diffs that pass the **current** stage gate.
+- When renaming std or syntax, update compiler and `lib/std` in the same stage; do not leave the grammar examples stranded.
+- Do not add tests unless explicitly asked (`AGENTS.md`); use example programs as gates instead.
+- Update this file’s stage checkboxes and pipeline table when a gate lands.
