@@ -1,0 +1,22 @@
+# mutable / const / static bindings, coercion on declare, and typeof.
+
+"std.io" io require
+
+main function do
+	# Literal u8 coerces to i32 at the declaration site.
+	42 answer mutable i32
+	100 answer set
+
+	7 limit const i32
+	3 pi_approx static i32
+
+	answer typeof i32 == if
+		"answer is i32" io.write_line call
+	else
+		"unexpected type" io.write_line call
+	end
+
+	drop
+	limit pop
+	pi_approx pop
+end
