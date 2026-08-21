@@ -89,12 +89,12 @@ Non-empty list/array literals take a common element type from their contents (wi
 
 ### `pointer<T>` vs `reference<T>`
 
-|           | `reference<T>`                                       | `pointer<T>`                                                       |
-| --------- | ---------------------------------------------------- | ------------------------------------------------------------------ |
-| Safety    | Safe borrow; checked                                 | Unsafe raw address                                                 |
-| Creation  | `borrow`, variable read of non-copy, union match arm | `mem.alloc`, integer coerced into a typed pointer slot, arithmetic |
-| Autoderef | Field/method access and many reads autoderef         | Field access autoderefs inside `unsafe`                            |
-| Typing    | Pointee is `T`; `typeof` reports `T`                 | Pointee is compile-time only                                       |
+|           | `reference<T>`                                       | `pointer<T>`                                                          |
+| --------- | ---------------------------------------------------- | --------------------------------------------------------------------- |
+| Safety    | Safe borrow; checked                                 | Unsafe raw address                                                    |
+| Creation  | `borrow`, variable read of non-copy, union match arm | `mem.allocate`, integer coerced into a typed pointer slot, arithmetic |
+| Autoderef | Field/method access and many reads autoderef         | Field access autoderefs inside `unsafe`                               |
+| Typing    | Pointee is `T`; `typeof` reports `T`                 | Pointee is compile-time only                                          |
 
 `mutable` on a `reference<T>` parameter requires the pointee to be mutable.
 
@@ -147,7 +147,7 @@ Implicit coercions are allowed only in specific contexts. Elsewhere, types must 
 | float        | integer                         | saturating convert                                                             |
 | `bool`       | integer                         | `0` / `1`, then widen if needed                                                |
 | integer      | `bool`                          | non-zero → `true`                                                              |
-| integer      | `pointer<T>` / heap handle slot | address / null-style init (e.g. typed pointer from `alloc`)                    |
+| integer      | `pointer<T>` / heap handle slot | address / null-style init (e.g. typed pointer from `allocate`)                 |
 | pointer-like | `pointer<_>`                    | address passes through when the target is a generic or compatible pointer slot |
 
 Same-width integer types that differ only in signedness may share a representation for coercion purposes when bits match.

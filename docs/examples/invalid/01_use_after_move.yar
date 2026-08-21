@@ -9,5 +9,5 @@ main function do
 	a b move
 
 	# ERROR: a no longer owns the list
-	a 4 list.list_push call unwrap
+	a 4 list.push_last call unwrap
 end

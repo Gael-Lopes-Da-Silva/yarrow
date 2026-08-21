@@ -189,7 +189,7 @@ If a variable still names a value that a region already freed, the runtime’s f
 
 - Batch lifetime for graphs of heap objects (structs, lists, strings) without per-object `pop` timing
 - Arena-style allocation patterns in safe code
-- Not a substitute for `pointer<T>` / manual `mem.alloc`; regions stay inside the safe ownership model
+- Not a substitute for `pointer<T>` / manual `mem.allocate`; regions stay inside the safe ownership model
 
 ---
 
@@ -204,14 +204,14 @@ Raw memory leaves the ownership and borrow model for **validity of addresses**. 
 | `name unsafe function` | Function may perform unsafe ops; **callers** must be in `unsafe`              |
 | `unsafe … end`         | Marks where unsafe ops occur (required even inside an `unsafe function` body) |
 | `pointer<T>`           | Typed raw address; pointee type is compile-time only                          |
-| `std.mem`              | `alloc`, `free`, and raw word load/store wrappers                             |
+| `std.mem`              | `allocate`, `free`, and raw word load/store wrappers                          |
 
 Safe by default: every escape is visible at both definition and use.
 
 ### Pointer operations (inside `unsafe`)
 
 ```yarrow
-16 mem.alloc p mutable pointer<i32>   # address coerces into typed pointer
+16 mem.allocate p mutable pointer<i32>   # address coerces into typed pointer
 p 42 store
 p load                                  # 42
 p 4 + q const pointer<i32>            # byte offset; type stays pointer<i32>
@@ -223,7 +223,7 @@ cp mem.free
 
 | Op                            | Meaning                                                             |
 | ----------------------------- | ------------------------------------------------------------------- |
-| `mem.alloc n`                 | Allocate `n` bytes; push address (integer / pointer after coercion) |
+| `mem.allocate n`              | Allocate `n` bytes; push address (integer / pointer after coercion) |
 | `mem.free`                    | Return block to the allocator                                       |
 | `pointer value store`         | Typed write of pointee                                              |
 | `pointer load`                | Typed read of pointee                                               |
@@ -243,7 +243,7 @@ cp mem.free
 | Safe                              | Unsafe                              |
 | --------------------------------- | ----------------------------------- |
 | Stack / variable ownership        | `pointer<T>` address validity       |
-| `borrow` / `move` / single borrow | Manual `alloc` / `free`             |
+| `borrow` / `move` / single borrow | Manual `allocate` / `free`          |
 | Regions                           | Untyped `mem.load` / `mem.store`    |
 | `reference<T>` autoderef          | Pointer autoderef for fields        |
 | Compile-time escape checks        | No lifetime proof for raw addresses |

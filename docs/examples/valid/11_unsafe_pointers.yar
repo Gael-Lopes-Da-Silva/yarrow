@@ -9,7 +9,7 @@ end
 
 write_cell private unsafe function do
 	unsafe
-		32 mem.alloc cp mutable pointer<Cell>
+		32 mem.allocate cp mutable pointer<Cell>
 		cp.value 7 set
 		cp.value
 		drop
@@ -19,7 +19,7 @@ end
 
 main function do
 	unsafe
-		16 mem.alloc p mutable pointer<i32>
+		16 mem.allocate p mutable pointer<i32>
 		p 42 store
 		p load
 		drop

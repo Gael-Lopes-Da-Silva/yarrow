@@ -14,11 +14,11 @@ main function do
 	(1 2 3) xs mutable list<i32>
 	xs borrow
 	pop
-	xs 4 list.list_push call unwrap
+	xs 4 list.push_last call unwrap
 
 	() ys mutable list<i32>
 	xs ys move
-	ys 5 list.list_push call unwrap
+	ys 5 list.push_last call unwrap
 
 	"ownership ok" io.write_line call
 end

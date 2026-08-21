@@ -7,5 +7,5 @@ main function do
 	xs borrow
 
 	# ERROR: xs is borrowed; cannot mutate until the reference is released
-	xs 4 list.list_push call unwrap
+	xs 4 list.push_last call unwrap
 end

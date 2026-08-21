@@ -7,7 +7,7 @@ main function do
 	[1 2 3] xs static array<i32 3>
 
 	(10 20) ys mutable list<i32>
-	ys 30 list.list_push call unwrap
+	ys 30 list.push_last call unwrap
 
 	{"a" 1 "b" 2} m static hashmap<string i32>
 

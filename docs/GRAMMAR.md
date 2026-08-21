@@ -145,7 +145,6 @@ my_function private function do
 	()    # empty list
 	[]    # empty array
 	{}    # empty hashmap / needs typed context for struct too
-
 	drop
 
 	# -------------------------------------------------------------------------
@@ -425,13 +424,13 @@ memory_function function do
 	(1 2 3) myList mutable list<i32>
 	myList borrow
 	pop
-	myList 4 list.list_push call unwrap
+	myList 4 list.push_last call unwrap
 
 	# move transfers ownership to another variable; source is then unusable.
 	() myList2 mutable list<i32>
 	myList myList2 move
-	# myList 4 list_push call          # error: use after move
-	myList2 4 list.list_push call unwrap
+	# myList 4 list.push_last call          # error: use after move
+	myList2 4 list.push_last call unwrap
 
 	# Cannot drop / pop an owner while a borrow is live:
 	# myList2 borrow
@@ -461,9 +460,9 @@ pointer_function private unsafe function do
 
 	# Even inside an unsafe function, mark the ops with an unsafe block.
 	unsafe
-		# mem.alloc n → raw address (integer); coerce into pointer<T> by
+		# mem.allocate n → raw address (integer); coerce into pointer<T> by
 		# storing into a typed variable.
-		16 mem.alloc p mutable pointer<i32>
+		16 mem.allocate p mutable pointer<i32>
 
 		# Typed store / load through pointer<T>
 		p 42 store
@@ -482,7 +481,7 @@ pointer_function private unsafe function do
 		drop
 
 		# Field access autoderefs through pointer<Struct>
-		32 mem.alloc cp mutable pointer<Cell>
+		32 mem.allocate cp mutable pointer<Cell>
 		cp.value 7 set
 		cp.value
 		drop
@@ -558,7 +557,7 @@ Person implement
 		score const i32
 		self const reference<Person>
 
-		self.scores score list.list_push call unwrap
+		self.scores score list.push_last call unwrap
 		return
 	end with |void error.Error|
 
