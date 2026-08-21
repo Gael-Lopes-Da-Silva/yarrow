@@ -408,11 +408,14 @@ error_function function do
 		MyCustomErrors.MY_CUSTOM_ERROR return
 	end with |i32 MyCustomErrors| # Return an union literal of i32 or MyCustomErrors.
 
-	# risky_operation call unwrap # Pushes the i32 on success; on error, propagates error.CustomError (returned from this function since it can return an error). In a function that cannot error, unwrap would crash the program instead.
-	# io.write_line call
+  # Pushes the i32 on success. On error, propagates MyCustomErrors.MY_CUSTOM_ERROR and return.
+  # In a function that cannot error, unwrap would be a compile time error instead.
+	# risky_operation call unwrap
+
+  # You can handle functions that may return errors.
 	risky_operation call handle
-		match
-			error.MY_CUSTOM_ERROR == case
+		match # Match works with error the same way it works with unions.
+			error.MY_CUSTOM_ERROR case
 				"Caught Custom Error" io.write_line call
 			end
 
