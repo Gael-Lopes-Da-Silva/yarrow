@@ -6,7 +6,7 @@
 //! popping operands off that same stack.
 
 mod errors;
-mod modules;
+pub(crate) mod modules;
 mod types;
 
 use std::collections::HashMap;

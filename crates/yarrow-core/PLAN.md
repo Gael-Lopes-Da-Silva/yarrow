@@ -30,7 +30,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains         |
 | Compiler    | ✅     | JIT + check-only path; ownership / borrow / region / unsafe                   |
 | Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return            |
-| Library API | 🟡     | `ExecutionMode` / `check_source` / `CheckedProgram`; Object/Interpret stubbed |
+| Library API | 🟡     | `check_source` / `interpret_source` / `EvalContext`; Object stubbed         |
 | Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O                    |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`             |
 
@@ -58,10 +58,10 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| API         | `ExecutionMode` + `check_source` landed; Object/Interpret not implemented yet                                   |
+| API         | `ExecutionMode` / check / interpret landed; Object not implemented yet                                      |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
 | Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
-| Backends    | Check + JIT; no object/AOT, no interpreter; check still drives Cranelift as analysis vehicle                    |
+| Backends    | Check + JIT + interpret MVP (hello/stack); no object/AOT; check still uses Cranelift as analysis vehicle |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
 
@@ -104,7 +104,7 @@ Teach the stack model on common failures (underflow, branch join mismatch, retur
 
 ### Stage 13 — Execution backends (JIT / object / interpret) 🟡
 
-**Status:** 13a ✅; 13b / 13c still open.
+**Status:** 13a ✅; 13b ✅; 13c still open.
 
 Target backends (names can adjust; keep the split):
 
@@ -133,20 +133,20 @@ Stop folding “check” into “always build a JIT module”.
 
 **Gate (13a):** `Session` + `ExecutionMode::Check` type-checks valid examples without installing JIT code. Invalid examples still fail with the same codes. Default `Jit` path still runs `01_hello.yar`. `cargo clippy` green.
 
-#### 13b — Interpreter groundwork (required for this stage)
+#### 13b — Interpreter groundwork ✅
 
 Interpretation is the path for `yarrow interpret` and a future REPL. Do **not** put REPL UI in this crate; expose an eval API the CLI can wrap later.
 
-1. **Design choice (pick one and document in this PLAN when implemented):**
-   - **Preferred:** lower checked functions to a small **stack bytecode** (ops mirror the language’s stack words), then interpret that. Natural fit for Yarrow; REPL can compile chunks to bytecode.
-   - **Acceptable MVP:** tree-walk the checked AST with an explicit operand stack and the existing host runtime (`runtime.rs`). Faster to land; bytecode can replace it later without changing the Session surface.
-2. **Library surface:**
-   - `Session::interpret_source` (or `compile` + `InterpretArtifact::run_main`) returning the same `RunResult` shape as JIT where practical.
-   - For REPL readiness: an **`EvalContext` / `Interpreter`** that can accept additional checked top-level items or expressions over a live heap (even if Stage 13 only supports whole-file `main` first).
-3. **Semantics:** interpreter executes **already-checked** code. It does not re-do borrow checking at runtime. Reuse host runtime for handles, regions, lists, maps, strings.
-4. **Parity target for the gate:** enough of the language to run a small set of `docs/examples/valid/**` (at least hello + one control-flow / stack example). Full corpus parity can follow; do not block the stage on 100% JIT feature coverage (e.g. every intrinsic).
+1. **Design choice (landed):** tree-walk the checked AST with an explicit operand stack, calling into `runtime` for strings / print. Documented in `interpreter/mod.rs`. Stack bytecode can replace this later without changing `Session::interpret_source` / `EvalContext`.
+2. **Library surface (landed):**
+   - `Session::interpret_source` → check then run `main`, returns `RunResult`.
+   - `EvalContext` / `Interpreter` for load + `run_main` (REPL can grow on this).
+3. **Semantics:** interpreter executes **already-checked** code (via `check_source` first). Reuses host runtime handles.
+4. **Parity (gate examples):**
+   - In scope: `docs/examples/valid/01_hello.yar`, `docs/examples/valid/02_arithmetic_and_stack.yar`
+   - Out of scope for MVP: `if`/`for`/`match`, variables/`set`/`move`, structs/unions/regions, unsafe, fallible unwrap/handle, most std intrinsics (clear `E393` when hit).
 
-**Gate (13b):** at least one valid example runs to the same printable `RunResult` via interpret as via JIT. API is callable without clap. Document which examples are in / out of interpret scope.
+**Gate (13b):** `01_hello.yar` and `02_arithmetic_and_stack.yar` print the same lines via `interpret_source` as via JIT `run`. API callable without clap.
 
 #### 13c — Object / AOT groundwork (required API; emit can be thin)
 

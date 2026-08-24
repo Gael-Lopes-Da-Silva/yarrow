@@ -2,14 +2,15 @@ use std::path::{Path, PathBuf};
 
 use crate::compiler::{CompileError, Compiler, RunResult};
 use crate::diagnostics::{ColorChoice, Diagnostic, DiagnosticBatch, SourceFile, Span, render};
+use crate::interpreter::EvalContext;
 use crate::parser::Parser;
 use crate::parser::ast::{Program, StmtKind};
 use crate::tokenizer::{Token, Tokenizer};
 
 /// How a session turns a checked program into code or executes it.
 ///
-/// Stage 13a lands `Check` and `Jit`. `Object` and `Interpret` are selectable
-/// but return a clear not-implemented error until Stages 13b/13c.
+/// `Check` and `Jit` landed in Stage 13a. `Interpret` runs via
+/// [`Session::interpret_source`] (Stage 13b). `Object` is still Stage 13c.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
     /// Full type / ownership / stack / region checks; no JIT install.
@@ -19,7 +20,7 @@ pub enum ExecutionMode {
     Jit,
     /// Native relocatable object (AOT). Not implemented yet (Stage 13c).
     Object,
-    /// Stack VM interpreter. Not implemented yet (Stage 13b).
+    /// Stack VM / AST interpreter (`Session::interpret_source`).
     Interpret,
 }
 
@@ -124,7 +125,8 @@ impl Session {
     /// - [`ExecutionMode::Jit`]: full check + JIT install (does not run `main`).
     /// - [`ExecutionMode::Check`]: same as [`Self::check_source`] but returns an
     ///   artifact whose compiler is check-only (`run_main` will fail).
-    /// - [`ExecutionMode::Object`] / [`ExecutionMode::Interpret`]: clear error.
+    /// - [`ExecutionMode::Object`]: clear E391 until Stage 13c.
+    /// - [`ExecutionMode::Interpret`]: clear error; use [`Self::interpret_source`].
     pub fn compile_source(&self, source: String) -> Result<SessionArtifact, SessionDiagnostics> {
         match self.options.mode {
             ExecutionMode::Object => {
@@ -139,8 +141,8 @@ impl Session {
                 return Err(self.backend_not_ready(
                     source,
                     "E392",
-                    "interpreter backend is not implemented yet",
-                    "use `yarrow run` (JIT) for now, or wait for Stage 13b",
+                    "ExecutionMode::Interpret does not produce a JIT artifact",
+                    "call Session::interpret_source to check and run on the interpreter",
                 ));
             }
             ExecutionMode::Check | ExecutionMode::Jit => {}
@@ -151,6 +153,35 @@ impl Session {
         let check_only = matches!(self.options.mode, ExecutionMode::Check);
         let compiler = self.lower(&file, &program, check_only)?;
         Ok(SessionArtifact { file, compiler })
+    }
+
+    /// Check source, then execute `main` on the AST interpreter (Stage 13b).
+    ///
+    /// Returns the same [`RunResult`] shape as JIT `run_main` when supported.
+    pub fn interpret_source(&self, source: String) -> Result<RunResult, SessionDiagnostics> {
+        let checked = self.check_source(source)?;
+        let mut ctx = EvalContext::new();
+        if let Some(dir) = Path::new(&self.options.source_path).parent()
+            && !dir.as_os_str().is_empty()
+        {
+            ctx.add_module_search_path(dir);
+        }
+        for p in &self.options.module_search_paths {
+            ctx.add_module_search_path(p.clone());
+        }
+        if let Err(e) = ctx.load_program(&checked.program) {
+            return Err(SessionDiagnostics {
+                file: checked.file,
+                batch: one_compile_error(e.into_compile_error(), self.options.error_limit),
+            });
+        }
+        match ctx.run_main() {
+            Ok(result) => Ok(result),
+            Err(e) => Err(SessionDiagnostics {
+                file: checked.file,
+                batch: one_compile_error(e.into_compile_error(), self.options.error_limit),
+            }),
+        }
     }
 
     fn backend_not_ready(
