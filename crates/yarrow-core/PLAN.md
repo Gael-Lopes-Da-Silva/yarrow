@@ -74,7 +74,7 @@ Language surface and diagnostic baseline are done. Phase C makes the compiler a 
 
 CLI commands (`check`, `run`, `--emit`, …) are specified in the CLI plan. This crate exposes the operations those commands need.
 
-### Recommended next: Stage 11 — Compile session API ⬜
+### Stage 11 — Compile session API ✅
 
 **Why first:** `yarrow-cli` must not copy `src/main.rs`. A single session type is the compiler-side contract for check, run, dump, and later build.
 
@@ -162,7 +162,7 @@ Internal compiler-facing AST, not new syntax.
 
 ### Phase C (in progress when started)
 
-5. Session API is what `yarrow-cli` uses (Stage 11).
+5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup (Stage 11).
 6. Stack-effect notes on high-traffic stack errors (Stage 12).
 7. Codegen mode + IR dump as library API (Stage 13).
 8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled.

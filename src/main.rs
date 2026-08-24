@@ -6,10 +6,7 @@
 
 use std::process::ExitCode;
 
-use yarrow_core::{
-    ColorChoice, CompileError, Compiler, Diagnostic, DiagnosticBatch, Parser, RunResult,
-    SourceFile, Tokenizer, render,
-};
+use yarrow_core::{ColorChoice, CompileOptions, RunResult, Session, render_batch};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -25,46 +22,19 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let file = SourceFile::new(path, source.clone());
     let color = ColorChoice::Auto;
-
-    let tokens = match Tokenizer::new(source.clone()).tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            let diag = Diagnostic::error(e.code, e.message)
-                .with_path(path)
-                .with_primary(yarrow_core::Span::from_location(e.location), "");
-            eprint!("{}", render(&diag, &file, color));
-            return ExitCode::from(1);
-        }
-    };
-    let program = match Parser::new(tokens).parse() {
-        Ok(p) => p,
-        Err(batch) => {
-            print_diagnostics(&batch, &file, color);
+    let session = Session::new(CompileOptions::new(path));
+    let mut artifact = match session.compile_source(source) {
+        Ok(artifact) => artifact,
+        Err(diags) => {
+            let file = diags.file;
+            let batch = diags.batch;
+            eprint!("{}", render_batch(&batch, &file, color));
             return ExitCode::from(1);
         }
     };
 
-    let mut compiler = match Compiler::new() {
-        Ok(c) => c,
-        Err(e) => {
-            print_compile_error(&e, &file, color);
-            return ExitCode::from(1);
-        }
-    };
-    compiler.set_source_path(path);
-    if let Some(dir) = std::path::Path::new(path).parent()
-        && !dir.as_os_str().is_empty()
-    {
-        compiler.add_module_search_path(dir);
-    }
-
-    if let Err(batch) = compiler.compile(&program) {
-        print_diagnostics(&batch, &file, color);
-        return ExitCode::from(1);
-    }
-    match compiler.run_main() {
+    match artifact.run_main() {
         Ok(result) => {
             match result {
                 RunResult::Void => {}
@@ -76,33 +46,12 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            print_compile_error(&e, &file, color);
+            let mut diag = (*e.diagnostic).clone();
+            if diag.path.is_empty() {
+                diag.path = artifact.file.path.clone();
+            }
+            eprint!("{}", yarrow_core::render(&diag, &artifact.file, color));
             ExitCode::from(1)
         }
-    }
-}
-
-fn print_compile_error(err: &CompileError, file: &SourceFile, color: ColorChoice) {
-    let mut diag = (*err.diagnostic).clone();
-    if diag.path.is_empty() {
-        diag.path = file.path.clone();
-    }
-    eprint!("{}", render(&diag, file, color));
-}
-
-fn print_diagnostics(batch: &DiagnosticBatch, file: &SourceFile, color: ColorChoice) {
-    for diag in batch.iter() {
-        let mut diag = diag.clone();
-        if diag.path.is_empty() {
-            diag.path = file.path.clone();
-        }
-        eprint!("{}", render(&diag, file, color));
-    }
-    if batch.is_at_limit() {
-        eprintln!(
-            "error: aborting due to {} previous errors (limit {})",
-            batch.len(),
-            batch.limit()
-        );
     }
 }
