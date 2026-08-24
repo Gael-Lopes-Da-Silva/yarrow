@@ -15,17 +15,24 @@ Runtime
 Pipeline:
 
 ```text
-source .yar  →  tokenize  →  parse (AST)  →  compile (Cranelift JIT)  →  run main
+source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | interpret }
 ```
+
+| Backend     | Role                                                                 |
+| ----------- | -------------------------------------------------------------------- |
+| `check`     | Type / ownership / stack / region analysis; no machine code          |
+| `jit`       | Cranelift in-process machine code; driver may run `main`             |
+| `object`    | Relocatable native object (ELF / Mach-O / COFF); link stays outside  |
+| `interpret` | Tree-walk interpreter over the checked AST (file / future REPL)      |
 
 - User modules resolve relative to the source file’s directory (`"a.b"` → `a/b.yar`).
 - The standard library is embedded and imported the same way as user code (`"std.io"`, …).
-- Compiled code talks to a small **host runtime** for heap headers (strings, lists, maps, regions, free) and raw `alloc` / `free`.
+- Compiled and interpreted code talks to a small **host runtime** for heap headers (strings, lists, maps, regions, free) and raw `alloc` / `free`. Object emit leaves those symbols as imports for a later link.
 - Heap values are opaque handles; scalars and addresses are machine words. Kind codes describe how to free nested heap data.
 
-The language model is stack-based regardless of backend. The current implementation lowers each function to JIT machine code with an explicit compile-time operand stack that becomes SSA values.
+The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 
-Entry: every program has exactly one `main`. The driver runs it after compile. Optional numeric return from `main` is the process exit code (grammar); the current CLI also prints supported single return values (`void`, integer, float, bool, string).
+Entry: every program has exactly one `main`. The driver runs it after JIT or interpret (object emit does not execute). Optional numeric return from `main` is the process exit code (grammar); the current CLI also prints supported single return values (`void`, integer, float, bool, string).
 
 ---
 

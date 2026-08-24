@@ -220,18 +220,18 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
 1. Add `TargetKind` (`jit`, `object`) and `--target` on `run` and `compile` (default `jit`).
 2. Add `compile` subcommand:
    - `--target jit`: check + JIT lower/finalize; **do not** call `run_main`. Exit `0` if codegen succeeds.
-   - `--target object`: call core object emit; write `-o` when implemented. Until core is ready: stderr message, exit `2`.
+   - `--target object`: call `Session::compile_object_source`; write bytes to `-o` (default `stem.o`).
 3. `run --target jit`: today’s behavior (default).
-4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT.
+4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT. Core object emit is available (Stage 13c).
 5. Keep `yarrow <file>` as sugar for `run --target jit <file>`.
 
-**Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow run --target object …` and `compile --target object …` exit `2` with an explicit not-implemented message until core Stage 13c lands.
+**Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow compile --target object …` writes a non-empty `.o` (core 13c). `yarrow run --target object …` exits `2` until link+exec exists.
 
 ---
 
 ### Stage 7 — `interpret` ⬜
 
-Blocked on core Stage 13b.
+Core Stage 13b interpret API is available (`Session::interpret_source`).
 
 1. `yarrow interpret <file>`: check + interpret `main`; print `RunResult` like `run`.
 2. No `--target` on `interpret`.

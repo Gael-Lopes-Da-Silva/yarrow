@@ -17,8 +17,8 @@ pub use parser::Parser;
 pub use parser::ast::Program;
 pub use parser::ast::Stmt;
 pub use session::{
-    CheckedProgram, CompileOptions, ExecutionMode, Session, SessionArtifact, SessionDiagnostics,
-    render_batch,
+    CheckedProgram, CompileOptions, ExecutionMode, ObjectArtifact, Session, SessionArtifact,
+    SessionDiagnostics, render_batch,
 };
 pub use tokenizer::Token;
 pub use tokenizer::TokenKind;

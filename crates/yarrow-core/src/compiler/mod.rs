@@ -5,20 +5,21 @@
 //! parser left as runtime `ApplyBin`/`ApplyUn`/`StackOp` ops are lowered by
 //! popping operands off that same stack.
 
+mod backend;
 mod errors;
 pub(crate) mod modules;
 mod types;
 
 use std::collections::HashMap;
 
+use backend::CodeModule;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     AbiParam, Block, BlockArg, FuncRef, GlobalValue, InstBuilder as _, StackSlotData,
     StackSlotKind, TrapCode, Type as CLType, Value, types as irtypes,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 
 use crate::diagnostics::{DEFAULT_ERROR_LIMIT, DiagnosticBatch, Span};
 use crate::parser::ast::{
@@ -179,9 +180,9 @@ struct ErrorInfo {
     members: Vec<(String, u32)>,
 }
 
-/// JIT compiler that turns a whole `Program` into a single linked module.
+/// Compiler that turns a whole `Program` into JIT code or a relocatable object.
 pub struct Compiler {
-    module: JITModule,
+    module: CodeModule,
     ptr_type: CLType,
     /// Struct name -> index into `struct_layouts`.
     struct_ids: HashMap<String, u32>,
@@ -265,11 +266,19 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// In-process Cranelift JIT (default for `run` / `compile --target jit`).
     pub fn new() -> CResult<Self> {
-        let mut jb = JITBuilder::new(default_libcall_names())
-            .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
-        crate::runtime::install_runtime(&mut jb);
-        let module = JITModule::new(jb);
+        Self::with_module(CodeModule::new_jit()?)
+    }
+
+    /// Relocatable native object backend (`compile --target object`, Stage 13c).
+    ///
+    /// Host runtime symbols are declared as imports; linking them is CLI-side.
+    pub fn new_object(module_name: &str) -> CResult<Self> {
+        Self::with_module(CodeModule::new_object(module_name)?)
+    }
+
+    fn with_module(module: CodeModule) -> CResult<Self> {
         let ptr_type = module.isa().pointer_type();
         Ok(Self {
             module,
@@ -312,6 +321,27 @@ impl Compiler {
             ir_dump: String::new(),
             check_only: false,
         })
+    }
+
+    /// Emit relocatable object bytes after a successful [`Self::compile`] on an
+    /// object backend. Consumes the compiler (object product takes ownership).
+    pub fn emit_object(self) -> CResult<Vec<u8>> {
+        if !self.module.is_object() {
+            return Err(CompileError::new(
+                "cannot emit object: this compiler was built for JIT",
+                self.program_span,
+                "E391",
+            )
+            .with_help("use Compiler::new_object / Session::compile_object_source"));
+        }
+        if self.check_only {
+            return Err(CompileError::new(
+                "cannot emit object: this compiler was built in check-only mode",
+                self.program_span,
+                "E390",
+            ));
+        }
+        self.module.finish_object()
     }
 
     /// Cranelift IR for every function lowered in the last successful compile.
@@ -1001,6 +1031,14 @@ impl Compiler {
             )
             .with_help("use ExecutionMode::Jit (Session::compile_source) to run"));
         }
+        if self.module.is_object() {
+            return Err(CompileError::new(
+                "cannot run main: this compiler was built for object emit",
+                self.program_span,
+                "E391",
+            )
+            .with_help("link the object and execute externally, or use ExecutionMode::Jit"));
+        }
         self.finalize()?;
         let id = *self.func_ids.get("main").ok_or_else(|| {
             CompileError::new("program has no 'main' function", self.program_span, "E360")
@@ -1097,8 +1135,15 @@ impl Compiler {
         }
     }
 
-    /// Address of a compiled function after `compile`.
+    /// Address of a compiled function after `compile` (JIT only).
     pub fn function_ptr(&mut self, name: &str) -> CResult<usize> {
+        if self.module.is_object() {
+            return Err(CompileError::new(
+                "function_ptr is only available on the JIT backend",
+                Span::default(),
+                "E391",
+            ));
+        }
         self.finalize()?;
         let id = *self.func_ids.get(name).ok_or_else(|| {
             CompileError::new(
@@ -1112,7 +1157,7 @@ impl Compiler {
 
     fn finalize(&mut self) -> CResult<()> {
         if !self.finalized {
-            self.module.finalize_definitions()?;
+            self.module.finalize_jit()?;
             self.finalized = true;
         }
         Ok(())

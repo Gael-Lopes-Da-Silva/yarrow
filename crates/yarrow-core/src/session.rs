@@ -9,8 +9,7 @@ use crate::tokenizer::{Token, Tokenizer};
 
 /// How a session turns a checked program into code or executes it.
 ///
-/// `Check` and `Jit` landed in Stage 13a. `Interpret` runs via
-/// [`Session::interpret_source`] (Stage 13b). `Object` is still Stage 13c.
+/// `Check` / `Jit` (13a), `Interpret` (13b), and `Object` emit (13c) are landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
     /// Full type / ownership / stack / region checks; no JIT install.
@@ -18,7 +17,7 @@ pub enum ExecutionMode {
     /// Cranelift in-process machine code (default for `run` / `compile`).
     #[default]
     Jit,
-    /// Native relocatable object (AOT). Not implemented yet (Stage 13c).
+    /// Native relocatable object (AOT). Use [`Session::compile_object_source`].
     Object,
     /// Stack VM / AST interpreter (`Session::interpret_source`).
     Interpret,
@@ -70,6 +69,18 @@ pub struct SessionArtifact {
     pub compiler: Compiler,
 }
 
+/// Relocatable native object produced by [`Session::compile_object_source`].
+///
+/// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`yarrow_str_new`,
+/// etc.) remain unresolved imports for a later link step (CLI / Stage follow-up).
+pub struct ObjectArtifact {
+    pub file: SourceFile,
+    /// Object file bytes (non-empty on success).
+    pub bytes: Vec<u8>,
+    /// Cranelift IR captured during the same lower pass (debug / dump).
+    pub ir: String,
+}
+
 /// Diagnostics emitted while tokenizing/parsing/compiling one source file.
 pub struct SessionDiagnostics {
     pub file: SourceFile,
@@ -116,7 +127,7 @@ impl Session {
     pub fn check_source(&self, source: String) -> Result<CheckedProgram, SessionDiagnostics> {
         let (file, program) = self.parse_source(source)?;
         self.require_main_if_needed(&file, &program)?;
-        let _compiler = self.lower(&file, &program, /* check_only */ true)?;
+        let _compiler = self.lower(&file, &program, LowerKind::Jit { check_only: true })?;
         Ok(CheckedProgram { file, program })
     }
 
@@ -125,7 +136,7 @@ impl Session {
     /// - [`ExecutionMode::Jit`]: full check + JIT install (does not run `main`).
     /// - [`ExecutionMode::Check`]: same as [`Self::check_source`] but returns an
     ///   artifact whose compiler is check-only (`run_main` will fail).
-    /// - [`ExecutionMode::Object`]: clear E391 until Stage 13c.
+    /// - [`ExecutionMode::Object`]: clear error; use [`Self::compile_object_source`].
     /// - [`ExecutionMode::Interpret`]: clear error; use [`Self::interpret_source`].
     pub fn compile_source(&self, source: String) -> Result<SessionArtifact, SessionDiagnostics> {
         match self.options.mode {
@@ -133,8 +144,8 @@ impl Session {
                 return Err(self.backend_not_ready(
                     source,
                     "E391",
-                    "object codegen is not implemented yet",
-                    "use --target jit for now, or wait for Stage 13c",
+                    "ExecutionMode::Object does not produce a JIT artifact",
+                    "call Session::compile_object_source to emit a relocatable object",
                 ));
             }
             ExecutionMode::Interpret => {
@@ -151,8 +162,47 @@ impl Session {
         let (file, program) = self.parse_source(source)?;
         self.require_main_if_needed(&file, &program)?;
         let check_only = matches!(self.options.mode, ExecutionMode::Check);
-        let compiler = self.lower(&file, &program, check_only)?;
+        let compiler = self.lower(&file, &program, LowerKind::Jit { check_only })?;
         Ok(SessionArtifact { file, compiler })
+    }
+
+    /// Check + lower to a relocatable native object (Stage 13c).
+    ///
+    /// Ignores [`CompileOptions::mode`] other than using the same search paths /
+    /// `require_main` / error limit. Prefer setting `mode` to
+    /// [`ExecutionMode::Object`] for clarity.
+    pub fn compile_object_source(
+        &self,
+        source: String,
+    ) -> Result<ObjectArtifact, SessionDiagnostics> {
+        let (file, program) = self.parse_source(source)?;
+        self.require_main_if_needed(&file, &program)?;
+        let module_name = object_module_name(&self.options.source_path);
+        let compiler = self.lower(&file, &program, LowerKind::Object { module_name })?;
+        let ir = compiler.emit_ir();
+        let bytes = match compiler.emit_object() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(SessionDiagnostics {
+                    file,
+                    batch: one_compile_error(e, self.options.error_limit),
+                });
+            }
+        };
+        if bytes.is_empty() {
+            return Err(SessionDiagnostics {
+                file,
+                batch: one_compile_error(
+                    CompileError::new(
+                        "object emit produced an empty artifact",
+                        Span::default(),
+                        "E391",
+                    ),
+                    self.options.error_limit,
+                ),
+            });
+        }
+        Ok(ObjectArtifact { file, bytes, ir })
     }
 
     /// Check source, then execute `main` on the AST interpreter (Stage 13b).
@@ -239,21 +289,22 @@ impl Session {
         &self,
         file: &SourceFile,
         program: &Program,
-        check_only: bool,
+        kind: LowerKind,
     ) -> Result<Compiler, SessionDiagnostics> {
         let path = self.options.source_path.clone();
-        let mut compiler = match Compiler::new() {
-            Ok(compiler) => compiler,
-            Err(e) => {
-                return Err(SessionDiagnostics {
-                    file: file.clone(),
-                    batch: one_compile_error(e, self.options.error_limit),
-                });
-            }
-        };
+        let mut compiler = match &kind {
+            LowerKind::Jit { .. } => Compiler::new(),
+            LowerKind::Object { module_name } => Compiler::new_object(module_name),
+        }
+        .map_err(|e| SessionDiagnostics {
+            file: file.clone(),
+            batch: one_compile_error(e, self.options.error_limit),
+        })?;
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
-        compiler.set_check_only(check_only);
+        if let LowerKind::Jit { check_only } = kind {
+            compiler.set_check_only(check_only);
+        }
         if let Some(dir) = Path::new(&self.options.source_path).parent()
             && !dir.as_os_str().is_empty()
         {
@@ -272,6 +323,20 @@ impl Session {
 
         Ok(compiler)
     }
+}
+
+enum LowerKind {
+    Jit { check_only: bool },
+    Object { module_name: String },
+}
+
+fn object_module_name(source_path: &str) -> String {
+    Path::new(source_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("yarrow")
+        .to_string()
 }
 
 impl SessionArtifact {
