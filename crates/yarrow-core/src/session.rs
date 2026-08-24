@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::compiler::{CompileError, Compiler, RunResult};
 use crate::diagnostics::{ColorChoice, Diagnostic, DiagnosticBatch, SourceFile, Span, render};
 use crate::parser::Parser;
-use crate::parser::ast::StmtKind;
-use crate::tokenizer::Tokenizer;
+use crate::parser::ast::{Program, StmtKind};
+use crate::tokenizer::{Token, Tokenizer};
 
 /// Options for one compile/check session.
 #[derive(Debug, Clone)]
@@ -53,28 +53,39 @@ impl Session {
         Self { options }
     }
 
+    /// Tokenize source text without parsing or compiling.
+    pub fn tokenize_source(
+        &self,
+        source: String,
+    ) -> Result<(SourceFile, Vec<Token>), SessionDiagnostics> {
+        let path = self.options.source_path.clone();
+        let file = SourceFile::new(path.clone(), source.clone());
+        match Tokenizer::new(source).tokenize() {
+            Ok(tokens) => Ok((file, tokens)),
+            Err(e) => Err(SessionDiagnostics {
+                file,
+                batch: tokenize_batch(e, &path, self.options.error_limit),
+            }),
+        }
+    }
+
+    /// Parse source text without compiling.
+    pub fn parse_source(
+        &self,
+        source: String,
+    ) -> Result<(SourceFile, Program), SessionDiagnostics> {
+        let (file, tokens) = self.tokenize_source(source)?;
+        match Parser::with_error_limit(tokens, self.options.error_limit).parse() {
+            Ok(program) => Ok((file, program)),
+            Err(batch) => Err(SessionDiagnostics { file, batch }),
+        }
+    }
+
     /// Compile source text. This performs full checking and code generation,
     /// but does not execute `main`.
     pub fn compile_source(&self, source: String) -> Result<SessionArtifact, SessionDiagnostics> {
         let path = self.options.source_path.clone();
-        let file = SourceFile::new(path.clone(), source.clone());
-
-        let tokens = match Tokenizer::new(source).tokenize() {
-            Ok(tokens) => tokens,
-            Err(e) => {
-                return Err(SessionDiagnostics {
-                    file,
-                    batch: tokenize_batch(e, &path, self.options.error_limit),
-                });
-            }
-        };
-
-        let program = match Parser::with_error_limit(tokens, self.options.error_limit).parse() {
-            Ok(program) => program,
-            Err(batch) => {
-                return Err(SessionDiagnostics { file, batch });
-            }
-        };
+        let (file, program) = self.parse_source(source)?;
 
         if self.options.require_main && !has_main(&program) {
             let mut batch = DiagnosticBatch::with_limit(self.options.error_limit);
@@ -129,6 +140,11 @@ impl Session {
 impl SessionArtifact {
     pub fn run_main(&mut self) -> Result<RunResult, CompileError> {
         self.compiler.run_main()
+    }
+
+    /// Cranelift IR captured during compile (see `Compiler::emit_ir`).
+    pub fn emit_ir(&self) -> String {
+        self.compiler.emit_ir()
     }
 }
 

@@ -25,7 +25,7 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 | ------------------ | ------ | -------------------------------------------- |
 | `yarrow-cli` crate | ✅     | Argument parsing + `run`/`check` dispatch    |
 | Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run` |
-| Commands           | ✅     | `run`, `check`, and `version` subcommands    |
+| Commands           | ✅     | `run`, `check`, `dump`, and `version`        |
 | Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v` |
 
 **Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
@@ -158,7 +158,7 @@ Keep the current driver convention and align with rustc-ish practice:
 
 ---
 
-### Stage 4 — `dump` ⬜
+### Stage 4 — `dump` ✅
 
 Depends on core IR dump API (core Stage 13) for `ir`. Tokens/AST can ship earlier from tokenizer/parser.
 

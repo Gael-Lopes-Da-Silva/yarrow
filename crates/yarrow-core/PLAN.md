@@ -108,7 +108,7 @@ Teach the stack model on common failures (underflow, branch join mismatch, retur
 Stop treating JIT + `YARROW_DBG_IR` as the only backend knob.
 
 1. **`CodegenMode`**: `Jit` (current), `Check` (type/ownership/stack checks; skip native define/finalize if practical), later `Object`.
-2. **`Compiler::emit_ir() -> String`** (or per-function map) for Cranelift IR. Do not key this on an env var as the only interface; env can remain a debug convenience.
+2. **`Compiler::emit_ir() -> String`** (or per-function map) for Cranelift IR. Do not key this on an env var as the only interface; env can remain a debug convenience. (`Compiler::emit_ir` / `SessionArtifact::emit_ir` landed for CLI `dump --emit ir`; `YARROW_DBG_IR` still prints the same text.)
 3. Optional: source comments on IR blocks using `Span` line info.
 
 **Gate:** after a successful compile (or check, if IR is still built), a library call returns readable Cranelift IR for at least one valid example function. `YARROW_DBG_IR` still works or is documented as wrapping the API.

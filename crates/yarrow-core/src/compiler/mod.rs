@@ -256,6 +256,8 @@ pub struct Compiler {
     errors: DiagnosticBatch,
     /// Maximum number of diagnostics to collect before aborting.
     error_limit: usize,
+    /// Cranelift IR text captured after each function is lowered.
+    ir_dump: String,
 }
 
 impl Compiler {
@@ -303,7 +305,13 @@ impl Compiler {
             program_span: Span::default(),
             error_limit: DEFAULT_ERROR_LIMIT,
             errors: DiagnosticBatch::with_limit(DEFAULT_ERROR_LIMIT),
+            ir_dump: String::new(),
         })
+    }
+
+    /// Cranelift IR for every function lowered in the last successful compile.
+    pub fn emit_ir(&self) -> String {
+        self.ir_dump.clone()
     }
 
     pub fn set_error_limit(&mut self, error_limit: usize) {
@@ -1820,8 +1828,10 @@ impl Compiler {
 
         b.seal_all_blocks();
         b.finalize();
+        let ir_text = format!("IR for {name}:\n{}\n", ctx.func.display());
+        self.ir_dump.push_str(&ir_text);
         if std::env::var("YARROW_DBG_IR").is_ok() {
-            eprintln!("IR for {name}:\n{}", ctx.func.display());
+            eprint!("{ir_text}");
         }
         if let Err(e) = self.module.define_function(id, &mut ctx) {
             return Err(e.into());

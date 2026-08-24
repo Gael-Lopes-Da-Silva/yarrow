@@ -49,6 +49,14 @@ pub struct GlobalArgs {
     pub verbose: bool,
 }
 
+/// Intermediate form printed by `dump --emit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum EmitKind {
+    Tokens,
+    Ast,
+    Ir,
+}
+
 /// `--color` argument value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ColorArg {
@@ -88,4 +96,14 @@ pub enum Cmd {
 
     /// Print the CLI version.
     Version,
+
+    /// Print an intermediate representation and exit (no run).
+    Dump {
+        /// Source file to dump.
+        #[arg(value_name = "FILE")]
+        file: std::path::PathBuf,
+        /// Intermediate to print (`tokens`, `ast`, or `ir`).
+        #[arg(long, value_enum, default_value = "ir")]
+        emit: EmitKind,
+    },
 }

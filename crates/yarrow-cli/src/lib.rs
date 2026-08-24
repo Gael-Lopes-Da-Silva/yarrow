@@ -45,6 +45,7 @@ where
         (Some(Cmd::Run { file }), None) => commands::run_file(&file, &cli.global),
         (None, Some(file)) => commands::run_file(&file, &cli.global),
         (Some(Cmd::Check { file }), None) => commands::check_file(&file, &cli.global),
+        (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
         (Some(Cmd::Version), None) => {
             // Clap's built-in `--version` prints only the top-level crate version;
             // this subcommand matches `rustc -V` style UX.
