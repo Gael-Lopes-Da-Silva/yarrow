@@ -1,6 +1,6 @@
 # Yarrow CLI Implementation Plan
 
-User-facing compiler driver. This crate talks to **`yarrow-core` only** for tokenize / parse / check / compile / run / dump. It owns argument parsing, subcommands, stdout/stderr, color, and process exit codes.
+User-facing compiler driver. This crate talks to **`yarrow-core` only** for tokenize / parse / check / compile / run / interpret / dump. It owns argument parsing, subcommands, stdout/stderr, color, and process exit codes.
 
 The application entry point is the workspace binary [`src/main.rs`](../../src/main.rs), which should stay a thin `yarrow_cli::main()` (or `run(args) -> ExitCode`) wrapper.
 
@@ -30,6 +30,8 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 
 **Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
 
+**Target UX (this plan):** `check` / `run` / `compile` / `interpret`, with `--target jit|object` on `run` and `compile`. See [Command set](#command-set).
+
 ---
 
 ## Architecture
@@ -38,7 +40,7 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 src/main.rs          # binary crate `yarrow`
     └── yarrow_cli::run(args) -> ExitCode
             ├── clap (commands + global flags)
-            └── yarrow_core::Session (check / compile / run / emit)
+            └── yarrow_core::Session (check / compile / run / interpret / emit)
 ```
 
 Workspace change when Stage 1 lands:
@@ -48,37 +50,68 @@ Workspace change when Stage 1 lands:
 
 ---
 
+## Targets
+
+Shared by `run` and `compile` via `--target`:
+
+| Value    | Meaning                                                                 | Core mode              |
+| -------- | ----------------------------------------------------------------------- | ---------------------- |
+| `jit`    | Cranelift in-process machine code (default). Whole program lowered, then used in-process. | `ExecutionMode::Jit`   |
+| `object` | Native relocatable object (AOT). Write an artifact; linking/exec is CLI-side when ready. | `ExecutionMode::Object` |
+
+Interpretation is **not** a `--target`. It is its own command (`interpret`) so the UX stays: compile backends vs evaluate in the VM.
+
+There is no separate `build` command; native emit is `compile --target object` (and optionally `run --target object` once link+exec exists).
+
+---
+
 ## Command set
 
-Modeled on common compiler / language CLIs (`rustc`/`cargo`, `go`, `zig`, `tsc` `--noEmit`, `clang -fsyntax-only`). Yarrow is a single-file-plus-`require` language for now, so there is no package manager (`new`/`add`/`vendor`) in this plan.
+Modeled on common compiler / language CLIs. Yarrow is a single-file-plus-`require` language for now, so there is no package manager (`new`/`add`/`vendor`) in this plan.
 
-### Ship in this phase
+### Intended UX
+
+```text
+yarrow check <file>                         # type / ownership / stack check only
+yarrow run <file>                           # --target jit (default): JIT + execute main
+yarrow run --target jit <file>              # same, explicit
+yarrow run --target object <file>           # native: compile (+ link when ready) and execute
+yarrow compile <file>                       # --target jit (default): lower/codegen, do not run main
+yarrow compile --target jit <file>          # same, explicit
+yarrow compile --target object <file>       # emit native object (-o when implemented)
+yarrow interpret <file>                     # stack VM / interpreter; execute main
+```
+
+**Default:** `yarrow <file.yar>` remains sugar for `yarrow run <file.yar>` (JIT + run).
+
+### Ship in this phase (landed or in progress)
 
 | Command   | Analog                          | Behavior                                                                      |
 | --------- | ------------------------------- | ----------------------------------------------------------------------------- |
-| `run`     | `cargo run`, `go run`           | Check + JIT + execute `main`. Print supported return values (current driver). |
-| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, compile/check. Print diagnostics. **Do not** run `main`.     |
+| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute `main` (JIT today).                  |
+| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run `main`.    |
 | `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.               |
 | `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                         |
 | `version` | `rustc -V`                      | Crate / git version string.                                                   |
 
-**Default:** `yarrow <file.yar>` is sugar for `yarrow run <file.yar>` so existing `cargo run -- file.yar` keeps working.
+### Next (CLI stages below; need core Stage 13)
 
-### Blocked on yarrow-core
-
-| Command | Analog                                | Needs from core                                                                                                                          |
-| ------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `build` | `cargo build`, `go build`, `clang -o` | `CodegenMode::Object` / AOT (core Stage 13 backlog). Until then: parse the command, print a clear “not implemented” to stderr, exit `2`. |
+| Command      | Behavior                                                                                          | Core need                                      |
+| ------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `compile`    | Codegen only (no `main`). Default `--target jit`. `--target object` writes a native artifact.     | `Jit` finalize without run; `Object` emit      |
+| `--target`   | On `run` and `compile`: `jit` \| `object` (default `jit`).                                        | `ExecutionMode`                                |
+| `interpret`  | Check + interpret `main` (no machine code).                                                       | Stage 13b interpret API                        |
+| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.     | Object emit (+ link story)                     |
 
 ### Later (other crates or language)
 
-| Command | Notes                                                   |
-| ------- | ------------------------------------------------------- |
-| `fmt`   | Delegate to `yarrow-fmt` when that crate exists.        |
-| `lsp`   | Usually a separate binary; optional `yarrow lsp` later. |
-| `test`  | No test runner in the language yet.                     |
-| `repl`  | Needs an incremental session API.                       |
-| `clean` | Only meaningful once `build` writes artifacts.          |
+| Command | Notes                                                            |
+| ------- | ---------------------------------------------------------------- |
+| `fmt`   | Delegate to `yarrow-fmt` when that crate exists.                 |
+| `lsp`   | Usually a separate binary; optional `yarrow lsp` later.          |
+| `test`  | No test runner in the language yet.                              |
+| `repl`  | Interactive shell on core `EvalContext`; not required for `interpret` file mode. |
+| `clean` | Only meaningful once `compile --target object` writes artifacts. |
 
 ---
 
@@ -98,13 +131,14 @@ Available on every command (clap `global = true` where it makes sense):
 
 Command-specific:
 
-| Command   | Flags                                                                                       |
-| --------- | ------------------------------------------------------------------------------------------- |
-| `run`     | `<FILE>` required. Optional `--` + program args later (not needed until `main` takes argv). |
-| `check`   | `<FILE>` required.                                                                          |
-| `dump`    | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir` once core exposes it).                 |
-| `explain` | `<CODE>` e.g. `E308`.                                                                       |
-| `build`   | `<FILE>`, `-o <path>` (when implemented).                                                   |
+| Command     | Flags                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| `run`       | `<FILE>`; `--target jit\|object` (default `jit`). Optional `--` + program args later.          |
+| `check`     | `<FILE>` required.                                                                             |
+| `compile`   | `<FILE>`; `--target jit\|object` (default `jit`); `-o <path>` when object emit lands.          |
+| `interpret` | `<FILE>` required.                                                                             |
+| `dump`      | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir`).                                         |
+| `explain`   | `<CODE>` e.g. `E308`.                                                                          |
 
 ---
 
@@ -112,14 +146,14 @@ Command-specific:
 
 Keep the current driver convention and align with rustc-ish practice:
 
-| Code  | Meaning                                                                          |
-| ----- | -------------------------------------------------------------------------------- |
-| `0`   | Success (`check` clean, `run` finished, `dump` printed, `explain` found).        |
-| `1`   | User program failed to tokenize, parse, or compile (diagnostics printed).        |
-| `2`   | Usage, missing file, I/O, or unimplemented command (`build` stub).               |
-| `101` | Internal compiler error if we later distinguish ICE from user errors (optional). |
+| Code  | Meaning                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------ |
+| `0`   | Success (`check` clean, `run`/`interpret` finished, `compile`/`dump` done, `explain` found).     |
+| `1`   | User program failed to tokenize, parse, or compile (diagnostics printed).                        |
+| `2`   | Usage, missing file, I/O, or unimplemented target/command (`object` / `interpret` before ready). |
+| `101` | Internal compiler error if we later distinguish ICE from user errors (optional).                 |
 
-`run` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping `main`’s integer to the process exit code is grammar-optional and is **not** the first CLI stage (would break `cargo run --` example scripts that expect printed output).
+`run` / `interpret` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping `main`’s integer to the process exit code is grammar-optional and is **not** the first CLI stage.
 
 ---
 
@@ -160,7 +194,7 @@ Keep the current driver convention and align with rustc-ish practice:
 
 ### Stage 4 — `dump` ✅
 
-Depends on core IR dump API (core Stage 13) for `ir`. Tokens/AST can ship earlier from tokenizer/parser.
+Depends on core IR dump API (landed) for `ir`. Tokens/AST from tokenizer/parser.
 
 1. `--emit tokens` — debug-friendly token list with spans.
 2. `--emit ast` — Debug or a stable compact dump of `Program`.
@@ -179,23 +213,42 @@ Depends on core IR dump API (core Stage 13) for `ir`. Tokens/AST can ship earlie
 
 ---
 
-### Stage 6 — `build` stub, then real AOT ⬜
+### Stage 6 — `compile` + `--target` ⬜
 
-1. First: `yarrow build <file>` exits `2` with “object emit is not implemented”.
-2. After core object backend: write an artifact (`-o`), do not run `main`.
+Align the driver with the target UX. Prefer parsing the full surface early; stub backends that core has not finished.
 
-**Gate (stub):** command exists in `--help`. **Gate (real):** blocked on core AOT; document in both plans when it lands.
+1. Add `TargetKind` (`jit`, `object`) and `--target` on `run` and `compile` (default `jit`).
+2. Add `compile` subcommand:
+   - `--target jit`: check + JIT lower/finalize; **do not** call `run_main`. Exit `0` if codegen succeeds.
+   - `--target object`: call core object emit; write `-o` when implemented. Until core is ready: stderr message, exit `2`.
+3. `run --target jit`: today’s behavior (default).
+4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT.
+5. Keep `yarrow <file>` as sugar for `run --target jit <file>`.
+
+**Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow run --target object …` and `compile --target object …` exit `2` with an explicit not-implemented message until core Stage 13c lands.
+
+---
+
+### Stage 7 — `interpret` ⬜
+
+Blocked on core Stage 13b.
+
+1. `yarrow interpret <file>`: check + interpret `main`; print `RunResult` like `run`.
+2. No `--target` on `interpret`.
+3. Optional later: `yarrow repl` on `EvalContext` (separate stage; not required here).
+
+**Gate:** `yarrow interpret docs/examples/valid/01_hello.yar` matches `yarrow run` output for that file once core interpret MVP exists. Before that: command may be stubbed with exit `2`.
 
 ---
 
 ## Definition of done (this crate)
 
 1. Root binary does not import `yarrow_core`.
-2. `run` matches today’s compile-and-execute behavior for the example corpus.
+2. `run` (default / `--target jit`) matches today’s compile-and-execute behavior for the example corpus.
 3. `check` is usable for CI (`exit 0` / `1` only from program validity).
 4. Help/version/color/error-limit behave as specified.
 5. `dump` / `explain` land as core APIs allow.
-6. `build` is either stubbed or producing objects, never a silent no-op.
+6. `compile` and `--target` exist; `object` and `interpret` are either real or explicit exit `2`, never a silent no-op.
 
 ---
 

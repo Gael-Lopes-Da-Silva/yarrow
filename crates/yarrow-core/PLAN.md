@@ -24,19 +24,19 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 
 ## Current state
 
-| Component   | Status | Notes                                                                     |
-| ----------- | ------ | ------------------------------------------------------------------------- |
-| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                              |
-| Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains     |
-| Compiler    | ✅     | JIT only; ownership / borrow / region / unsafe; grammar tour              |
-| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return        |
-| Library API | 🟡     | Pieces exported (`Tokenizer`, `Parser`, `Compiler`, `render`); no session |
-| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O                |
-| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`         |
+| Component   | Status | Notes                                                                    |
+| ----------- | ------ | ------------------------------------------------------------------------ |
+| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                             |
+| Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains    |
+| Compiler    | ✅     | JIT only; ownership / borrow / region / unsafe; grammar tour             |
+| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return       |
+| Library API | 🟡     | `Session` / `CompileOptions` / `emit_ir` landed; still one backend (JIT) |
+| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O               |
+| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`        |
 
 **Gates today:** all `docs/examples/valid/**` compile and run; all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
-The root binary still wires tokenize → parse → compile → `run_main` by hand (`src/main.rs`). That wiring should move behind a core session API, then into `yarrow-cli`.
+Long-term execution story (planned in Stage 13+): **JIT** (`run` / `compile --target jit`), **native object** (`--target object`), **interpreter** (`interpret`). One frontend; backends plug in after checking.
 
 ---
 
@@ -58,10 +58,10 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| API         | Callers duplicate the pipeline; no `Session` / `CompileOptions`; `compile` always builds a JIT module           |
+| API         | Session exists but always JIT-lowers; no `ExecutionMode`, no check-only / object / interpret artifacts          |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
 | Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
-| Codegen     | JIT only (`YARROW_DBG_IR` env dump); no `CodegenMode`, no object/AOT backend                                    |
+| Backends    | JIT only; `emit_ir` API exists; no object/AOT, no interpreter, no shared checked-program handoff                |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
 
@@ -75,9 +75,9 @@ CLI commands (`check`, `run`, `--emit`, …) are specified in the CLI plan. This
 
 ### Stage 11 — Compile session API ✅
 
-**Why first:** `yarrow-cli` must not copy `src/main.rs`. A single session type is the compiler-side contract for check, run, dump, and later build.
+**Why first:** `yarrow-cli` must not copy `src/main.rs`. A single session type is the compiler-side contract for check, run, compile, interpret, and dump.
 
-1. **`CompileOptions`** — source path, extra module search paths, diagnostic cap, whether to require `main`, codegen mode (see Stage 13; until then JIT is fine).
+1. **`CompileOptions`** — source path, extra module search paths, diagnostic cap, whether to require `main`, execution mode (see Stage 13; until then JIT is fine).
 2. **`Session` (or `Frontend`)** — owns source text / `SourceFile`, search paths, collected diagnostics.
 3. **Pipeline methods** (library, no process I/O beyond reading the entry file if the caller passes a path):
    - `tokenize` / `parse` / `compile`
@@ -102,15 +102,81 @@ Teach the stack model on common failures (underflow, branch join mismatch, retur
 
 ---
 
-### Stage 13 — Codegen modes and IR dump API ⬜
+### Stage 13 — Execution backends (JIT / object / interpret) ⬜
 
-Stop treating JIT + `YARROW_DBG_IR` as the only backend knob.
+**Goal:** One checked frontend, three long-term ways to run or ship code. Stage 13 lays the architecture and ships the pieces that unblock CLI `check`, `run` / `compile --target jit|object`, and `interpret`.
 
-1. **`CodegenMode`**: `Jit` (current), `Check` (type/ownership/stack checks; skip native define/finalize if practical), later `Object`.
-2. **`Compiler::emit_ir() -> String`** (or per-function map) for Cranelift IR. Do not key this on an env var as the only interface; env can remain a debug convenience. (`Compiler::emit_ir` / `SessionArtifact::emit_ir` landed for CLI `dump --emit ir`; `YARROW_DBG_IR` still prints the same text.)
-3. Optional: source comments on IR blocks using `Span` line info.
+Target backends (names can adjust; keep the split):
 
-**Gate:** after a successful compile (or check, if IR is still built), a library call returns readable Cranelift IR for at least one valid example function. `YARROW_DBG_IR` still works or is documented as wrapping the API.
+| Mode        | CLI consumer                                      | Role                                                               |
+| ----------- | ------------------------------------------------- | ------------------------------------------------------------------ |
+| `Check`     | `yarrow check`, IDE / LSP later                   | Full type / ownership / stack / region checks; **no** machine code |
+| `Jit`       | `yarrow run` / `compile` (default `--target jit`) | Cranelift in-process machine code + optional `run_main`            |
+| `Object`    | `yarrow run` / `compile --target object`          | Native relocatable object (AOT); link/exec stays CLI-side          |
+| `Interpret` | `yarrow interpret` (and later `repl`)             | Stack VM over checked code; no machine code                        |
+
+`emit_ir` / `SessionArtifact::emit_ir` already landed (CLI `dump --emit ir`). Keep that API; do not gate Stage 13 on it.
+
+#### 13a — Pipeline split and mode knob (required)
+
+Stop folding “check” into “always build a JIT module”.
+
+1. **`ExecutionMode`** (or `CodegenMode`) on `CompileOptions`: at least `Check`, `Jit`, `Object`, `Interpret`.
+2. **Shared frontend handoff** after parse + semantic analysis:
+   - Prefer a **`CheckedProgram`** (or equivalent) that owns the validated `Program`, resolved modules, and whatever typed/stack facts backends need.
+   - Checking must be **backend-agnostic**: ownership, borrow, regions, stack effects, and types run once for all modes.
+3. **Session API**:
+   - `check_source` / mode `Check` — diagnostics only; no JIT finalize, no interpreter heap for execution.
+   - `compile_source` with `Jit` — today’s path (may reuse checking from the handoff).
+   - Clear errors if `Object` / `Interpret` are selected before those backends are ready (or implement them in 13b/13c below).
+4. Refactor so Cranelift module creation / define / finalize is confined to the JIT (and later object) backend, not the checker.
+
+**Gate (13a):** `Session` + `ExecutionMode::Check` type-checks a valid example without requiring a successful JIT module. Invalid examples still fail with the same codes. Default `Jit` path still runs `01_hello.yar`. `cargo clippy` green.
+
+#### 13b — Interpreter groundwork (required for this stage)
+
+Interpretation is the path for `yarrow interpret` and a future REPL. Do **not** put REPL UI in this crate; expose an eval API the CLI can wrap later.
+
+1. **Design choice (pick one and document in this PLAN when implemented):**
+   - **Preferred:** lower checked functions to a small **stack bytecode** (ops mirror the language’s stack words), then interpret that. Natural fit for Yarrow; REPL can compile chunks to bytecode.
+   - **Acceptable MVP:** tree-walk the checked AST with an explicit operand stack and the existing host runtime (`runtime.rs`). Faster to land; bytecode can replace it later without changing the Session surface.
+2. **Library surface:**
+   - `Session::interpret_source` (or `compile` + `InterpretArtifact::run_main`) returning the same `RunResult` shape as JIT where practical.
+   - For REPL readiness: an **`EvalContext` / `Interpreter`** that can accept additional checked top-level items or expressions over a live heap (even if Stage 13 only supports whole-file `main` first).
+3. **Semantics:** interpreter executes **already-checked** code. It does not re-do borrow checking at runtime. Reuse host runtime for handles, regions, lists, maps, strings.
+4. **Parity target for the gate:** enough of the language to run a small set of `docs/examples/valid/**` (at least hello + one control-flow / stack example). Full corpus parity can follow; do not block the stage on 100% JIT feature coverage (e.g. every intrinsic).
+
+**Gate (13b):** at least one valid example runs to the same printable `RunResult` via interpret as via JIT. API is callable without clap. Document which examples are in / out of interpret scope.
+
+#### 13c — Object / AOT groundwork (required API; emit can be thin)
+
+Native objects power `yarrow compile --target object` (and later `yarrow run --target object` after link+exec). Full link-to-executable stays CLI-side; core must emit something real or a deliberate stub.
+
+1. Wire `ExecutionMode::Object` through Session.
+2. **Minimum for Stage 13:** either
+   - **(A) Preferred:** use `cranelift-object` (or equivalent) to emit a relocatable object for lowered functions into a buffer or path the caller chooses; host runtime / `main` calling convention documented as follow-up if linking is incomplete, **or**
+   - **(B) Acceptable:** mode + Session entry point that returns a structured `ObjectEmitNotImplemented` / clear `CompileError` so CLI `compile --target object` is not a silent no-op; implement real emit in a follow-up stage once 13a is stable.
+3. Share as much lowering as practical with JIT (Cranelift CLIF from the same checked input). Avoid a second ad hoc codegen.
+4. Do **not** require producing a finished executable or system linker invocation inside `yarrow-core`.
+
+**Gate (13c):** `ExecutionMode::Object` is selectable on `CompileOptions`. Either a non-empty object artifact is produced for a trivial function, or the API fails with an explicit not-implemented diagnostic/error the CLI can print. No silent success.
+
+#### Out of scope for Stage 13 (backlog / CLI)
+
+- REPL UI, line editing, multi-line paste (`yarrow-cli`).
+- Linking objects into a standalone binary / choosing a system linker (`run`/`compile --target object` polish).
+- Cross-compilation targets, DWARF, optimized AOT tiers.
+- Full interpret parity with every JIT intrinsic and module edge case.
+- Switching the default `run` / `compile` target from `jit` to `object` or interpret.
+
+#### Implementation notes
+
+- Keep `YARROW_DBG_IR` as a debug convenience over `emit_ir`, not the primary dump API.
+- Optional later: source line comments on IR dumps via `Span` (nice-to-have, not a gate).
+- Update [`docs/RUNTIME.md`](../../docs/RUNTIME.md) pipeline diagram when modes land (tokenize → parse → check → `{jit \| object \| interpret}`).
+- CLI plan: `check` → `Check`; `run`/`compile --target jit|object` → `Jit`/`Object`; `interpret` → `Interpret`. No separate `build` command.
+
+**Stage 13 gate (overall):** 13a landed; 13b runs ≥1 valid example; 13c has a real emit **or** an explicit not-implemented API; JIT regression-free on the example corpus used today; plans updated.
 
 ---
 
@@ -140,13 +206,15 @@ Internal compiler-facing AST, not new syntax.
 
 ### Backlog (compiler, after 11–15 or in parallel if small)
 
-| Item                                                         | Value                       | Effort                                 |
-| ------------------------------------------------------------ | --------------------------- | -------------------------------------- |
-| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler          | Medium                                 |
-| AOT / `cranelift-object` (`CodegenMode::Object`)             | `yarrow build` in the CLI   | High; needs Stage 13 modes first       |
-| Error-code catalog data for `explain`                        | CLI `explain E308`          | Landed: `explain_code` / Phase B notes |
-| Multi-file project graph (beyond `require`)                  | Real programs               | Medium                                 |
-| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std, not lowering | Medium; keep out of compiler stages    |
+| Item                                                         | Value                           | Effort                                 |
+| ------------------------------------------------------------ | ------------------------------- | -------------------------------------- |
+| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler              | Medium                                 |
+| Full object emit + link story (`ExecutionMode::Object`)      | `compile`/`run --target object` | High; Stage 13c API first              |
+| Interpreter corpus parity + REPL `EvalContext` increments    | `interpret`, later `repl`       | Medium–high after Stage 13b            |
+| Error-code catalog data for `explain`                        | CLI `explain E308`              | Landed: `explain_code` / Phase B notes |
+| Multi-file project graph (beyond `require`)                  | Real programs                   | Medium                                 |
+| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std, not lowering     | Medium; keep out of compiler stages    |
+| IR dump with source line comments                            | Nicer `dump --emit ir`          | Low                                    |
 
 ---
 
@@ -163,7 +231,7 @@ Internal compiler-facing AST, not new syntax.
 
 5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup (Stage 11).
 6. Stack-effect notes on high-traffic stack errors (Stage 12).
-7. Codegen mode + IR dump as library API (Stage 13).
+7. Execution backends: check / JIT / object groundwork / interpret MVP (Stage 13).
 8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled.
 
 ---
