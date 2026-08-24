@@ -94,6 +94,13 @@ pub enum Cmd {
         file: std::path::PathBuf,
     },
 
+    /// Print the long form of a diagnostic code.
+    Explain {
+        /// Diagnostic code, for example `E308`.
+        #[arg(value_name = "CODE")]
+        code: String,
+    },
+
     /// Print the CLI version.
     Version,
 

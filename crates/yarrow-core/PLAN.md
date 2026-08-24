@@ -141,13 +141,13 @@ Internal compiler-facing AST, not new syntax.
 
 ### Backlog (compiler, after 11–15 or in parallel if small)
 
-| Item                                                         | Value                       | Effort                              |
-| ------------------------------------------------------------ | --------------------------- | ----------------------------------- |
-| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler          | Medium                              |
-| AOT / `cranelift-object` (`CodegenMode::Object`)             | `yarrow build` in the CLI   | High; needs Stage 13 modes first    |
-| Error-code catalog data for `explain`                        | CLI `explain E308`          | Low once messages stabilize         |
-| Multi-file project graph (beyond `require`)                  | Real programs               | Medium                              |
-| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std, not lowering | Medium; keep out of compiler stages |
+| Item                                                         | Value                       | Effort                                 |
+| ------------------------------------------------------------ | --------------------------- | -------------------------------------- |
+| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler          | Medium                                 |
+| AOT / `cranelift-object` (`CodegenMode::Object`)             | `yarrow build` in the CLI   | High; needs Stage 13 modes first       |
+| Error-code catalog data for `explain`                        | CLI `explain E308`          | Landed: `explain_code` / Phase B notes |
+| Multi-file project graph (beyond `require`)                  | Real programs               | Medium                                 |
+| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std, not lowering | Medium; keep out of compiler stages    |
 
 ---
 

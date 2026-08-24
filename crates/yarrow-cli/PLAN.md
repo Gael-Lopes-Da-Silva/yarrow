@@ -25,7 +25,7 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 | ------------------ | ------ | -------------------------------------------- |
 | `yarrow-cli` crate | ✅     | Argument parsing + `run`/`check` dispatch    |
 | Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run` |
-| Commands           | ✅     | `run`, `check`, `dump`, and `version`        |
+| Commands           | ✅     | `run`, `check`, `dump`, `explain`, `version` |
 | Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v` |
 
 **Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
@@ -170,7 +170,7 @@ Depends on core IR dump API (core Stage 13) for `ir`. Tokens/AST can ship earlie
 
 ---
 
-### Stage 5 — `explain` ⬜
+### Stage 5 — `explain` ✅
 
 1. Static or core-provided table: code → paragraph (reuse teachable notes from Phase B).
 2. Unknown code: message + exit `2`.

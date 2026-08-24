@@ -1,11 +1,13 @@
 //! Rustc-style diagnostics: spans, labels, notes/help, and a text renderer.
 
 mod batch;
+mod explain;
 mod render;
 mod source;
 mod span;
 
 pub use batch::{DEFAULT_ERROR_LIMIT, DiagnosticBatch};
+pub use explain::{ExplainEntry, explain_code, format_explain, normalize_code};
 pub use render::{ColorChoice, render};
 pub use source::SourceFile;
 pub use span::Span;

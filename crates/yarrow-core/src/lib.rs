@@ -7,7 +7,8 @@ pub mod tokenizer;
 
 pub use compiler::{CompileError, Compiler, RunResult};
 pub use diagnostics::{
-    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, SourceFile, Span, render,
+    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, SourceFile, Span,
+    explain_code, format_explain, normalize_code, render,
 };
 pub use parser::ParseError;
 pub use parser::Parser;
