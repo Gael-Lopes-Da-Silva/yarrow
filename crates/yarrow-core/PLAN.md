@@ -24,14 +24,14 @@ Tracks bringing `crates/yarrow-core` in line with the **current** language docs,
 
 ## Pipeline status (honest)
 
-| Component   | Status     | Reality                                                                          |
-| ----------- | ---------- | -------------------------------------------------------------------------------- |
-| Tokenizer   | 🟢 Stage 1 | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
-| Parser/AST  | 🟢 Stage 2 | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
-| Compiler    | 🟢 Stage 7 | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)           |
-| Diagnostics | 🟢 Stage 9 | Rustc-style; teachable notes/helps; primary near `# ERROR:` lines                |
-| Runtime     | 🟡 Partial | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
-| Std library | 🟢 Stage 5 | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
+| Component   | Status      | Reality                                                                          |
+| ----------- | ----------- | -------------------------------------------------------------------------------- |
+| Tokenizer   | 🟢 Stage 1  | Docs surface tokens (`~`, `\|`, visibility, `error`, `copy`); UTF-8-safe lexing  |
+| Parser/AST  | 🟢 Stage 2  | Parses `docs/examples/valid/**`; AST gains visibility, params, `error`, `Concat` |
+| Compiler    | 🟢 Stage 7  | JIT; grammar tour + examples; ownership/borrow/region; unsafe (`E370`)           |
+| Diagnostics | 🟢 Stage 10 | Rustc-style; teachable notes; multi-error recovery (cap 20)                      |
+| Runtime     | 🟡 Partial  | Host heap, regions, lists, maps, strings, `Safety` metadata exist                |
+| Std library | 🟢 Stage 5  | `public` APIs; `region`/`loop`/`error`/`fs` present; list/map polymorphic        |
 
 Nothing below is “done” relative to the current docs unless its gate passes against those docs.
 
@@ -272,7 +272,7 @@ Also fixed for the gate: method-call borrow release; else-only `match` CFG; soft
 
 Language surface from Phase A is the baseline. Phase B improves how the compiler explains failures and how resilient the front end is. Target presentation is **full rustc-style** (not a single-line summary): primary span, secondary labels, source snippets with underlines, and `note` / `help` text.
 
-Stage 8–9 landed the diagnostic pipeline and teachable notes. Stage 10 adds multi-error recovery.
+Stage 8–10 landed rustc-style diagnostics, teachable notes, and multi-error recovery.
 
 ### Stage 8: Diagnostic infrastructure (full rustc-style) ✅
 
@@ -312,13 +312,13 @@ Also landed:
 
 ---
 
-### Stage 10: Multi-error reporting and recovery ⬜
+### Stage 10: Multi-error reporting and recovery ✅
 
-1. **Parser recovery** - where cheap, skip to a sync point and continue; report several syntax errors
-2. **Compiler collection** - accumulate diagnostics in a function body instead of always bailing on the first `?` (at least for independent statements)
-3. **Output cap** - stop after N errors (configurable later) so cascades stay readable
+1. **Parser recovery** - ✅ on statement errors, sync to the next boundary and keep parsing; return a `DiagnosticBatch`
+2. **Compiler collection** - ✅ accumulate diagnostics across independent statements and function bodies; abandon IR for failed bodies
+3. **Output cap** - ✅ stop after `DEFAULT_ERROR_LIMIT` (20); driver prints an abort line when capped
 
-**Gate:** a deliberately broken file reports ≥2 distinct diagnostics in one run; valid corpus still clean.
+**Gate:** `invalid/12_multi_error.yar` and `invalid/13_multi_parse.yar` each report ≥2 distinct diagnostics; valid corpus still clean. ✅
 
 ---
 
@@ -368,7 +368,7 @@ Not required to close Phase B; pick when diagnostics feel solid:
 9. Failures render rustc-style: path, primary and secondary spans, source underlines, `note` / `help`.
 10. Compile errors carry real spans (no systematic `Location::default()` for user-facing codes).
 11. Invalid examples point at the annotated bad line; ownership/unsafe/fallible codes teach the rule briefly.
-12. Multi-error runs report more than one distinct diagnostic when recovery applies (Stage 10).
+12. Multi-error runs report more than one distinct diagnostic when recovery applies (Stage 10). ✅
 
 ---
 

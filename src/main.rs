@@ -7,8 +7,8 @@
 use std::process::ExitCode;
 
 use yarrow_core::{
-    ColorChoice, CompileError, Compiler, Diagnostic, Parser, RunResult, SourceFile, Tokenizer,
-    render,
+    ColorChoice, CompileError, Compiler, Diagnostic, DiagnosticBatch, Parser, RunResult,
+    SourceFile, Tokenizer, render,
 };
 
 fn main() -> ExitCode {
@@ -40,9 +40,8 @@ fn main() -> ExitCode {
     };
     let program = match Parser::new(tokens).parse() {
         Ok(p) => p,
-        Err(e) => {
-            let diag = e.into_diagnostic().with_path(path);
-            eprint!("{}", render(&diag, &file, color));
+        Err(batch) => {
+            print_diagnostics(&batch, &file, color);
             return ExitCode::from(1);
         }
     };
@@ -61,8 +60,8 @@ fn main() -> ExitCode {
         compiler.add_module_search_path(dir);
     }
 
-    if let Err(e) = compiler.compile(&program) {
-        print_compile_error(&e, &file, color);
+    if let Err(batch) = compiler.compile(&program) {
+        print_diagnostics(&batch, &file, color);
         return ExitCode::from(1);
     }
     match compiler.run_main() {
@@ -89,4 +88,21 @@ fn print_compile_error(err: &CompileError, file: &SourceFile, color: ColorChoice
         diag.path = file.path.clone();
     }
     eprint!("{}", render(&diag, file, color));
+}
+
+fn print_diagnostics(batch: &DiagnosticBatch, file: &SourceFile, color: ColorChoice) {
+    for diag in batch.iter() {
+        let mut diag = diag.clone();
+        if diag.path.is_empty() {
+            diag.path = file.path.clone();
+        }
+        eprint!("{}", render(&diag, file, color));
+    }
+    if batch.is_at_limit() {
+        eprintln!(
+            "error: aborting due to {} previous errors (limit {})",
+            batch.len(),
+            batch.limit()
+        );
+    }
 }

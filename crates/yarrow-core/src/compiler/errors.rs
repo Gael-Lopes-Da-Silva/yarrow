@@ -1,6 +1,6 @@
 //! Compiler error type (wraps a rustc-style [`Diagnostic`]).
 
-use crate::diagnostics::{Diagnostic, Label, Span};
+use crate::diagnostics::{Diagnostic, DiagnosticBatch, Label, Span};
 use crate::tokenizer::token::Location;
 
 /// An error produced while lowering a parsed `Program` to Cranelift IR.
@@ -87,6 +87,20 @@ impl From<crate::parser::ParseError> for CompileError {
     fn from(e: crate::parser::ParseError) -> Self {
         CompileError {
             diagnostic: Box::new(e.into_diagnostic()),
+        }
+    }
+}
+
+impl From<DiagnosticBatch> for CompileError {
+    fn from(batch: DiagnosticBatch) -> Self {
+        let mut items = batch.into_diagnostics();
+        let diag = if items.is_empty() {
+            Diagnostic::error("E200", "parse failed")
+        } else {
+            items.remove(0)
+        };
+        CompileError {
+            diagnostic: Box::new(diag),
         }
     }
 }

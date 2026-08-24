@@ -13,7 +13,7 @@ pub mod literals;
 
 pub use ast::*;
 
-use crate::diagnostics::Span;
+use crate::diagnostics::{DiagnosticBatch, Span};
 use crate::tokenizer::token::Location;
 use crate::tokenizer::token::Token;
 use crate::tokenizer::token_kind::TokenKind;
@@ -63,16 +63,37 @@ type ParseResult<T> = Result<T, ParseError>;
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    /// Syntax errors collected during recovery (Stage 10).
+    errors: DiagnosticBatch,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+        Self {
+            tokens,
+            current: 0,
+            errors: DiagnosticBatch::new(),
+        }
     }
 
-    pub fn parse(&mut self) -> ParseResult<Program> {
-        let items = self.body(&[TokenKind::Eof])?;
+    /// Parse a program. On syntax failure returns every recovered diagnostic
+    /// (capped), not only the first.
+    pub fn parse(&mut self) -> Result<Program, DiagnosticBatch> {
+        let items = match self.body(&[TokenKind::Eof]) {
+            Ok(items) => items,
+            Err(e) => {
+                self.record_error(e);
+                Vec::new()
+            }
+        };
+        if !self.errors.is_empty() {
+            return Err(self.errors.take());
+        }
         Ok(Program { items })
+    }
+
+    fn record_error(&mut self, err: ParseError) -> bool {
+        self.errors.push(err.into_diagnostic())
     }
 
     // ------------------------------------------------------------------
@@ -85,6 +106,10 @@ impl Parser {
         let mut op_spans: Vec<Span> = Vec::new();
 
         loop {
+            if self.errors.is_at_limit() {
+                break;
+            }
+
             let kind = self.peek_kind();
 
             if stops.contains(&kind) {
@@ -93,241 +118,22 @@ impl Parser {
 
             match kind {
                 TokenKind::End | TokenKind::Else | TokenKind::Case | TokenKind::Eof => break,
-
-                TokenKind::Mutable | TokenKind::Const | TokenKind::Static => {
-                    let decl = self.parse_var_decl(&mut ops, &mut op_spans)?;
-                    stmts.push(decl);
-                }
-
-                TokenKind::Function => {
-                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
-                    let start = self.peek_span();
-                    let func = self.parse_function(name, None, false)?;
-                    let end = self.prev_span();
-                    let span = stack_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(StmtKind::Function(func), span));
-                }
-
-                TokenKind::Load | TokenKind::Store => {
-                    // `load`/`store` are keywords (the typed pointer words),
-                    // but `std.mem` also exposes functions with these names.
-                    // When the next token is a function declaration head, this
-                    // is a function name; otherwise it is the word.
-                    if self.peek_is_function_head(1) {
-                        let span = self.peek_span();
-                        ops.push(Expr::variable(self.peek_lexeme()));
-                        note_op_span(&mut op_spans, span);
-                        self.advance();
-                    } else {
-                        self.process_expr_word(&mut ops, &mut op_spans)?;
-                    }
-                }
-
-                TokenKind::Public | TokenKind::Private => {
-                    let vis = self.parse_visibility().unwrap();
-                    let stmt = self.parse_visible_decl(&mut ops, &mut op_spans, vis)?;
-                    stmts.push(stmt);
-                }
-
-                TokenKind::Unsafe => {
-                    if self.peek_next_kind() == TokenKind::Function {
-                        // `name unsafe function`
-                        let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
-                        let start = self.peek_span();
-                        self.advance();
-                        let func = self.parse_function(name, None, true)?;
-                        let end = self.prev_span();
-                        let span = stack_span.merge(start).merge(end);
-                        stmts.push(Stmt::new(StmtKind::Function(func), span));
-                    } else {
-                        // `unsafe ... end`: an unsafe block.
-                        let start = self.peek_span();
-                        self.advance();
-                        let body = self.body(&[TokenKind::End])?;
-                        self.expect(TokenKind::End, "expected 'end' after unsafe block")?;
-                        let end = self.prev_span();
-                        stmts.push(Stmt::new(StmtKind::Unsafe { body }, start.merge(end)));
-                    }
-                }
-
-                TokenKind::Struct => {
-                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
-                    let start = self.peek_span();
-                    let decl = self.parse_struct(name, None)?;
-                    let end = self.prev_span();
-                    let span = stack_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(StmtKind::Struct(decl), span));
-                }
-
-                TokenKind::Enum => {
-                    let (name, underlying, stack_span) =
-                        self.pop_enum_head(&mut ops, &mut op_spans)?;
-                    let start = self.peek_span();
-                    let decl = self.parse_enum(name, underlying)?;
-                    let end = self.prev_span();
-                    let span = stack_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(StmtKind::Enum(decl), span));
-                }
-
-                TokenKind::Union => {
-                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
-                    let start = self.peek_span();
-                    let decl = self.parse_union(name)?;
-                    let end = self.prev_span();
-                    let span = stack_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(StmtKind::Union(decl), span));
-                }
-
-                TokenKind::Error => {
-                    // Soft keyword: `error.Name` is a path; `… error require`
-                    // is a module alias; otherwise `Name error … end`.
-                    match self.peek_next_kind() {
-                        TokenKind::Dot => self.process_expr_word(&mut ops, &mut op_spans)?,
-                        TokenKind::Require => {
-                            let span = self.peek_span();
-                            ops.push(Expr::variable("error"));
-                            note_op_span(&mut op_spans, span);
+                _ => {
+                    let start_pos = self.current;
+                    if let Err(e) = self.body_step(kind, &mut stmts, &mut ops, &mut op_spans) {
+                        if !self.record_error(e) {
+                            break;
+                        }
+                        // Drop partial operand stack so the next statement does
+                        // not inherit a corrupted postfix sequence.
+                        ops.clear();
+                        op_spans.clear();
+                        if self.current == start_pos && self.peek_kind() != TokenKind::Eof {
                             self.advance();
                         }
-                        _ => {
-                            let start = self.peek_span();
-                            let (decl, stack_span) =
-                                self.parse_error_decl(&mut ops, &mut op_spans)?;
-                            let end = self.prev_span();
-                            let span = stack_span.merge(start).merge(end);
-                            stmts.push(Stmt::new(StmtKind::Error(decl), span));
-                        }
+                        self.synchronize(stops);
                     }
                 }
-
-                TokenKind::Implement => {
-                    let (name, stack_span) = self.pop_name(&mut ops, &mut op_spans)?;
-                    let start = self.peek_span();
-                    let impls = self.parse_implement(name)?;
-                    let end = self.prev_span();
-                    let span = stack_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(StmtKind::Implement(impls), span));
-                }
-
-                TokenKind::Require => {
-                    let req = self.parse_require(&mut ops, &mut op_spans)?;
-                    stmts.push(req);
-                }
-
-                TokenKind::Set => {
-                    let set = self.parse_set(&mut ops, &mut op_spans)?;
-                    stmts.push(set);
-                }
-
-                TokenKind::If => {
-                    let (condition, cond_span) = drain_ops(&mut ops, &mut op_spans)
-                        .unwrap_or_else(|| (Expr::variable(""), Span::default()));
-                    let start = self.peek_span();
-                    self.advance();
-                    let then_branch = self.body(&[TokenKind::Else, TokenKind::End])?;
-                    let else_branch = if self.match_kind(TokenKind::Else) {
-                        self.body(&[TokenKind::End])?
-                    } else {
-                        Vec::new()
-                    };
-                    self.expect(TokenKind::End, "expected 'end' after if/else block")?;
-                    let end = self.prev_span();
-                    let span = cond_span.merge(start).merge(end);
-                    stmts.push(Stmt::new(
-                        StmtKind::If {
-                            condition,
-                            then_branch,
-                            else_branch,
-                        },
-                        span,
-                    ));
-                }
-
-                TokenKind::For => {
-                    let stmt = self.parse_for(&mut ops, &mut op_spans)?;
-                    stmts.push(stmt);
-                }
-
-                TokenKind::Match => {
-                    let stmt = self.parse_match(&mut ops, &mut op_spans)?;
-                    stmts.push(stmt);
-                }
-
-                TokenKind::Defer => {
-                    let start = self.peek_span();
-                    self.advance();
-                    let body = self.body(&[TokenKind::End])?;
-                    self.expect(TokenKind::End, "expected 'end' after defer block")?;
-                    let end = self.prev_span();
-                    stmts.push(Stmt::new(StmtKind::Defer { body }, start.merge(end)));
-                }
-
-                TokenKind::Handle => {
-                    if let Some((expr, span)) = drain_ops(&mut ops, &mut op_spans) {
-                        stmts.push(Stmt::new(StmtKind::Expr(expr), span));
-                    }
-                    let start = self.peek_span();
-                    self.advance();
-                    let body = self.body(&[TokenKind::End])?;
-                    self.expect(TokenKind::End, "expected 'end' after handle block")?;
-                    let end = self.prev_span();
-                    let (body, fallback) = extract_fallback(body);
-                    stmts.push(Stmt::new(
-                        StmtKind::Handle { body, fallback },
-                        start.merge(end),
-                    ));
-                }
-
-                TokenKind::Move => {
-                    let start = self.peek_span();
-                    self.advance();
-                    let location = self.prev_span().start_location();
-                    let target_expr = ops.pop().ok_or_else(|| {
-                        ParseError::new("'move' requires a target variable", location, "E220")
-                    })?;
-                    let target_span = op_spans.pop().unwrap_or_default();
-                    let target = match target_expr {
-                        Expr::Variable { name } => name,
-                        _ => {
-                            return Err(ParseError::new(
-                                "'move' requires a target variable",
-                                location,
-                                "E221",
-                            ));
-                        }
-                    };
-                    let (source, source_span) = drain_ops(&mut ops, &mut op_spans)
-                        .unwrap_or_else(|| (Expr::variable(""), Span::default()));
-                    stmts.push(Stmt::new(
-                        StmtKind::Move { target, source },
-                        target_span.merge(source_span).merge(start),
-                    ));
-                }
-
-                TokenKind::Fallback => {
-                    let start = self.peek_span();
-                    self.advance();
-                    let (value, stack_span) = match drain_ops(&mut ops, &mut op_spans) {
-                        Some((expr, span)) => (Some(expr), span),
-                        None => (None, Span::default()),
-                    };
-                    stmts.push(Stmt::new(
-                        StmtKind::Fallback { value },
-                        stack_span.merge(start),
-                    ));
-                }
-
-                TokenKind::Return => {
-                    let drained = drain_ops(&mut ops, &mut op_spans);
-                    let start = self.peek_span();
-                    self.advance();
-                    if let Some((expr, expr_span)) = drained {
-                        stmts.push(Stmt::new(StmtKind::Expr(expr), expr_span));
-                    }
-                    stmts.push(Stmt::new(StmtKind::Return { value: None }, start));
-                }
-
-                _ => self.process_expr_word(&mut ops, &mut op_spans)?,
             }
         }
 
@@ -336,6 +142,290 @@ impl Parser {
         }
 
         Ok(stmts)
+    }
+
+    /// Parse one statement or expression word inside a body.
+    fn body_step(
+        &mut self,
+        kind: TokenKind,
+        stmts: &mut Vec<Stmt>,
+        ops: &mut Vec<Expr>,
+        op_spans: &mut Vec<Span>,
+    ) -> ParseResult<()> {
+        match kind {
+            TokenKind::Mutable | TokenKind::Const | TokenKind::Static => {
+                let decl = self.parse_var_decl(ops, op_spans)?;
+                stmts.push(decl);
+            }
+
+            TokenKind::Function => {
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
+                let func = self.parse_function(name, None, false)?;
+                let end = self.prev_span();
+                let span = stack_span.merge(start).merge(end);
+                stmts.push(Stmt::new(StmtKind::Function(func), span));
+            }
+
+            TokenKind::Load | TokenKind::Store => {
+                // `load`/`store` are keywords (the typed pointer words),
+                // but `std.mem` also exposes functions with these names.
+                // When the next token is a function declaration head, this
+                // is a function name; otherwise it is the word.
+                if self.peek_is_function_head(1) {
+                    let span = self.peek_span();
+                    ops.push(Expr::variable(self.peek_lexeme()));
+                    note_op_span(op_spans, span);
+                    self.advance();
+                } else {
+                    self.process_expr_word(ops, op_spans)?;
+                }
+            }
+
+            TokenKind::Public | TokenKind::Private => {
+                let vis = self.parse_visibility().unwrap();
+                let stmt = self.parse_visible_decl(ops, op_spans, vis)?;
+                stmts.push(stmt);
+            }
+
+            TokenKind::Unsafe => {
+                if self.peek_next_kind() == TokenKind::Function {
+                    // `name unsafe function`
+                    let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                    let start = self.peek_span();
+                    self.advance();
+                    let func = self.parse_function(name, None, true)?;
+                    let end = self.prev_span();
+                    let span = stack_span.merge(start).merge(end);
+                    stmts.push(Stmt::new(StmtKind::Function(func), span));
+                } else {
+                    // `unsafe ... end`: an unsafe block.
+                    let start = self.peek_span();
+                    self.advance();
+                    let body = self.body(&[TokenKind::End])?;
+                    self.expect(TokenKind::End, "expected 'end' after unsafe block")?;
+                    let end = self.prev_span();
+                    stmts.push(Stmt::new(StmtKind::Unsafe { body }, start.merge(end)));
+                }
+            }
+
+            TokenKind::Struct => {
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
+                let decl = self.parse_struct(name, None)?;
+                let end = self.prev_span();
+                let span = stack_span.merge(start).merge(end);
+                stmts.push(Stmt::new(StmtKind::Struct(decl), span));
+            }
+
+            TokenKind::Enum => {
+                let (name, underlying, stack_span) = self.pop_enum_head(ops, op_spans)?;
+                let start = self.peek_span();
+                let decl = self.parse_enum(name, underlying)?;
+                let end = self.prev_span();
+                let span = stack_span.merge(start).merge(end);
+                stmts.push(Stmt::new(StmtKind::Enum(decl), span));
+            }
+
+            TokenKind::Union => {
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
+                let decl = self.parse_union(name)?;
+                let end = self.prev_span();
+                let span = stack_span.merge(start).merge(end);
+                stmts.push(Stmt::new(StmtKind::Union(decl), span));
+            }
+
+            TokenKind::Error => {
+                // Soft keyword: `error.Name` is a path; `… error require`
+                // is a module alias; otherwise `Name error … end`.
+                match self.peek_next_kind() {
+                    TokenKind::Dot => self.process_expr_word(ops, op_spans)?,
+                    TokenKind::Require => {
+                        let span = self.peek_span();
+                        ops.push(Expr::variable("error"));
+                        note_op_span(op_spans, span);
+                        self.advance();
+                    }
+                    _ => {
+                        let start = self.peek_span();
+                        let (decl, stack_span) = self.parse_error_decl(ops, op_spans)?;
+                        let end = self.prev_span();
+                        let span = stack_span.merge(start).merge(end);
+                        stmts.push(Stmt::new(StmtKind::Error(decl), span));
+                    }
+                }
+            }
+
+            TokenKind::Implement => {
+                let (name, stack_span) = self.pop_name(ops, op_spans)?;
+                let start = self.peek_span();
+                let impls = self.parse_implement(name)?;
+                let end = self.prev_span();
+                let span = stack_span.merge(start).merge(end);
+                stmts.push(Stmt::new(StmtKind::Implement(impls), span));
+            }
+
+            TokenKind::Require => {
+                let req = self.parse_require(ops, op_spans)?;
+                stmts.push(req);
+            }
+
+            TokenKind::Set => {
+                let set = self.parse_set(ops, op_spans)?;
+                stmts.push(set);
+            }
+
+            TokenKind::If => {
+                let (condition, cond_span) = drain_ops(ops, op_spans)
+                    .unwrap_or_else(|| (Expr::variable(""), Span::default()));
+                let start = self.peek_span();
+                self.advance();
+                let then_branch = self.body(&[TokenKind::Else, TokenKind::End])?;
+                let else_branch = if self.match_kind(TokenKind::Else) {
+                    self.body(&[TokenKind::End])?
+                } else {
+                    Vec::new()
+                };
+                self.expect(TokenKind::End, "expected 'end' after if/else block")?;
+                let end = self.prev_span();
+                let span = cond_span.merge(start).merge(end);
+                stmts.push(Stmt::new(
+                    StmtKind::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    },
+                    span,
+                ));
+            }
+
+            TokenKind::For => {
+                let stmt = self.parse_for(ops, op_spans)?;
+                stmts.push(stmt);
+            }
+
+            TokenKind::Match => {
+                let stmt = self.parse_match(ops, op_spans)?;
+                stmts.push(stmt);
+            }
+
+            TokenKind::Defer => {
+                let start = self.peek_span();
+                self.advance();
+                let body = self.body(&[TokenKind::End])?;
+                self.expect(TokenKind::End, "expected 'end' after defer block")?;
+                let end = self.prev_span();
+                stmts.push(Stmt::new(StmtKind::Defer { body }, start.merge(end)));
+            }
+
+            TokenKind::Handle => {
+                if let Some((expr, span)) = drain_ops(ops, op_spans) {
+                    stmts.push(Stmt::new(StmtKind::Expr(expr), span));
+                }
+                let start = self.peek_span();
+                self.advance();
+                let body = self.body(&[TokenKind::End])?;
+                self.expect(TokenKind::End, "expected 'end' after handle block")?;
+                let end = self.prev_span();
+                let (body, fallback) = extract_fallback(body);
+                stmts.push(Stmt::new(
+                    StmtKind::Handle { body, fallback },
+                    start.merge(end),
+                ));
+            }
+
+            TokenKind::Move => {
+                let start = self.peek_span();
+                self.advance();
+                let location = self.prev_span().start_location();
+                let target_expr = ops.pop().ok_or_else(|| {
+                    ParseError::new("'move' requires a target variable", location, "E220")
+                })?;
+                let target_span = op_spans.pop().unwrap_or_default();
+                let target = match target_expr {
+                    Expr::Variable { name } => name,
+                    _ => {
+                        return Err(ParseError::new(
+                            "'move' requires a target variable",
+                            location,
+                            "E221",
+                        ));
+                    }
+                };
+                let (source, source_span) = drain_ops(ops, op_spans)
+                    .unwrap_or_else(|| (Expr::variable(""), Span::default()));
+                stmts.push(Stmt::new(
+                    StmtKind::Move { target, source },
+                    target_span.merge(source_span).merge(start),
+                ));
+            }
+
+            TokenKind::Fallback => {
+                let start = self.peek_span();
+                self.advance();
+                let (value, stack_span) = match drain_ops(ops, op_spans) {
+                    Some((expr, span)) => (Some(expr), span),
+                    None => (None, Span::default()),
+                };
+                stmts.push(Stmt::new(
+                    StmtKind::Fallback { value },
+                    stack_span.merge(start),
+                ));
+            }
+
+            TokenKind::Return => {
+                let drained = drain_ops(ops, op_spans);
+                let start = self.peek_span();
+                self.advance();
+                if let Some((expr, expr_span)) = drained {
+                    stmts.push(Stmt::new(StmtKind::Expr(expr), expr_span));
+                }
+                stmts.push(Stmt::new(StmtKind::Return { value: None }, start));
+            }
+
+            _ => self.process_expr_word(ops, op_spans)?,
+        }
+        Ok(())
+    }
+
+    /// Skip tokens until a likely statement / block boundary after a syntax error.
+    fn synchronize(&mut self, stops: &[TokenKind]) {
+        while self.peek_kind() != TokenKind::Eof {
+            let kind = self.peek_kind();
+            if stops.contains(&kind) {
+                break;
+            }
+            if matches!(
+                kind,
+                TokenKind::End
+                    | TokenKind::Else
+                    | TokenKind::Case
+                    | TokenKind::Function
+                    | TokenKind::Struct
+                    | TokenKind::Enum
+                    | TokenKind::Union
+                    | TokenKind::Implement
+                    | TokenKind::Require
+                    | TokenKind::If
+                    | TokenKind::For
+                    | TokenKind::Match
+                    | TokenKind::Defer
+                    | TokenKind::Handle
+                    | TokenKind::Return
+                    | TokenKind::Set
+                    | TokenKind::Mutable
+                    | TokenKind::Const
+                    | TokenKind::Static
+                    | TokenKind::Public
+                    | TokenKind::Private
+                    | TokenKind::Unsafe
+                    | TokenKind::Error
+            ) {
+                break;
+            }
+            self.advance();
+        }
     }
 
     fn parse_var_decl(
@@ -1638,6 +1728,6 @@ fn expr_to_path(expr: Expr) -> ParseResult<String> {
     }
 }
 
-pub fn parse(tokens: Vec<Token>) -> ParseResult<Program> {
+pub fn parse(tokens: Vec<Token>) -> Result<Program, DiagnosticBatch> {
     Parser::new(tokens).parse()
 }

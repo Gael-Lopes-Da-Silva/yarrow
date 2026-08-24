@@ -20,7 +20,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
-use crate::diagnostics::Span;
+use crate::diagnostics::{DiagnosticBatch, Span};
 use crate::parser::ast::{
     BinOp, Expr, Function, MatchCase, MatchCaseKind, ParamModifier, Primitive, Program, StackOp,
     Stmt, StmtKind, UnOp, Visibility,
@@ -133,6 +133,9 @@ struct FnState {
     /// compile-time stack). Reset after each compound statement whose merge
     /// block stays live.
     terminated: bool,
+    /// A statement in this body already failed; remaining statements are still
+    /// type-checked for more diagnostics, but IR is abandoned.
+    had_error: bool,
     /// Nested functions declared in this body: short name → fully-qualified
     /// name (`demo::add`). Only callable from the enclosing function.
     local_funcs: HashMap<String, String>,
@@ -249,6 +252,8 @@ pub struct Compiler {
     source_path: String,
     /// Best-effort span for program-level errors (e.g. missing `main`).
     program_span: Span,
+    /// Diagnostics collected during a compile (Stage 10 multi-error).
+    errors: DiagnosticBatch,
 }
 
 impl Compiler {
@@ -294,6 +299,7 @@ impl Compiler {
             finalized: false,
             source_path: String::new(),
             program_span: Span::default(),
+            errors: DiagnosticBatch::new(),
         })
     }
 
@@ -310,7 +316,35 @@ impl Compiler {
     /// (so whole-program calls resolve), then compile each body. Functions in
     /// modules loaded by `require` are declared and compiled alongside the
     /// main program's.
-    pub fn compile(&mut self, program: &Program) -> CResult<()> {
+    ///
+    /// On failure returns every collected diagnostic (capped), not only the
+    /// first independent error.
+    pub fn compile(&mut self, program: &Program) -> Result<(), DiagnosticBatch> {
+        self.errors = DiagnosticBatch::new();
+        match self.compile_inner(program) {
+            Ok(()) => {
+                if self.errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(self.errors.take())
+                }
+            }
+            Err(e) => {
+                self.report(e);
+                Err(self.errors.take())
+            }
+        }
+    }
+
+    fn report(&mut self, err: CompileError) -> bool {
+        let mut diag = (*err.diagnostic).clone();
+        if diag.path.is_empty() {
+            diag.path = self.source_path.clone();
+        }
+        self.errors.push(diag)
+    }
+
+    fn compile_inner(&mut self, program: &Program) -> CResult<()> {
         self.program_span = program
             .items
             .iter()
@@ -569,19 +603,30 @@ impl Compiler {
         self.declare_union_desc_data()?;
         self.declare_runtime_imports()?;
 
-        // Pass D: compile every function.
+        // Pass D: compile every function. Independent function bodies keep
+        // going after an error so several diagnostics can be reported.
         for (path, prog) in &units {
             for item in &prog.items {
+                if self.errors.is_at_limit() {
+                    break;
+                }
                 match &item.kind {
                     StmtKind::Function(f) => {
                         let name = self.item_name(path.as_deref(), &f.name);
-                        self.compile_function(f, &name, path.as_deref(), false)?;
+                        if let Err(e) = self.compile_function(f, &name, path.as_deref(), false) {
+                            self.report(e);
+                        }
                     }
                     StmtKind::Implement(imp) => {
                         for f in &imp.functions {
+                            if self.errors.is_at_limit() {
+                                break;
+                            }
                             let name = self
                                 .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
-                            self.compile_function(f, &name, path.as_deref(), true)?;
+                            if let Err(e) = self.compile_function(f, &name, path.as_deref(), true) {
+                                self.report(e);
+                            }
                         }
                     }
                     _ => {}
@@ -1641,6 +1686,7 @@ impl Compiler {
             registered_descs: std::collections::HashSet::new(),
             registered_unions: std::collections::HashSet::new(),
             terminated: false,
+            had_error: false,
             local_funcs,
             current_span: Span::default(),
             move_sites: HashMap::new(),
@@ -1731,7 +1777,24 @@ impl Compiler {
         // Implicit termination for a function falling off the end. Skipped
         // when an explicit `return` already ended the flow (the current block
         // is dead and the compile-time stack was already drained).
-        if st.terminated {
+        if st.had_error {
+            // Body diagnostics were recorded; abandon IR so a half-built
+            // function does not poison later units.
+            if let Some(block) = b.current_block() {
+                let has_terminator = b
+                    .func
+                    .layout
+                    .last_inst(block)
+                    .is_some_and(|inst| b.func.dfg.insts[inst].opcode().is_terminator());
+                if !has_terminator {
+                    b.ins().trap(TrapCode::unwrap_user(2));
+                }
+            }
+            b.seal_all_blocks();
+            b.finalize();
+            self.module.clear_context(&mut ctx);
+            return Ok(());
+        } else if st.terminated {
             // The block is dead; nothing left to emit.
         } else if st.error_value.is_some() {
             let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
@@ -1771,7 +1834,20 @@ impl Compiler {
         stmts: &[Stmt],
     ) -> CResult<()> {
         for s in stmts {
-            self.compile_stmt(b, st, stack, s)?;
+            if self.errors.is_at_limit() {
+                st.had_error = true;
+                break;
+            }
+            match self.compile_stmt(b, st, stack, s) {
+                Ok(()) => {}
+                Err(e) => {
+                    self.report(e);
+                    st.had_error = true;
+                    // Independent later statements should not inherit a
+                    // corrupted operand stack from the failed one.
+                    stack.clear();
+                }
+            }
         }
         Ok(())
     }
