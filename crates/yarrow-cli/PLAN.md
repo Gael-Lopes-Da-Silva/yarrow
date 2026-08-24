@@ -125,7 +125,7 @@ Keep the current driver convention and align with rustc-ish practice:
 
 ## Stages
 
-### Stage 1 — Clap skeleton, `run`, thin `main` ⬜
+### Stage 1 — Clap skeleton, `run`, thin `main` ✅
 
 1. Add `clap` (derive) to `yarrow-cli`.
 2. Implement `yarrow_cli::run<I, S>(args: I) -> ExitCode`.
@@ -138,7 +138,7 @@ Keep the current driver convention and align with rustc-ish practice:
 
 ---
 
-### Stage 2 — `check` ⬜
+### Stage 2 — `check` ✅
 
 1. `yarrow check <file>`: tokenize, parse, compile; print diagnostics; **do not** `run_main`.
 2. Success: exit `0`, no program output.

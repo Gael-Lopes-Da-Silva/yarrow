@@ -15,6 +15,8 @@ pub struct CompileOptions {
     pub module_search_paths: Vec<PathBuf>,
     /// Whether this session should require a top-level `main`.
     pub require_main: bool,
+    /// Maximum number of diagnostics to collect before aborting.
+    pub error_limit: usize,
 }
 
 impl CompileOptions {
@@ -23,6 +25,7 @@ impl CompileOptions {
             source_path: source_path.into(),
             module_search_paths: Vec::new(),
             require_main: true,
+            error_limit: crate::diagnostics::DEFAULT_ERROR_LIMIT,
         }
     }
 }
@@ -61,12 +64,12 @@ impl Session {
             Err(e) => {
                 return Err(SessionDiagnostics {
                     file,
-                    batch: tokenize_batch(e, &path),
+                    batch: tokenize_batch(e, &path, self.options.error_limit),
                 });
             }
         };
 
-        let program = match Parser::new(tokens).parse() {
+        let program = match Parser::with_error_limit(tokens, self.options.error_limit).parse() {
             Ok(program) => program,
             Err(batch) => {
                 return Err(SessionDiagnostics { file, batch });
@@ -74,7 +77,7 @@ impl Session {
         };
 
         if self.options.require_main && !has_main(&program) {
-            let mut batch = DiagnosticBatch::new();
+            let mut batch = DiagnosticBatch::with_limit(self.options.error_limit);
             let span = program
                 .items
                 .iter()
@@ -100,10 +103,11 @@ impl Session {
             Err(e) => {
                 return Err(SessionDiagnostics {
                     file,
-                    batch: one_compile_error(e),
+                    batch: one_compile_error(e, self.options.error_limit),
                 });
             }
         };
+        compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
         if let Some(dir) = Path::new(&self.options.source_path).parent()
             && !dir.as_os_str().is_empty()
@@ -135,8 +139,12 @@ fn has_main(program: &crate::parser::ast::Program) -> bool {
         .any(|item| matches!(&item.kind, StmtKind::Function(f) if f.name == "main"))
 }
 
-fn tokenize_batch(err: crate::tokenizer::TokenizeError, path: &str) -> DiagnosticBatch {
-    let mut batch = DiagnosticBatch::new();
+fn tokenize_batch(
+    err: crate::tokenizer::TokenizeError,
+    path: &str,
+    error_limit: usize,
+) -> DiagnosticBatch {
+    let mut batch = DiagnosticBatch::with_limit(error_limit);
     let diag = Diagnostic::error(err.code, err.message)
         .with_path(path)
         .with_primary(Span::from_location(err.location), "");
@@ -144,8 +152,8 @@ fn tokenize_batch(err: crate::tokenizer::TokenizeError, path: &str) -> Diagnosti
     batch
 }
 
-fn one_compile_error(err: CompileError) -> DiagnosticBatch {
-    let mut batch = DiagnosticBatch::new();
+fn one_compile_error(err: CompileError, error_limit: usize) -> DiagnosticBatch {
+    let mut batch = DiagnosticBatch::with_limit(error_limit);
     batch.push((*err.diagnostic).clone());
     batch
 }

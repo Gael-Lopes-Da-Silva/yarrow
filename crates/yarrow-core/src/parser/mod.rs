@@ -69,11 +69,7 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self {
-            tokens,
-            current: 0,
-            errors: DiagnosticBatch::new(),
-        }
+        Self::with_error_limit(tokens, DiagnosticBatch::new().limit())
     }
 
     /// Parse a program. On syntax failure returns every recovered diagnostic
@@ -90,6 +86,14 @@ impl Parser {
             return Err(self.errors.take());
         }
         Ok(Program { items })
+    }
+
+    pub fn with_error_limit(tokens: Vec<Token>, error_limit: usize) -> Self {
+        Self {
+            tokens,
+            current: 0,
+            errors: DiagnosticBatch::with_limit(error_limit),
+        }
     }
 
     fn record_error(&mut self, err: ParseError) -> bool {

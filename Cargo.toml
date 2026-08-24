@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-yarrow_core = { path = "crates/yarrow-core" }
+yarrow_cli = { path = "crates/yarrow-cli" }
 
 [workspace]
 resolver = "3"

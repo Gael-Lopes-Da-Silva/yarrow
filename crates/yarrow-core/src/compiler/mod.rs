@@ -20,7 +20,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 
-use crate::diagnostics::{DiagnosticBatch, Span};
+use crate::diagnostics::{DEFAULT_ERROR_LIMIT, DiagnosticBatch, Span};
 use crate::parser::ast::{
     BinOp, Expr, Function, MatchCase, MatchCaseKind, ParamModifier, Primitive, Program, StackOp,
     Stmt, StmtKind, UnOp, Visibility,
@@ -254,6 +254,8 @@ pub struct Compiler {
     program_span: Span,
     /// Diagnostics collected during a compile (Stage 10 multi-error).
     errors: DiagnosticBatch,
+    /// Maximum number of diagnostics to collect before aborting.
+    error_limit: usize,
 }
 
 impl Compiler {
@@ -299,8 +301,13 @@ impl Compiler {
             finalized: false,
             source_path: String::new(),
             program_span: Span::default(),
-            errors: DiagnosticBatch::new(),
+            error_limit: DEFAULT_ERROR_LIMIT,
+            errors: DiagnosticBatch::with_limit(DEFAULT_ERROR_LIMIT),
         })
+    }
+
+    pub fn set_error_limit(&mut self, error_limit: usize) {
+        self.error_limit = error_limit.max(1);
     }
 
     pub fn set_source_path(&mut self, path: impl Into<String>) {
@@ -320,7 +327,7 @@ impl Compiler {
     /// On failure returns every collected diagnostic (capped), not only the
     /// first independent error.
     pub fn compile(&mut self, program: &Program) -> Result<(), DiagnosticBatch> {
-        self.errors = DiagnosticBatch::new();
+        self.errors = DiagnosticBatch::with_limit(self.error_limit);
         match self.compile_inner(program) {
             Ok(()) => {
                 if self.errors.is_empty() {
