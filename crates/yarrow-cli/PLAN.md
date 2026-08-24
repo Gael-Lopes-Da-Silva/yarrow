@@ -54,10 +54,10 @@ Workspace change when Stage 1 lands:
 
 Shared by `run` and `compile` via `--target`:
 
-| Value    | Meaning                                                                 | Core mode              |
-| -------- | ----------------------------------------------------------------------- | ---------------------- |
-| `jit`    | Cranelift in-process machine code (default). Whole program lowered, then used in-process. | `ExecutionMode::Jit`   |
-| `object` | Native relocatable object (AOT). Write an artifact; linking/exec is CLI-side when ready. | `ExecutionMode::Object` |
+| Value    | Meaning                                                                                   | Core mode               |
+| -------- | ----------------------------------------------------------------------------------------- | ----------------------- |
+| `jit`    | Cranelift in-process machine code (default). Whole program lowered, then used in-process. | `ExecutionMode::Jit`    |
+| `object` | Native relocatable object (AOT). Write an artifact; linking/exec is CLI-side when ready.  | `ExecutionMode::Object` |
 
 Interpretation is **not** a `--target`. It is its own command (`interpret`) so the UX stays: compile backends vs evaluate in the VM.
 
@@ -86,32 +86,32 @@ yarrow interpret <file>                     # stack VM / interpreter; execute ma
 
 ### Ship in this phase (landed or in progress)
 
-| Command   | Analog                          | Behavior                                                                      |
-| --------- | ------------------------------- | ----------------------------------------------------------------------------- |
-| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute `main` (JIT today).                  |
-| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run `main`.    |
-| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.               |
-| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                         |
-| `version` | `rustc -V`                      | Crate / git version string.                                                   |
+| Command   | Analog                          | Behavior                                                                   |
+| --------- | ------------------------------- | -------------------------------------------------------------------------- |
+| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute `main` (JIT today).               |
+| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run `main`. |
+| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.            |
+| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                      |
+| `version` | `rustc -V`                      | Crate / git version string.                                                |
 
 ### Next (CLI stages below; need core Stage 13)
 
-| Command      | Behavior                                                                                          | Core need                                      |
-| ------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `compile`    | Codegen only (no `main`). Default `--target jit`. `--target object` writes a native artifact.     | `Jit` finalize without run; `Object` emit      |
-| `--target`   | On `run` and `compile`: `jit` \| `object` (default `jit`).                                        | `ExecutionMode`                                |
-| `interpret`  | Check + interpret `main` (no machine code).                                                       | Stage 13b interpret API                        |
-| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.     | Object emit (+ link story)                     |
+| Command               | Behavior                                                                                      | Core need                                 |
+| --------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `compile`             | Codegen only (no `main`). Default `--target jit`. `--target object` writes a native artifact. | `Jit` finalize without run; `Object` emit |
+| `--target`            | On `run` and `compile`: `jit` \| `object` (default `jit`).                                    | `ExecutionMode`                           |
+| `interpret`           | Check + interpret `main` (no machine code).                                                   | Stage 13b interpret API                   |
+| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.         | Object emit (+ link story)                |
 
 ### Later (other crates or language)
 
-| Command | Notes                                                            |
-| ------- | ---------------------------------------------------------------- |
-| `fmt`   | Delegate to `yarrow-fmt` when that crate exists.                 |
-| `lsp`   | Usually a separate binary; optional `yarrow lsp` later.          |
-| `test`  | No test runner in the language yet.                              |
+| Command | Notes                                                                            |
+| ------- | -------------------------------------------------------------------------------- |
+| `fmt`   | Delegate to `yarrow-fmt` when that crate exists.                                 |
+| `lsp`   | Usually a separate binary; optional `yarrow lsp` later.                          |
+| `test`  | No test runner in the language yet.                                              |
 | `repl`  | Interactive shell on core `EvalContext`; not required for `interpret` file mode. |
-| `clean` | Only meaningful once `compile --target object` writes artifacts. |
+| `clean` | Only meaningful once `compile --target object` writes artifacts.                 |
 
 ---
 
@@ -131,14 +131,14 @@ Available on every command (clap `global = true` where it makes sense):
 
 Command-specific:
 
-| Command     | Flags                                                                                          |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `run`       | `<FILE>`; `--target jit\|object` (default `jit`). Optional `--` + program args later.          |
-| `check`     | `<FILE>` required.                                                                             |
-| `compile`   | `<FILE>`; `--target jit\|object` (default `jit`); `-o <path>` when object emit lands.          |
-| `interpret` | `<FILE>` required.                                                                             |
-| `dump`      | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir`).                                         |
-| `explain`   | `<CODE>` e.g. `E308`.                                                                          |
+| Command     | Flags                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------- |
+| `run`       | `<FILE>`; `--target jit\|object` (default `jit`). Optional `--` + program args later. |
+| `check`     | `<FILE>` required.                                                                    |
+| `compile`   | `<FILE>`; `--target jit\|object` (default `jit`); `-o <path>` when object emit lands. |
+| `interpret` | `<FILE>` required.                                                                    |
+| `dump`      | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir`).                                |
+| `explain`   | `<CODE>` e.g. `E308`.                                                                 |
 
 ---
 

@@ -24,15 +24,15 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 
 ## Current state
 
-| Component   | Status | Notes                                                                    |
-| ----------- | ------ | ------------------------------------------------------------------------ |
-| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                             |
-| Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains    |
-| Compiler    | ✅     | JIT only; ownership / borrow / region / unsafe; grammar tour             |
-| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return       |
-| Library API | 🟡     | `Session` / `CompileOptions` / `emit_ir` landed; still one backend (JIT) |
-| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O               |
-| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`        |
+| Component   | Status | Notes                                                                         |
+| ----------- | ------ | ----------------------------------------------------------------------------- |
+| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                                  |
+| Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains         |
+| Compiler    | ✅     | JIT + check-only path; ownership / borrow / region / unsafe                   |
+| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return            |
+| Library API | 🟡     | `ExecutionMode` / `check_source` / `CheckedProgram`; Object/Interpret stubbed |
+| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O                    |
+| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`             |
 
 **Gates today:** all `docs/examples/valid/**` compile and run; all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
@@ -58,10 +58,10 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| API         | Session exists but always JIT-lowers; no `ExecutionMode`, no check-only / object / interpret artifacts          |
+| API         | `ExecutionMode` + `check_source` landed; Object/Interpret not implemented yet                                   |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
 | Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
-| Backends    | JIT only; `emit_ir` API exists; no object/AOT, no interpreter, no shared checked-program handoff                |
+| Backends    | Check + JIT; no object/AOT, no interpreter; check still drives Cranelift as analysis vehicle                    |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
 
@@ -102,9 +102,9 @@ Teach the stack model on common failures (underflow, branch join mismatch, retur
 
 ---
 
-### Stage 13 — Execution backends (JIT / object / interpret) ⬜
+### Stage 13 — Execution backends (JIT / object / interpret) 🟡
 
-**Goal:** One checked frontend, three long-term ways to run or ship code. Stage 13 lays the architecture and ships the pieces that unblock CLI `check`, `run` / `compile --target jit|object`, and `interpret`.
+**Status:** 13a ✅; 13b / 13c still open.
 
 Target backends (names can adjust; keep the split):
 
@@ -117,21 +117,21 @@ Target backends (names can adjust; keep the split):
 
 `emit_ir` / `SessionArtifact::emit_ir` already landed (CLI `dump --emit ir`). Keep that API; do not gate Stage 13 on it.
 
-#### 13a — Pipeline split and mode knob (required)
+#### 13a — Pipeline split and mode knob ✅
 
 Stop folding “check” into “always build a JIT module”.
 
-1. **`ExecutionMode`** (or `CodegenMode`) on `CompileOptions`: at least `Check`, `Jit`, `Object`, `Interpret`.
-2. **Shared frontend handoff** after parse + semantic analysis:
-   - Prefer a **`CheckedProgram`** (or equivalent) that owns the validated `Program`, resolved modules, and whatever typed/stack facts backends need.
-   - Checking must be **backend-agnostic**: ownership, borrow, regions, stack effects, and types run once for all modes.
-3. **Session API**:
-   - `check_source` / mode `Check` — diagnostics only; no JIT finalize, no interpreter heap for execution.
-   - `compile_source` with `Jit` — today’s path (may reuse checking from the handoff).
-   - Clear errors if `Object` / `Interpret` are selected before those backends are ready (or implement them in 13b/13c below).
-4. Refactor so Cranelift module creation / define / finalize is confined to the JIT (and later object) backend, not the checker.
+1. **`ExecutionMode`** on `CompileOptions`: `Check`, `Jit`, `Object`, `Interpret`.
+2. **`CheckedProgram`** handoff after successful `check_source` (file + program). Checking is shared with JIT via the same lower path; Check skips `define_function` / JIT finalize (`Compiler::set_check_only`).
+3. **Session API:**
+   - `check_source` — diagnostics only; no JIT install.
+   - `compile_source` with `Jit` — today’s path.
+   - `Object` / `Interpret` return clear E391 / E392 diagnostics until 13b/13c.
+4. CLI `yarrow check` uses `ExecutionMode::Check` + `check_source`.
 
-**Gate (13a):** `Session` + `ExecutionMode::Check` type-checks a valid example without requiring a successful JIT module. Invalid examples still fail with the same codes. Default `Jit` path still runs `01_hello.yar`. `cargo clippy` green.
+**Note:** Check still constructs a Cranelift `JITModule` as the vehicle for SSA/slot analysis. A backend-free checker can come later; the gate is no JIT _install_ / finalize for Check.
+
+**Gate (13a):** `Session` + `ExecutionMode::Check` type-checks valid examples without installing JIT code. Invalid examples still fail with the same codes. Default `Jit` path still runs `01_hello.yar`. `cargo clippy` green.
 
 #### 13b — Interpreter groundwork (required for this stage)
 

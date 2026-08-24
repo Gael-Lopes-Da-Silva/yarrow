@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use yarrow_core::{CompileOptions, Session};
+use yarrow_core::{CompileOptions, ExecutionMode, Session};
 
 use crate::args::GlobalArgs;
 use crate::diagnostics::render_batch;
@@ -25,10 +25,11 @@ pub fn check_file(file: &Path, global: &GlobalArgs) -> ExitCode {
         opts.module_search_paths.push(p.clone());
     }
     opts.error_limit = global.error_limit;
+    opts.mode = ExecutionMode::Check;
 
     let session = Session::new(opts);
-    match session.compile_source(source) {
-        Ok(_artifact) => ExitCode::SUCCESS,
+    match session.check_source(source) {
+        Ok(_checked) => ExitCode::SUCCESS,
         Err(diags) => {
             eprint!("{}", render_batch(&diags.batch, &diags.file, color));
             ExitCode::from(1)

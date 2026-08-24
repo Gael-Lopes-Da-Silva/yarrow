@@ -258,6 +258,10 @@ pub struct Compiler {
     error_limit: usize,
     /// Cranelift IR text captured after each function is lowered.
     ir_dump: String,
+    /// When true, run full type / ownership / stack checks and lower to CLIF
+    /// for analysis, but do not `define_function` or finalize a JIT module.
+    /// Used by `ExecutionMode::Check` (Stage 13a).
+    check_only: bool,
 }
 
 impl Compiler {
@@ -306,12 +310,22 @@ impl Compiler {
             error_limit: DEFAULT_ERROR_LIMIT,
             errors: DiagnosticBatch::with_limit(DEFAULT_ERROR_LIMIT),
             ir_dump: String::new(),
+            check_only: false,
         })
     }
 
     /// Cranelift IR for every function lowered in the last successful compile.
     pub fn emit_ir(&self) -> String {
         self.ir_dump.clone()
+    }
+
+    /// Check-only mode: semantic analysis without installing JIT code.
+    pub fn set_check_only(&mut self, check_only: bool) {
+        self.check_only = check_only;
+    }
+
+    pub fn is_check_only(&self) -> bool {
+        self.check_only
     }
 
     pub fn set_error_limit(&mut self, error_limit: usize) {
@@ -979,6 +993,14 @@ impl Compiler {
     /// driver-displayable form. Supports void `main` and integer, float, bool
     /// and string results; other result types are rejected with `E360`.
     pub fn run_main(&mut self) -> CResult<RunResult> {
+        if self.check_only {
+            return Err(CompileError::new(
+                "cannot run main: this compiler was built in check-only mode",
+                self.program_span,
+                "E390",
+            )
+            .with_help("use ExecutionMode::Jit (Session::compile_source) to run"));
+        }
         self.finalize()?;
         let id = *self.func_ids.get("main").ok_or_else(|| {
             CompileError::new("program has no 'main' function", self.program_span, "E360")
@@ -1832,6 +1854,11 @@ impl Compiler {
         self.ir_dump.push_str(&ir_text);
         if std::env::var("YARROW_DBG_IR").is_ok() {
             eprint!("{ir_text}");
+        }
+        if self.check_only {
+            // Analysis complete; discard CLIF instead of installing it in the JIT.
+            self.module.clear_context(&mut ctx);
+            return Ok(());
         }
         if let Err(e) = self.module.define_function(id, &mut ctx) {
             return Err(e.into());
