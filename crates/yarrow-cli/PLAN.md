@@ -30,7 +30,7 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 
 **Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
 
-**Target UX (this plan):** `check` / `run` / `compile` / `interpret`, with `--target jit|object` on `run` and `compile`. See [Command set](#command-set).
+**Target UX (this plan):** `check` / `run` / `compile` / `interpret`, with `--target jit|object` on `run` and `compile`, and `--main <NAME>` to pick the program entry (default `main`). See [Command set](#command-set).
 
 ---
 
@@ -73,35 +73,38 @@ Modeled on common compiler / language CLIs. Yarrow is a single-file-plus-`requir
 
 ```text
 yarrow check <file>                         # type / ownership / stack check only
-yarrow run <file>                           # --target jit (default): JIT + execute main
+yarrow run <file>                           # --target jit (default): JIT + execute entry
 yarrow run --target jit <file>              # same, explicit
 yarrow run --target object <file>           # native: compile (+ link when ready) and execute
-yarrow compile <file>                       # --target jit (default): lower/codegen, do not run main
+yarrow run --main start <file>              # execute top-level `start` instead of `main`
+yarrow compile <file>                       # --target jit (default): lower/codegen, do not run
 yarrow compile --target jit <file>          # same, explicit
 yarrow compile --target object <file>       # emit native object (-o when implemented)
-yarrow interpret <file>                     # stack VM / interpreter; execute main
+yarrow compile --main start --target object <file>  # CRT calls `start`
+yarrow interpret <file>                     # interpreter; execute entry
 ```
 
-**Default:** `yarrow <file.yar>` remains sugar for `yarrow run <file.yar>` (JIT + run).
+**Default:** `yarrow <file.yar>` remains sugar for `yarrow run <file.yar>` (JIT + run). Entry function is `main` unless `--main` is set.
 
 ### Ship in this phase (landed or in progress)
 
-| Command   | Analog                          | Behavior                                                                   |
-| --------- | ------------------------------- | -------------------------------------------------------------------------- |
-| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute `main` (JIT today).               |
-| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run `main`. |
-| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.            |
-| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                      |
-| `version` | `rustc -V`                      | Crate / git version string.                                                |
+| Command   | Analog                          | Behavior                                                                  |
+| --------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute entry (`main` or `--main`).      |
+| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run entry. |
+| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.           |
+| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                     |
+| `version` | `rustc -V`                      | Crate / git version string.                                               |
 
 ### Next (CLI stages below; need core Stage 13)
 
-| Command               | Behavior                                                                                      | Core need                                 |
-| --------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `compile`             | Codegen only (no `main`). Default `--target jit`. `--target object` writes a native artifact. | `Jit` finalize without run; `Object` emit |
-| `--target`            | On `run` and `compile`: `jit` \| `object` (default `jit`).                                    | `ExecutionMode`                           |
-| `interpret`           | Check + interpret `main` (no machine code).                                                   | Stage 13b interpret API                   |
-| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.         | Object emit (+ link story)                |
+| Command               | Behavior                                                                                       | Core need                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `compile`             | Codegen only (do not run). Default `--target jit`. `--target object` writes a native artifact. | `Jit` finalize without run; `Object` emit |
+| `--target`            | On `run` and `compile`: `jit` \| `object` (default `jit`).                                     | `ExecutionMode`                           |
+| `--main <NAME>`       | Entry function (default `main`) on `run` / `check` / `compile` / `interpret`.                  | `CompileOptions::entry_name` (core 17)    |
+| `interpret`           | Check + interpret the entry (no machine code).                                                 | Stage 13b interpret API                   |
+| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.          | Object emit (+ link story)                |
 
 ### Later (other crates or language)
 
@@ -131,14 +134,14 @@ Available on every command (clap `global = true` where it makes sense):
 
 Command-specific:
 
-| Command     | Flags                                                                                 |
-| ----------- | ------------------------------------------------------------------------------------- |
-| `run`       | `<FILE>`; `--target jit\|object` (default `jit`). Optional `--` + program args later. |
-| `check`     | `<FILE>` required.                                                                    |
-| `compile`   | `<FILE>`; `--target jit\|object` (default `jit`); `-o <path>` when object emit lands. |
-| `interpret` | `<FILE>` required.                                                                    |
-| `dump`      | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir`).                                |
-| `explain`   | `<CODE>` e.g. `E308`.                                                                 |
+| Command     | Flags                                                                                                                   |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `run`       | `<FILE>`; `--target jit\|object` (default `jit`); `--main <NAME>` (default `main`). Optional `--` + program args later. |
+| `check`     | `<FILE>`; `--main <NAME>` (default `main`) for the required entry.                                                      |
+| `compile`   | `<FILE>`; `--target jit\|object` (default `jit`); `--main <NAME>`; `-o <path>` when object emit lands.                  |
+| `interpret` | `<FILE>`; `--main <NAME>` (default `main`).                                                                             |
+| `dump`      | `<FILE>` plus `--emit tokens\|ast\|ir` (default `ir`).                                                                  |
+| `explain`   | `<CODE>` e.g. `E308`.                                                                                                   |
 
 ---
 
@@ -153,7 +156,7 @@ Keep the current driver convention and align with rustc-ish practice:
 | `2`   | Usage, missing file, I/O, or unimplemented target/command (`object` / `interpret` before ready). |
 | `101` | Internal compiler error if we later distinguish ICE from user errors (optional).                 |
 
-`run` / `interpret` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping `main`’s integer to the process exit code is grammar-optional and is **not** the first CLI stage.
+`run` / `interpret` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping the entry’s integer to the process exit code is grammar-optional for JIT/`interpret`; native CRT (core Stage 17) does map it for `--target object` executables.
 
 ---
 
@@ -224,6 +227,7 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
 3. `run --target jit`: today’s behavior (default).
 4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT. Core object emit is available (Stage 13c).
 5. Keep `yarrow <file>` as sugar for `run --target jit <file>`.
+6. Accept `--main <NAME>` on `run` / `compile` (and `check` if that command is still being extended). Until core Stage 17 lands `entry_name`, pass-through may be ignored **only** if the flag is rejected with exit `2`; do not silently run a different function.
 
 **Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow compile --target object …` writes a non-empty `.o` (core 13c). `yarrow run --target object …` exits `2` until link+exec exists.
 
@@ -233,11 +237,24 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
 
 Core Stage 13b interpret API is available (`Session::interpret_source`).
 
-1. `yarrow interpret <file>`: check + interpret `main`; print `RunResult` like `run`.
+1. `yarrow interpret <file>`: check + interpret the entry (`main` or `--main`); print `RunResult` like `run`.
 2. No `--target` on `interpret`.
 3. Optional later: `yarrow repl` on `EvalContext` (separate stage; not required here).
 
 **Gate:** `yarrow interpret docs/examples/valid/01_hello.yar` matches `yarrow run` output for that file once core interpret MVP exists. Before that: command may be stubbed with exit `2`.
+
+---
+
+### Stage 8 — Native exec + `--main` ⬜
+
+Depends on core Stages 17–18 (`entry_name`, CRT, `compile_executable_source`).
+
+1. Wire `--main <NAME>` into `CompileOptions::entry_name` for `run`, `check`, `compile`, and `interpret`.
+2. `compile --target object` still writes a `.o` unless later we grow a “full executable” `-o` mode; CRT uses `--main` when linking.
+3. `run --target object`: link (core 18) and exec. Honor `--main`. Do not fall back to JIT.
+4. Unknown entry: same E360 path as JIT, exit `1`.
+
+**Gate:** `yarrow run --main main docs/examples/valid/01_hello.yar` matches default `run`. `yarrow run --main does_not_exist …` exits `1` with E360. `run --target object` runs `01_hello.yar` once core 18 is ready.
 
 ---
 
@@ -249,6 +266,7 @@ Core Stage 13b interpret API is available (`Session::interpret_source`).
 4. Help/version/color/error-limit behave as specified.
 5. `dump` / `explain` land as core APIs allow.
 6. `compile` and `--target` exist; `object` and `interpret` are either real or explicit exit `2`, never a silent no-op.
+7. `--main <NAME>` is parsed on `run` / `check` / `compile` / `interpret` and forwarded as `CompileOptions::entry_name` once core Stage 17 lands.
 
 ---
 

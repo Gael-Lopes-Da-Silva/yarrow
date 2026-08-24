@@ -30,13 +30,14 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains |
 | Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe  |
 | Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return    |
-| Library API | ✅     | `Session` / modes: check, JIT, object emit, interpret MVP             |
-| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O            |
+| Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                     |
+| AOT / link  | 🟡     | Relocatable `.o` bytes; no linkable runtime or host executable yet    |
+| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT-only symbol install     |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`     |
 
-**Gates today:** all `docs/examples/valid/**` compile and run; all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
+**Gates today:** all `docs/examples/valid/**` compile and run (JIT); all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
-Long-term execution story (planned in Stage 13+): **JIT** (`run` / `compile --target jit`), **native object** (`--target object`), **interpreter** (`interpret`). One frontend; backends plug in after checking.
+**Execution backends (landed):** `Check`, `Jit`, `Object` (relocatable bytes), `Interpret` (MVP). **Next:** Phase D turns object emit into a runnable host binary.
 
 ---
 
@@ -50,6 +51,20 @@ Tokenizer, parser, and compiler aligned with the current docs: `~` concat, `|T E
 
 Full rustc-style rendering (`Span`, labels, notes, help), teachable error catalog (E373–E376, E370, E308, …), parser recovery and compiler multi-error collection with output cap.
 
+### Phase C (part 1): Session API and backends (Stages 11–13) ✅
+
+| Stage | What landed                                                                                            |
+| ----- | ------------------------------------------------------------------------------------------------------ |
+| 11    | `CompileOptions` / `Session`; tokenize, parse, check, compile without duplicating the root driver      |
+| 12    | Stack-effect notes on underflow / branch join / return imbalance                                       |
+| 13a   | `ExecutionMode` + `CheckedProgram`; `check_source` without JIT install                                 |
+| 13b   | Tree-walk `interpret_source` / `EvalContext` MVP (`01_hello`, `02_arithmetic_and_stack`)               |
+| 13c   | `cranelift-object` via `CodeModule`; `Session::compile_object_source` → `ObjectArtifact { bytes, ir }` |
+
+Object emit leaves host runtime symbols as `Linkage::Import`. Linking and a runnable executable are Phase D (not CLI-only stubs).
+
+Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [`docs/RUNTIME.md`](../../docs/RUNTIME.md)).
+
 ---
 
 ## Known gaps (compiler scope)
@@ -58,125 +73,18 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| API         | `ExecutionMode` / check / interpret / object emit landed; link/exec stays CLI                                   |
+| AOT         | Object bytes only; need linkable runtime, entry/CRT, and host link to a real executable (Stages 16–18)          |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
 | Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
-| Backends    | Check + JIT + object bytes + interpret MVP; check still uses Cranelift as analysis vehicle; no linker           |
+| Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile                    |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
 
 ---
 
-## Phase C: Compiler API and checking depth
+## Phase C (part 2): Checking and AST polish
 
-Language surface and diagnostic baseline are done. Phase C makes the compiler a usable **library** (what `yarrow-cli` will call) and deepens checking/codegen inside the same crate.
-
-CLI commands (`check`, `run`, `--emit`, …) are specified in the CLI plan. This crate exposes the operations those commands need.
-
-### Stage 11 — Compile session API ✅
-
-**Why first:** `yarrow-cli` must not copy `src/main.rs`. A single session type is the compiler-side contract for check, run, compile, interpret, and dump.
-
-1. **`CompileOptions`** — source path, extra module search paths, diagnostic cap, whether to require `main`, execution mode (Stage 13).
-2. **`Session` (or `Frontend`)** — owns source text / `SourceFile`, search paths, collected diagnostics.
-3. **Pipeline methods** (library, no process I/O beyond reading the entry file if the caller passes a path):
-   - `tokenize` / `parse` / `compile`
-   - `check(&Program) -> Result<(), DiagnosticBatch>` — same semantic checks as `compile`, **must not** call `run_main`
-   - structured outcome: diagnostics + optional compiled artifact
-4. **Public re-exports** from `yarrow_core` so `yarrow-cli` depends only on this crate for compile work.
-5. Keep existing `Compiler::compile` / `run_main` working; session wraps them.
-
-**Gate:** a small Rust caller (the current root driver, or a later CLI `check`) can tokenize, parse, and compile without duplicating diagnostic printing setup beyond `render` + `ColorChoice`. Valid examples still run; invalid examples still produce batches. No clap in this crate.
-
----
-
-### Stage 12 — Stack-effect diagnostics ✅
-
-Teach the stack model on common failures (underflow, branch join mismatch, return stack imbalance).
-
-1. Track expected vs found stack types in `pop_slot` / branch merge / `return`.
-2. Append a note like `stack: [i32, string] → expected [bool]` on E324 / E328 / E362-style errors.
-3. Format types the way users write them (`list<i32>`, `|i32 error.Error|`), not debug dumps.
-
-**Gate:** at least two invalid examples (or new ones if needed) gain a stack note without regressing primary spans.
-
----
-
-### Stage 13 — Execution backends (JIT / object / interpret) ✅
-
-**Status:** 13a ✅; 13b ✅; 13c ✅.
-
-Target backends (names can adjust; keep the split):
-
-| Mode        | CLI consumer                                      | Role                                                               |
-| ----------- | ------------------------------------------------- | ------------------------------------------------------------------ |
-| `Check`     | `yarrow check`, IDE / LSP later                   | Full type / ownership / stack / region checks; **no** machine code |
-| `Jit`       | `yarrow run` / `compile` (default `--target jit`) | Cranelift in-process machine code + optional `run_main`            |
-| `Object`    | `yarrow run` / `compile --target object`          | Native relocatable object (AOT); link/exec stays CLI-side          |
-| `Interpret` | `yarrow interpret` (and later `repl`)             | Stack VM over checked code; no machine code                        |
-
-`emit_ir` / `SessionArtifact::emit_ir` already landed (CLI `dump --emit ir`). Keep that API; do not gate Stage 13 on it.
-
-#### 13a — Pipeline split and mode knob ✅
-
-Stop folding “check” into “always build a JIT module”.
-
-1. **`ExecutionMode`** on `CompileOptions`: `Check`, `Jit`, `Object`, `Interpret`.
-2. **`CheckedProgram`** handoff after successful `check_source` (file + program). Checking is shared with JIT via the same lower path; Check skips `define_function` / JIT finalize (`Compiler::set_check_only`).
-3. **Session API:**
-   - `check_source` — diagnostics only; no JIT install.
-   - `compile_source` with `Jit` — today’s path.
-   - `Object` → use `compile_object_source`; `Interpret` → use `interpret_source` (clear E391 / E392 if called via `compile_source`).
-4. CLI `yarrow check` uses `ExecutionMode::Check` + `check_source`.
-
-**Note:** Check still constructs a Cranelift JIT module as the vehicle for SSA/slot analysis. A backend-free checker can come later; the gate is no JIT _install_ / finalize for Check.
-
-**Gate (13a):** `Session` + `ExecutionMode::Check` type-checks valid examples without installing JIT code. Invalid examples still fail with the same codes. Default `Jit` path still runs `01_hello.yar`. `cargo clippy` green.
-
-#### 13b — Interpreter groundwork ✅
-
-Interpretation is the path for `yarrow interpret` and a future REPL. Do **not** put REPL UI in this crate; expose an eval API the CLI can wrap later.
-
-1. **Design choice (landed):** tree-walk the checked AST with an explicit operand stack, calling into `runtime` for strings / print. Documented in `interpreter/mod.rs`. Stack bytecode can replace this later without changing `Session::interpret_source` / `EvalContext`.
-2. **Library surface (landed):**
-   - `Session::interpret_source` → check then run `main`, returns `RunResult`.
-   - `EvalContext` / `Interpreter` for load + `run_main` (REPL can grow on this).
-3. **Semantics:** interpreter executes **already-checked** code (via `check_source` first). Reuses host runtime handles.
-4. **Parity (gate examples):**
-   - In scope: `docs/examples/valid/01_hello.yar`, `docs/examples/valid/02_arithmetic_and_stack.yar`
-   - Out of scope for MVP: `if`/`for`/`match`, variables/`set`/`move`, structs/unions/regions, unsafe, fallible unwrap/handle, most std intrinsics (clear `E393` when hit).
-
-**Gate (13b):** `01_hello.yar` and `02_arithmetic_and_stack.yar` print the same lines via `interpret_source` as via JIT `run`. API callable without clap.
-
-#### 13c — Object / AOT groundwork ✅
-
-Native objects power `yarrow compile --target object` (and later `yarrow run --target object` after link+exec). Full link-to-executable stays CLI-side.
-
-1. **`ExecutionMode::Object`** selectable; `compile_source` with Object returns E391 pointing at `compile_object_source`.
-2. **Real emit (landed):** `cranelift-object` via shared `CodeModule` (JIT + object) and the same CLIF lowering. `Session::compile_object_source` → `ObjectArtifact { bytes, ir }`.
-3. Host runtime symbols stay `Linkage::Import` in the object; linking / providing libyarrow is CLI follow-up.
-4. No system linker inside `yarrow-core`.
-
-**Gate (13c):** `01_hello.yar` yields a non-empty host object (ELF magic verified on Linux). JIT path unchanged.
-
-#### Out of scope for Stage 13 (backlog / CLI)
-
-- REPL UI, line editing, multi-line paste (`yarrow-cli`).
-- Linking objects into a standalone binary / choosing a system linker (`run`/`compile --target object` polish).
-- Cross-compilation targets, DWARF, optimized AOT tiers.
-- Full interpret parity with every JIT intrinsic and module edge case.
-- Switching the default `run` / `compile` target from `jit` to `object` or interpret.
-
-#### Implementation notes
-
-- Keep `YARROW_DBG_IR` as a debug convenience over `emit_ir`, not the primary dump API.
-- Optional later: source line comments on IR dumps via `Span` (nice-to-have, not a gate).
-- Pipeline diagram in [`docs/RUNTIME.md`](../../docs/RUNTIME.md): tokenize → parse → check → `{jit \| object \| interpret}`.
-- CLI plan: `check` → `Check`; `run`/`compile --target jit|object` → `Jit`/`Object`; `interpret` → `Interpret`. No separate `build` command.
-
-**Stage 13 gate (overall):** 13a–13c landed; interpret MVP + object bytes + check/JIT; plans updated.
-
----
+Language surface, diagnostics, session API, and backend split are done. Remaining Phase C stages close type/AST debt that is already in the docs. These can run in parallel with Phase D when useful.
 
 ### Stage 14 — Numeric / literal polish ⬜
 
@@ -195,24 +103,94 @@ Close type-system gaps that are already in the docs.
 Internal compiler-facing AST, not new syntax.
 
 1. Flatten postfix sequences where `Expr::Seq` nesting hides per-word spans.
-2. Distinguish `main` on `Program` (or a resolve pass) so missing-`main` (`E360`) does not scan ad hoc.
+2. Distinguish the program entry on `Program` (or a resolve pass) so missing-entry (`E360`) does not scan ad hoc. Default name `main`; honor `CompileOptions::entry_name` when Stage 17 lands.
 3. Tighten `{}` struct vs hashmap disambiguation per grammar (typed empty `{}` vs struct literals).
 
 **Gate:** example corpus unchanged in behavior; diagnostics do not get worse; no public language change.
 
 ---
 
-### Backlog (compiler, after 11–15 or in parallel if small)
+## Phase D: Object / AOT to executable
 
-| Item                                                         | Value                           | Effort                                 |
-| ------------------------------------------------------------ | ------------------------------- | -------------------------------------- |
-| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler              | Medium                                 |
-| Full object link / run story (host runtime + linker)         | `compile`/`run --target object` | High; core emits `.o` bytes (13c)      |
-| Interpreter corpus parity + REPL `EvalContext` increments    | `interpret`, later `repl`       | Medium–high after Stage 13b            |
-| Error-code catalog data for `explain`                        | CLI `explain E308`              | Landed: `explain_code` / Phase B notes |
-| Multi-file project graph (beyond `require`)                  | Real programs                   | Medium                                 |
-| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std, not lowering     | Medium; keep out of compiler stages    |
-| IR dump with source line comments                            | Nicer `dump --emit ir`          | Low                                    |
+Stage 13c emits a relocatable host object. Phase D makes that path produce a **real runnable binary** the CLI can write and exec (`compile --target object`, later `run --target object`).
+
+Boundary:
+
+| Layer         | Owns                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `yarrow-core` | Runtime definitions, entry glue, object emit, link recipe / link helper → executable bytes |
+| `yarrow-cli`  | Paths (`-o`), invoking the link API, process exec, exit codes, clap                        |
+
+Do **not** put clap or process exit codes in this crate. Invoking the host `cc`/`ld` from a library helper is allowed for Stage 18.
+
+### Stage 16 — Linkable host runtime ⬜
+
+Today `HOST_FNS` are installed only into the JIT builder (`install_runtime`). Object files import the same names but nothing defines them for AOT.
+
+1. Expose a **linkable** artifact for the host runtime (same symbols / `extern "C"` ABI as `HOST_FNS`): static archive, relocatable object(s), or equivalent bytes the linker can consume.
+2. Single source of truth: symbol names and signatures stay aligned with `HOST_FNS` (no second handwritten export list that can drift).
+3. Document the AOT link surface in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) (what object emit imports; what the runtime provides).
+4. Keep JIT `install_runtime` working unchanged.
+
+**Gate:** runtime artifact is non-empty and exports the host symbols used by `01_hello.yar` (e.g. print helpers). `compile_object_source` still produces a valid `.o`. `cargo clippy` green.
+
+---
+
+### Stage 17 — Program entry / CRT glue ⬜
+
+A Yarrow program entry is not a C `main`. Standalone binaries need a small host CRT that calls the compiled entry with the right ABI and maps the return value to a process exit status.
+
+Default entry name is `main`. Callers (CLI `--main`) may choose another top-level function. Core owns the name as data, not argv parsing.
+
+1. **`CompileOptions::entry_name`** (default `"main"`):
+   - `require_main` looks up this name (E360 names the chosen entry, not a hardcoded `main`).
+   - JIT `run_main`, interpret `run_main`, and object emit all use the same name.
+2. Provide entry / CRT object or source (library surface) that:
+   - calls the exported Yarrow entry (agree and document the mangled / exported symbol; default `main`);
+   - is parameterized by `entry_name` so a non-`main` function can be the process start;
+   - translates supported returns (`void`, integer, …) into an exit code per grammar / current driver behavior;
+   - does not pull in clap or CLI printing of `RunResult` (optional later; exit code is enough for the gate).
+3. Ensure object emit exports the chosen entry with linkage the CRT can call.
+4. Document the entry contract (default `main`, override via options / CLI `--main`) next to the runtime link surface in `RUNTIME.md`.
+
+**Gate:** entry artifact + program object + runtime object are linkable together in principle (symbol resolution) for default `main`. `entry_name` is on `CompileOptions` and used by require-entry / lower / CRT glue. Missing entry still fails with E360 naming the requested function. No requirement yet that core shells out to `cc`.
+
+---
+
+### Stage 18 — Link to host executable ⬜
+
+Wire Stages 13c + 16 + 17 into one library API that produces a runnable host binary.
+
+1. **`Session::compile_executable_source`** (name can adjust) — check, emit program object, link with runtime + CRT (using `CompileOptions::entry_name`) via the host toolchain (`cc` preferred).
+2. Return a structured artifact (e.g. `ExecutableArtifact { file, bytes }` or path + bytes); include IR when useful for dump parity.
+3. Clear diagnostics when the linker is missing or link fails (`E39x`), with help pointing at needing a C toolchain.
+4. No silent fallback to JIT.
+5. CLI consumes this for `compile --target object` (write `-o`) and later `run --target object` (write temp + exec); that wiring is CLI-plan work.
+
+**Gate:** `01_hello.yar` via the new API yields a host executable that runs and prints the same lines as JIT `run`. Invalid programs still fail before link. `cargo clippy` green.
+
+#### Out of scope for Phase D (backlog)
+
+- Cross-compilation ISA / triple selection.
+- DWARF / debug info, optimized AOT tiers (`-O`).
+- Shipping a bundled linker (system `cc`/`ld` is enough).
+- Switching the default `run` / `compile` target from `jit` to `object`.
+- Full interpret parity with every JIT intrinsic.
+- REPL UI (`yarrow-cli`).
+
+---
+
+## Backlog (compiler, after current stages or in parallel if small)
+
+| Item                                                         | Value                     | Effort                              |
+| ------------------------------------------------------------ | ------------------------- | ----------------------------------- |
+| Warning catalog (unused `const`/`mutable`, unused `require`) | Teachable compiler        | Medium                              |
+| Interpreter corpus parity + REPL `EvalContext` increments    | `interpret`, later `repl` | Medium–high after Stage 13b         |
+| Multi-file project graph (beyond `require`)                  | Real programs             | Medium                              |
+| `std.fs` host I/O, richer `io` / `string`                    | Runtime / std             | Medium; keep out of compiler stages |
+| IR dump with source line comments                            | Nicer `dump --emit ir`    | Low                                 |
+| DWARF / AOT optimization tiers                               | Production native builds  | High; after Stage 18                |
+| Cross-compile targets                                        | Non-host objects          | High; after Stage 18                |
 
 ---
 
@@ -225,12 +203,18 @@ Internal compiler-facing AST, not new syntax.
 3. Failures render rustc-style with teachable notes; multi-error when recovery applies.
 4. `cargo fmt --all`, `cargo check`, `cargo clippy` green.
 
-### Phase C (in progress when started)
+### Phase C (Stages 11–13 done; 14–15 open)
 
 5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup (Stage 11).
 6. Stack-effect notes on high-traffic stack errors (Stage 12).
 7. Execution backends: check / JIT / object emit / interpret MVP (Stage 13).
 8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled.
+
+### Phase D (open)
+
+9. Host runtime is linkable for AOT (Stage 16).
+10. Entry/CRT calls the chosen program entry (`CompileOptions::entry_name`, default `main`) with a documented ABI (Stage 17).
+11. `Session` (or equivalent) can produce a runnable host executable for `01_hello.yar` (Stage 18).
 
 ---
 
@@ -243,3 +227,4 @@ Internal compiler-facing AST, not new syntax.
 - Do not invent lifetime syntax; ownership and regions are the model.
 - `unsafe` never disables type, stack, ownership, or borrow checking.
 - Do not add CLI parsing (`clap`, argv, exit codes) here. Those belong in `yarrow-cli`.
+- Phase D may invoke the host linker from a library helper; it must not become a CLI driver.
