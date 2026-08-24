@@ -16,6 +16,7 @@
 
 mod args;
 mod commands;
+mod diagnostics;
 
 pub use args::{Cli, Cmd};
 
@@ -44,6 +45,12 @@ where
         (Some(Cmd::Run { file }), None) => commands::run_file(&file, &cli.global),
         (None, Some(file)) => commands::run_file(&file, &cli.global),
         (Some(Cmd::Check { file }), None) => commands::check_file(&file, &cli.global),
+        (Some(Cmd::Version), None) => {
+            // Clap's built-in `--version` prints only the top-level crate version;
+            // this subcommand matches `rustc -V` style UX.
+            println!("yarrow {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         (Some(_), Some(_)) => {
             // Shouldn't happen in practice (clap would accept it), but keep it
             // deterministic.

@@ -39,6 +39,14 @@ pub struct GlobalArgs {
     /// Extra module search path (repeatable).
     #[arg(short = 'L', long = "search-path", global = true, value_name = "DIR")]
     pub search_paths: Vec<std::path::PathBuf>,
+
+    /// Suppress non-diagnostic driver output.
+    #[arg(short = 'q', long, global = true)]
+    pub quiet: bool,
+
+    /// Enable extra driver progress messages on stderr.
+    #[arg(short = 'v', long, global = true)]
+    pub verbose: bool,
 }
 
 /// `--color` argument value.
@@ -77,4 +85,7 @@ pub enum Cmd {
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
     },
+
+    /// Print the CLI version.
+    Version,
 }

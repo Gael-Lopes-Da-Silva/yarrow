@@ -6,8 +6,7 @@ use std::process::ExitCode;
 use yarrow_core::{CompileOptions, Session};
 
 use crate::args::GlobalArgs;
-
-use yarrow_core::render_batch;
+use crate::diagnostics::render_batch;
 
 pub fn check_file(file: &Path, global: &GlobalArgs) -> ExitCode {
     let path = file.to_string_lossy().into_owned();

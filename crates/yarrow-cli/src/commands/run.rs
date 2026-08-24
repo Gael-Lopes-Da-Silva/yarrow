@@ -3,9 +3,10 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use yarrow_core::{CompileOptions, RunResult, Session, render, render_batch};
+use yarrow_core::{CompileOptions, RunResult, Session};
 
 use crate::args::GlobalArgs;
+use crate::diagnostics::{render_batch, render_diag};
 
 /// Compile and execute `file`, printing any return value from `main`.
 pub fn run_file(file: &Path, global: &GlobalArgs) -> ExitCode {
@@ -47,11 +48,7 @@ pub fn run_file(file: &Path, global: &GlobalArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            let mut diag = (*e.diagnostic).clone();
-            if diag.path.is_empty() {
-                diag.path = artifact.file.path.clone();
-            }
-            eprint!("{}", render(&diag, &artifact.file, color));
+            eprint!("{}", render_diag(&e.diagnostic, &artifact.file, color));
             ExitCode::from(1)
         }
     }

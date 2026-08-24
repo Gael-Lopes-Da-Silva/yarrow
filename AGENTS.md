@@ -10,9 +10,9 @@ Yarrow is a typed, stack-based programming language with ownership, borrow check
 ## Layout
 
 - `crates/yarrow-core`: tokenizer → parser → compiler → runtime (Cranelift JIT)
-- `crates/yarrow-cli`: empty stub, futur CLI driver
-- `src/main.rs`: CLI driver (modules resolve relative to the source file)
-- `docs/`: syntax + assets
+- `crates/yarrow-cli`: CLI driver made with Clap (modules resolve relative to the source file)
+- `src/main.rs`: entry point of the project, linked to the CLI
+- `docs/`: documentation of the project, from grammar and syntax to memory model and type system or style guide
 
 ## Agent rules
 

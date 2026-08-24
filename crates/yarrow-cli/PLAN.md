@@ -21,12 +21,12 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 
 ## Current state
 
-| Piece              | Status | Notes                                           |
-| ------------------ | ------ | ----------------------------------------------- |
-| `yarrow-cli` crate | ⬜     | Empty `lib.rs`; no dependencies                 |
-| Root binary        | 🟡     | `src/main.rs` depends on `yarrow_core` directly |
-| Commands           | ⬜     | Implicit “compile and run `<file.yar>`” only    |
-| Flags              | ⬜     | Color is hardcoded `Auto`; no `--help`          |
+| Piece              | Status | Notes                                        |
+| ------------------ | ------ | -------------------------------------------- |
+| `yarrow-cli` crate | ✅     | Argument parsing + `run`/`check` dispatch    |
+| Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run` |
+| Commands           | ✅     | `run`, `check`, and `version` subcommands    |
+| Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v` |
 
 **Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
 
@@ -148,7 +148,7 @@ Keep the current driver convention and align with rustc-ish practice:
 
 ---
 
-### Stage 3 — Global polish ⬜
+### Stage 3 — Global polish ✅
 
 1. `--color`, `NO_COLOR`, `--error-limit`, `-L` / `--search-path`, `-q` / `-v`.
 2. `version` / `-V`.
