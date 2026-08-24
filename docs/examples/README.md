@@ -54,6 +54,8 @@ docs/examples
 | [`invalid/11_region_escape.yar`](invalid/11_region_escape.yar)                           | Free region while borrow live      |
 | [`invalid/12_multi_error.yar`](invalid/12_multi_error.yar)                               | ≥2 compile diagnostics in one run  |
 | [`invalid/13_multi_parse.yar`](invalid/13_multi_parse.yar)                               | ≥2 parse diagnostics in one run    |
+| [`invalid/14_stack_underflow.yar`](invalid/14_stack_underflow.yar)                       | Stack underflow (binary op)        |
+| [`invalid/15_if_branch_mismatch.yar`](invalid/15_if_branch_mismatch.yar)                 | if/else stack join mismatch        |
 
 ## Related docs
 

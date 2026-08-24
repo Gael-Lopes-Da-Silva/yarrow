@@ -2431,7 +2431,9 @@ impl Compiler {
                 ),
                 st.current_span,
                 "E323",
-            ));
+            )
+            .with_note(self.stack_effect_note(stack, &st.returns))
+            .with_help("leave the declared return values on the stack before `return` or falling off the end"));
         }
         let tail = stack.split_off(stack.len() - n);
         let wants: Vec<Ty> = st.returns.clone();
@@ -2616,7 +2618,9 @@ impl Compiler {
                 ),
                 st.current_span,
                 "E328",
-            ));
+            )
+            .with_note(self.stack_effect_note(&results, &success_tys))
+            .with_help("make the handle body leave the same number and types of values as the success path"));
         }
         let mut args: Vec<BlockArg> = Vec::with_capacity(results.len());
         for (s, want) in results.iter().zip(&success_tys) {
@@ -2651,6 +2655,86 @@ impl Compiler {
         b.switch_to_block(dead);
     }
 
+    /// Format a type the way users write it (`list<i32>`, not debug dumps).
+    fn format_ty(&self, ty: Ty) -> String {
+        match ty {
+            Ty::Bool => "bool".to_string(),
+            Ty::I8 => "i8".to_string(),
+            Ty::I16 => "i16".to_string(),
+            Ty::I32 => "i32".to_string(),
+            Ty::I64 => "i64".to_string(),
+            Ty::I128 => "i128".to_string(),
+            Ty::U8 => "u8".to_string(),
+            Ty::U16 => "u16".to_string(),
+            Ty::U32 => "u32".to_string(),
+            Ty::U64 => "u64".to_string(),
+            Ty::U128 => "u128".to_string(),
+            Ty::Rune => "rune".to_string(),
+            Ty::F16 => "f16".to_string(),
+            Ty::F32 => "f32".to_string(),
+            Ty::F64 => "f64".to_string(),
+            Ty::F128 => "f128".to_string(),
+            Ty::Void => "void".to_string(),
+            Ty::String => "string".to_string(),
+            Ty::Error => "error".to_string(),
+            Ty::List { elem } => format!("list<{}>", self.format_ty(elem_ty(elem))),
+            Ty::Hashmap { key, value } => format!(
+                "hashmap<{} {}>",
+                self.format_ty(elem_ty(key)),
+                self.format_ty(elem_ty(value))
+            ),
+            Ty::Array { elem, count } => {
+                let elem_s = self.format_ty(scalar_ty(elem));
+                if count == 0 {
+                    format!("array<{elem_s}>")
+                } else {
+                    format!("array<{elem_s} {count}>")
+                }
+            }
+            Ty::Ptr(code) => {
+                if code == 0x50 {
+                    "pointer<_>".to_string()
+                } else {
+                    format!("pointer<{}>", self.format_ty(elem_ty(u64::from(code))))
+                }
+            }
+            Ty::Struct(id) => self
+                .struct_layouts
+                .get(id as usize)
+                .map(|l| l.name.clone())
+                .unwrap_or_else(|| format!("struct#{id}")),
+            Ty::Union(id) => self
+                .unions
+                .get(id as usize)
+                .map(|u| u.name.clone())
+                .unwrap_or_else(|| format!("union#{id}")),
+            Ty::Enum(id) => self
+                .enums
+                .get(id as usize)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| format!("enum#{id}")),
+        }
+    }
+
+    fn format_stack_tys(&self, tys: &[Ty]) -> String {
+        let parts: Vec<String> = tys.iter().map(|t| self.format_ty(*t)).collect();
+        format!("[{}]", parts.join(", "))
+    }
+
+    fn format_stack_slots(&self, stack: &[Slot]) -> String {
+        let tys: Vec<Ty> = stack.iter().map(|s| s.ty).collect();
+        self.format_stack_tys(&tys)
+    }
+
+    /// Note of the form `stack: [found…] → expected [wanted…]`.
+    fn stack_effect_note(&self, found: &[Slot], expected: &[Ty]) -> String {
+        format!(
+            "stack: {} → expected {}",
+            self.format_stack_slots(found),
+            self.format_stack_tys(expected)
+        )
+    }
+
     fn pop_slot(&self, st: &FnState, stack: &mut Vec<Slot>, what: &str) -> CResult<Slot> {
         stack.pop().ok_or_else(|| {
             CompileError::new(
@@ -2658,7 +2742,30 @@ impl Compiler {
                 st.current_span,
                 "E362",
             )
+            .with_note(format!(
+                "stack: {} → expected at least one more value for {what}",
+                self.format_stack_slots(stack)
+            ))
+            .with_help("push the required operand before this word, or check earlier pops")
         })
+    }
+
+    /// Fail with a stack-effect note before consuming operands when `stack`
+    /// does not hold at least `n` values.
+    fn require_stack(&self, st: &FnState, stack: &[Slot], n: usize, what: &str) -> CResult<()> {
+        if stack.len() >= n {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            format!("missing operand for {what}"),
+            st.current_span,
+            "E362",
+        )
+        .with_note(format!(
+            "stack: {} → expected at least {n} value(s) for {what}",
+            self.format_stack_slots(stack)
+        ))
+        .with_help("push the required operand before this word, or check earlier pops"))
     }
 
     /// Emit a call to an imported host runtime function.
@@ -3105,11 +3212,14 @@ impl Compiler {
         let before = stack.len();
         self.compile_expr(b, st, stack, e)?;
         if stack.len() != before + 1 {
+            let found = &stack[before..];
             return Err(CompileError::new(
                 "condition must evaluate to a single value",
                 st.current_span,
                 "E324",
-            ));
+            )
+            .with_note(self.stack_effect_note(found, &[Ty::Bool]))
+            .with_help("leave exactly one boolean on the stack for the condition"));
         }
         let slot = stack.pop().unwrap();
         if slot.ty.is_bool() {
@@ -3117,7 +3227,14 @@ impl Compiler {
         } else {
             Err(
                 CompileError::new("condition must be bool", st.current_span, "E324")
-                    .with_primary_message(format!("expected bool, found {:?}", slot.ty))
+                    .with_primary_message(format!(
+                        "expected bool, found {}",
+                        self.format_ty(slot.ty)
+                    ))
+                    .with_note(format!(
+                        "stack: [{}] → expected [bool]",
+                        self.format_ty(slot.ty)
+                    ))
                     .with_note("`if` and conditional `for` require a boolean condition")
                     .with_help(
                         "compare with `==`, `<`, `>`, or another relational/logical operator first",
@@ -3144,6 +3261,10 @@ impl Compiler {
                 st.current_span,
                 "E324",
             )
+            .with_note(format!(
+                "stack: {} → expected [bool]",
+                self.format_stack_slots(stack)
+            ))
         })?;
         if slot.ty.is_int() || slot.ty.is_bool() {
             Ok(slot.value)
@@ -3152,7 +3273,15 @@ impl Compiler {
                 "condition must be a boolean or integer",
                 st.current_span,
                 "E324",
+            )
+            .with_primary_message(format!(
+                "expected bool or integer, found {}",
+                self.format_ty(slot.ty)
             ))
+            .with_note(format!(
+                "stack: [{}] → expected [bool]",
+                self.format_ty(slot.ty)
+            )))
         }
     }
 
@@ -3229,6 +3358,14 @@ impl Compiler {
                         "if/else branches must leave the same number of values",
                         st.current_span,
                         "E328",
+                    )
+                    .with_note(format!(
+                        "stack: then {} else {} → expected matching branch effects",
+                        self.format_stack_slots(&then_extra),
+                        self.format_stack_slots(&else_extra)
+                    ))
+                    .with_help(
+                        "leave the same number of values on both branches, or return from both",
                     ));
                 }
                 let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
@@ -3947,6 +4084,7 @@ impl Compiler {
             Expr::Binary { op, left, right } => {
                 self.compile_expr(b, st, stack, left)?;
                 self.compile_expr(b, st, stack, right)?;
+                self.require_stack(st, stack, 2, "operator")?;
                 let r = self.pop_slot(st, stack, "operator")?;
                 let l = self.pop_slot(st, stack, "operator")?;
                 self.emit_bin(b, st, stack, *op, l, r)?;
@@ -3958,6 +4096,7 @@ impl Compiler {
             }
             Expr::Call { target } => self.emit_call(b, st, stack, target)?,
             Expr::ApplyBin(op) => {
+                self.require_stack(st, stack, 2, "operator")?;
                 let r = self.pop_slot(st, stack, "operator")?;
                 let l = self.pop_slot(st, stack, "operator")?;
                 self.emit_bin(b, st, stack, *op, l, r)?;
@@ -5259,6 +5398,7 @@ impl Compiler {
                 });
             }
             StackOp::Unrot => {
+                self.require_stack(st, stack, 3, "unrot")?;
                 let a = self.pop_slot(st, stack, "unrot")?;
                 let second = self.pop_slot(st, stack, "unrot")?;
                 let third = self.pop_slot(st, stack, "unrot")?;
@@ -5267,12 +5407,14 @@ impl Compiler {
                 stack.push(second);
             }
             StackOp::Swap => {
+                self.require_stack(st, stack, 2, "swap")?;
                 let top = self.pop_slot(st, stack, "swap")?;
                 let sec = self.pop_slot(st, stack, "swap")?;
                 stack.push(top);
                 stack.push(sec);
             }
             StackOp::Rot => {
+                self.require_stack(st, stack, 3, "rot")?;
                 let a = self.pop_slot(st, stack, "rot")?;
                 let second = self.pop_slot(st, stack, "rot")?;
                 let third = self.pop_slot(st, stack, "rot")?;

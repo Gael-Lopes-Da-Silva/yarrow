@@ -29,7 +29,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                              |
 | Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains     |
 | Compiler    | ✅     | JIT only; ownership / borrow / region / unsafe; grammar tour              |
-| Diagnostics | ✅     | Rustc-style spans, teachable notes, multi-error recovery (cap 20)         |
+| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return        |
 | Library API | 🟡     | Pieces exported (`Tokenizer`, `Parser`, `Compiler`, `render`); no session |
 | Runtime     | 🟡     | Host heap, regions, lists, maps, strings; no real file I/O                |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`         |
@@ -61,7 +61,6 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 | API         | Callers duplicate the pipeline; no `Session` / `CompileOptions`; `compile` always builds a JIT module           |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
 | Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
-| Diagnostics | Stack underflow / join / return errors do not dump expected vs found stack types                                |
 | Codegen     | JIT only (`YARROW_DBG_IR` env dump); no `CodegenMode`, no object/AOT backend                                    |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
@@ -91,7 +90,7 @@ CLI commands (`check`, `run`, `--emit`, …) are specified in the CLI plan. This
 
 ---
 
-### Stage 12 — Stack-effect diagnostics ⬜
+### Stage 12 — Stack-effect diagnostics ✅
 
 Teach the stack model on common failures (underflow, branch join mismatch, return stack imbalance).
 
