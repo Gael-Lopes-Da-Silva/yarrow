@@ -57,13 +57,13 @@ Do not export those names from the JIT driver binary (`aot-exports` is AOT-only)
 
 ### Program entry / process `main`
 
-A Yarrow program entry (default name `main`, override via `CompileOptions::entry_name`) is **not** the same symbol as the host process entry once object emit lands Stage 18.
+A Yarrow program entry (default name `main`, override via `CompileOptions::entry_name`) is **not** the same symbol as the host process entry.
 
 | Piece         | API / symbol                                                 | Role                                                                                                       |
 | ------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | Entry name    | `CompileOptions::entry_name` (default `main`)                | Which top-level Yarrow function is the program entry. CLI `--main` maps here (CLI plan).                   |
 | Require / run | Session require-entry, JIT `run_main`, interpret `run_entry` | All honor `entry_name`. Missing entry is `E360` naming that function.                                      |
-| Object export | linker `main` (Stage 18)                                     | Cranelift-emitted process entry (`() -> i32`): calls the Yarrow entry and maps the return to an exit code. |
+| Object export | `PROCESS_MAIN_SYMBOL` (`main`)                               | Cranelift-emitted process entry (`() -> i32`): calls the Yarrow entry and maps the return to an exit code. |
 
 Exit mapping (process `main` trampoline):
 
@@ -71,7 +71,7 @@ Exit mapping (process `main` trampoline):
 - integer (including bool / enum) → value as exit status
 - fallible envelope → `1` on error tag, else `0`
 
-**Today (transitional, remove in Stage 18):** object emit still exports `yarrow_entry` and `entry_crt_source` provides C `main`. That C path is not the long-term model; Stage 18 folds process entry into Cranelift and deletes the C CRT API. Link target (Stage 19): program `.o` + `libyarrow_runtime_aot.a` only, via `ld`/`lld` (not `cc`).
+**Link target (Stage 19):** program `.o` + `libyarrow_runtime_aot.a` only, via `ld`/`lld` (not `cc`). No C CRT source and no `cc` compile step.
 
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 

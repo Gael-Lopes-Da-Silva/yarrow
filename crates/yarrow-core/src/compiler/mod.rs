@@ -708,8 +708,8 @@ impl Compiler {
             }
         }
 
-        // Object / AOT: export a fixed-ABI trampoline for the CRT (Stage 17).
-        self.emit_aot_entry_trampoline()?;
+        // Object / AOT: export process `main` that calls the Yarrow entry (Stage 18).
+        self.emit_aot_process_main()?;
 
         Ok(())
     }
@@ -1710,7 +1710,7 @@ impl Compiler {
             sig.returns.push(AbiParam::new(irtypes::I64));
         }
         // Object emit: keep the Yarrow entry local under a private symbol so
-        // it does not clash with CRT `main`. The CRT calls `yarrow_entry`.
+        // it does not clash with process `main`. Process `main` calls it.
         let (link_name, linkage) = if self.module.is_object() && name == self.entry_name.as_str() {
             (crate::entry::USER_ENTRY_LINK_SYMBOL, Linkage::Local)
         } else {
@@ -1724,9 +1724,9 @@ impl Compiler {
         Ok(())
     }
 
-    /// Emit `yarrow_entry` (`() -> i64`) that calls the configured Yarrow entry
-    /// and maps its return to a process exit code for the host CRT.
-    fn emit_aot_entry_trampoline(&mut self) -> CResult<()> {
+    /// Emit process `main` (`() -> i32`) that calls the configured Yarrow entry
+    /// and maps its return to a host exit status.
+    fn emit_aot_process_main(&mut self) -> CResult<()> {
         if !self.module.is_object() || self.check_only {
             return Ok(());
         }
@@ -1743,10 +1743,10 @@ impl Compiler {
         })?;
 
         let mut sig = self.module.make_signature();
-        sig.returns.push(AbiParam::new(irtypes::I64));
-        let tramp_id =
+        sig.returns.push(AbiParam::new(irtypes::I32));
+        let main_id =
             self.module
-                .declare_function(crate::ENTRY_LINK_SYMBOL, Linkage::Export, &sig)?;
+                .declare_function(crate::PROCESS_MAIN_SYMBOL, Linkage::Export, &sig)?;
 
         let mut ctx = self.module.make_context();
         ctx.func.signature = sig;
@@ -1763,12 +1763,12 @@ impl Compiler {
             let exit = if error_return(&return_tys)?.is_some() {
                 let env = b.inst_results(call)[0];
                 let is_err = b.ins().icmp_imm(IntCC::NotEqual, env, 0);
-                let one = b.ins().iconst(irtypes::I64, 1);
-                let zero = b.ins().iconst(irtypes::I64, 0);
+                let one = b.ins().iconst(irtypes::I32, 1);
+                let zero = b.ins().iconst(irtypes::I32, 0);
                 b.ins().select(is_err, one, zero)
             } else {
                 match return_tys.as_slice() {
-                    [] => b.ins().iconst(irtypes::I64, 0),
+                    [] => b.ins().iconst(irtypes::I32, 0),
                     [ty] if matches!(
                         ty,
                         Ty::I8
@@ -1785,17 +1785,15 @@ impl Compiler {
                     ) =>
                     {
                         let v = b.inst_results(call)[0];
-                        self.widen_exit_code(&mut b, v, *ty)
+                        self.exit_code_i32(&mut b, v, *ty)
                     }
                     [_] => {
                         // Non-integer single return: run for side effects, exit 0.
-                        b.ins().iconst(irtypes::I64, 0)
+                        b.ins().iconst(irtypes::I32, 0)
                     }
                     _ => {
                         return Err(CompileError::new(
-                            format!(
-                                "'{entry}' must return at most one value for AOT entry trampoline"
-                            ),
+                            format!("'{entry}' must return at most one value for AOT process main"),
                             self.program_span,
                             "E360",
                         ));
@@ -1807,26 +1805,30 @@ impl Compiler {
         }
 
         let ir_text = format!(
-            "IR for {} (entry trampoline for '{entry}'):\n{}\n",
-            crate::ENTRY_LINK_SYMBOL,
+            "IR for {} (process entry for '{entry}'):\n{}\n",
+            crate::PROCESS_MAIN_SYMBOL,
             ctx.func.display()
         );
         self.ir_dump.push_str(&ir_text);
-        if let Err(e) = self.module.define_function(tramp_id, &mut ctx) {
+        if let Err(e) = self.module.define_function(main_id, &mut ctx) {
             return Err(e.into());
         }
         self.module.clear_context(&mut ctx);
         Ok(())
     }
 
-    fn widen_exit_code(&self, b: &mut FunctionBuilder, v: Value, ty: Ty) -> Value {
+    /// Map a Yarrow integer return to an `i32` process exit status.
+    fn exit_code_i32(&self, b: &mut FunctionBuilder, v: Value, ty: Ty) -> Value {
         let vt = b.func.dfg.value_type(v);
-        if vt == irtypes::I64 {
+        if vt == irtypes::I32 {
             return v;
         }
+        if vt == irtypes::I64 {
+            return b.ins().ireduce(irtypes::I32, v);
+        }
         match ty {
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::Rune => b.ins().sextend(irtypes::I64, v),
-            Ty::U8 | Ty::U16 | Ty::U32 | Ty::Bool => b.ins().uextend(irtypes::I64, v),
+            Ty::I8 | Ty::I16 | Ty::Rune => b.ins().sextend(irtypes::I32, v),
+            Ty::U8 | Ty::U16 | Ty::Bool => b.ins().uextend(irtypes::I32, v),
             _ => v,
         }
     }

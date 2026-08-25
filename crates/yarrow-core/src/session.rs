@@ -80,15 +80,14 @@ pub struct SessionArtifact {
 ///
 /// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`print_str`, …)
 /// remain unresolved imports until linked with [`crate::linkable_archive`].
-/// The program entry is exported as [`crate::ENTRY_LINK_SYMBOL`] for the CRT
-/// from [`crate::entry_crt_source`].
+/// Process entry is exported as [`crate::PROCESS_MAIN_SYMBOL`] (`main`).
 pub struct ObjectArtifact {
     pub file: SourceFile,
     /// Object file bytes (non-empty on success).
     pub bytes: Vec<u8>,
     /// Cranelift IR captured during the same lower pass (debug / dump).
     pub ir: String,
-    /// Yarrow entry name bound to [`crate::ENTRY_LINK_SYMBOL`] in this object.
+    /// Yarrow entry name that process `main` calls in this object.
     pub entry_name: String,
 }
 
@@ -249,11 +248,6 @@ impl Session {
                 batch: one_compile_error(e.into_compile_error(), self.options.error_limit),
             }),
         }
-    }
-
-    /// CRT C source for this session's [`CompileOptions::entry_name`].
-    pub fn entry_crt(&self) -> crate::EntryCrt {
-        crate::entry_crt_source(&self.options.entry_name)
     }
 
     fn backend_not_ready(

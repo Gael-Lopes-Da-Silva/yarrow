@@ -31,7 +31,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe                       |
 | Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return                         |
 | Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                                          |
-| AOT / link  | 🟡     | Runtime archive + `entry_name`; Cranelift `main` (18) then link without `cc` (19)          |
+| AOT / link  | 🟡     | Runtime archive + `entry_name` + Cranelift `main` (18 ✅); link without `cc` (19)          |
 | Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT via `install_runtime`; AOT via staticlib     |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`                          |
 
@@ -73,8 +73,8 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------- |
-| AOT         | Program `.o` (incl. process `main`) + runtime `.a`; host link without `cc` remains (Stages 18–19) |
-| Entry       | `CompileOptions::entry_name` landed; C CRT source to be replaced by Cranelift `main` (Stage 18)   |
+| AOT         | Program `.o` exports process `main`; host link without `cc` remains (Stage 19)                    |
+| Entry       | `CompileOptions::entry_name` + Cranelift process `main` (Stage 18 ✅); link API is Stage 19       |
 | Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile      |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                       |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages) |
@@ -120,22 +120,24 @@ Default entry name is `main`. Callers (CLI `--main`) may choose another top-leve
 
 **Gate:** `entry_name` is on `CompileOptions` and used by require-entry / JIT / interpret / object lower. Missing entry fails with E360 naming the requested function.
 
-**Notes (landed):** `entry_name` wired end-to-end. A transitional C CRT (`entry_crt_source` + `yarrow_entry` trampoline) also landed; **Stage 18 removes that C path** and emits process `main` with Cranelift instead.
+**Notes (landed):** `entry_name` wired end-to-end. Transitional C CRT was removed in Stage 18.
 
 ---
 
-### Stage 18 — Cranelift process `main` (no C CRT) ⬜
+### Stage 18 — Cranelift process `main` (no C CRT) ✅
 
-Yarrow object emit already uses Cranelift. The process entry shim must live in that same object so AOT never compiles C and never needs `cc`.
+Yarrow object emit already uses Cranelift. The process entry shim lives in that same object so AOT never compiles C and never needs `cc`.
 
-1. In object emit, define and **export** linker symbol `main` (host C ABI for process entry, typically `() -> i32`) in Cranelift IR that:
-   - calls the configured Yarrow entry (`CompileOptions::entry_name`, body kept non-exported / local so it does not clash with process `main`);
-   - maps returns to an exit code: void / non-integer → `0`; integer → truncated/widened value; fallible error tag → `1`.
-2. Collapse the transitional `yarrow_entry` + C CRT into this single Cranelift `main` (remove `entry_crt_source` / `EntryCrt` / `Session::entry_crt` and related docs).
+1. In object emit, define and **export** linker symbol `main` (host C ABI `() -> i32`) in Cranelift IR that:
+   - calls the configured Yarrow entry (`CompileOptions::entry_name`, body kept local under `yarrow_user_entry` so it does not clash with process `main`);
+   - maps returns to an exit code: void / non-integer → `0`; integer → truncated/widened `i32`; fallible error tag → `1`.
+2. Collapsed the transitional `yarrow_entry` + C CRT into this single Cranelift `main` (removed `entry_crt_source` / `EntryCrt` / `Session::entry_crt`).
 3. JIT and interpret keep calling the Yarrow entry by name; they do not use process `main`.
-4. Update [`docs/RUNTIME.md`](../../docs/RUNTIME.md): process entry is Cranelift-exported `main`; link is program `.o` + runtime `.a` only (no CRT `.c` / `.o`).
+4. [`docs/RUNTIME.md`](../../docs/RUNTIME.md): process entry is Cranelift-exported `main`; link is program `.o` + runtime `.a` only.
 
 **Gate:** `compile_object_source` on `01_hello.yar` yields an object whose `nm` shows a global `main` and does not require any C source. No public API returns C text for CRT. `cargo clippy` green. Still no requirement that core shells out to a linker.
+
+**Notes (landed):** `PROCESS_MAIN_SYMBOL` (`main`) exported from object emit; Yarrow entry stays `Linkage::Local` as `yarrow_user_entry`.
 
 ---
 
@@ -196,7 +198,7 @@ Wire Stages 13c + 16 + 18 into one library API that produces a runnable host bin
 
 9. Host runtime is linkable for AOT (Stage 16 ✅).
 10. `CompileOptions::entry_name` selects the program entry (Stage 17 ✅).
-11. Object emit exports Cranelift process `main` (no C CRT) (Stage 18).
+11. Object emit exports Cranelift process `main` (no C CRT) (Stage 18 ✅).
 12. `Session` (or equivalent) can produce a runnable host executable for `01_hello.yar` without a C compiler (Stage 19).
 
 ---
