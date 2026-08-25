@@ -1,16 +1,18 @@
 //! Build script for `yarrow-core`.
 //!
-//! Embeds the std library (pure-Yarrow source files under `lib/std/`) into
-//! the binary. Each `lib/std/<name>.yar` file becomes the module
-//! `std.<name>`; sub-folder files (`lib/std/a/b.yar`) map to `std.a.b`. The
-//! generated table replaces the hand-written `STD_MODULES` const that used
-//! to live in `compiler/modules.rs`.
+//! - Embeds the std library under `lib/std/` into the binary.
+//! - Records the path to the AOT host-runtime static archive for [`linkable_archive`].
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
+    embed_std_modules();
+    record_aot_runtime_archive();
+}
+
+fn embed_std_modules() {
     let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
     let std_dir = Path::new(&manifest).join("lib").join("std");
     println!("cargo:rerun-if-changed={}", std_dir.display());
@@ -29,6 +31,26 @@ fn main() {
 
     let out_dir = env::var("OUT_DIR").unwrap();
     fs::write(Path::new(&out_dir).join("std_modules.rs"), out).unwrap();
+}
+
+fn record_aot_runtime_archive() {
+    let target = env::var("TARGET").unwrap();
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let profile_dir = out_dir.ancestors().nth(3).expect("OUT_DIR layout");
+    let archive = if target.contains("windows") {
+        profile_dir.join("yarrow_runtime_aot.lib")
+    } else {
+        profile_dir.join("libyarrow_runtime_aot.a")
+    };
+
+    println!("cargo:rerun-if-changed=../yarrow-runtime");
+    println!("cargo:rerun-if-changed=../yarrow-runtime/aot");
+    println!("cargo:rerun-if-env-changed=PROFILE");
+    println!("cargo:rerun-if-env-changed=TARGET");
+    println!(
+        "cargo:rustc-env=YARROW_RUNTIME_AOT_ARCHIVE={}",
+        archive.display()
+    );
 }
 
 /// Recursively collect `*.yar` files under `dir`, recording each as
@@ -56,7 +78,6 @@ fn walk_yar(dir: &Path, std_dir: &Path, out: &mut Vec<(String, String)>) {
         let dotted = file.strip_suffix(".yar").unwrap().replace('/', ".");
         out.push((format!("std.{dotted}"), file));
     }
-    // Recurse into subdirectories so nested module files remain possible.
     if let Ok(entries) = fs::read_dir(dir) {
         let mut subdirs: Vec<_> = entries
             .filter_map(|e| e.ok())

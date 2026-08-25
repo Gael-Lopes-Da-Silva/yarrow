@@ -18,17 +18,42 @@ Pipeline:
 source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | interpret }
 ```
 
-| Backend     | Role                                                                 |
-| ----------- | -------------------------------------------------------------------- |
-| `check`     | Type / ownership / stack / region analysis; no machine code          |
-| `jit`       | Cranelift in-process machine code; driver may run `main`             |
-| `object`    | Relocatable native object (ELF / Mach-O / COFF); link stays outside  |
-| `interpret` | Tree-walk interpreter over the checked AST (file / future REPL)      |
+| Backend     | Role                                                                |
+| ----------- | ------------------------------------------------------------------- |
+| `check`     | Type / ownership / stack / region analysis; no machine code         |
+| `jit`       | Cranelift in-process machine code; driver may run `main`            |
+| `object`    | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
+| `interpret` | Tree-walk interpreter over the checked AST (file / future REPL)     |
 
 - User modules resolve relative to the source file’s directory (`"a.b"` → `a/b.yar`).
 - The standard library is embedded and imported the same way as user code (`"std.io"`, …).
 - Compiled and interpreted code talks to a small **host runtime** for heap headers (strings, lists, maps, regions, free) and raw `alloc` / `free`. Object emit leaves those symbols as imports for a later link.
 - Heap values are opaque handles; scalars and addresses are machine words. Kind codes describe how to free nested heap data.
+
+### AOT link surface (host runtime)
+
+Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **`Linkage::Import`** symbols. Names and C ABIs come from the [`HOST_FNS`](../../crates/yarrow-runtime/src/lib.rs) table in `yarrow_runtime` (single source of truth with JIT `install_runtime`).
+
+| Layer          | Crate / API                        | Role                                                                                 |
+| -------------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
+| Implementation | `yarrow_runtime` (rlib)            | Heap, `@print_*`, regions, `HOST_FNS`                                                |
+| JIT            | `runtime::install_runtime`         | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
+| AOT archive    | `yarrow_runtime_aot` (`staticlib`) | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
+| Library access | `yarrow_core::linkable_archive()`  | Reads `libyarrow_runtime_aot.a` (path from build) for Stage 18 link                  |
+
+Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` + runtime `.a` (+ CRT in Stage 17) link with the host `cc`/`ld` (Stage 18).
+
+**Imports in a typical program object** (all defined by the runtime archive):
+
+| Symbol                                                              | Role                                  |
+| ------------------------------------------------------------------- | ------------------------------------- |
+| `alloc`, `free`                                                     | Raw heap (`@alloc` / `@free`, unsafe) |
+| `str_*`, `list_*`, `map_*`                                          | Container helpers                     |
+| `print_str`, `print_int`, `print_float`, `print_newline`, `print_*` | Std I/O backing                       |
+| `free_value`, `register_struct_descs`, `register_union_descs`       | Drop / layout registration            |
+| `region_new`, `region_register`, `region_free`                      | Region lifetime                       |
+
+Do not export those names from the JIT driver binary (`aot-exports` is AOT-only); a global `alloc` symbol would clash with the host allocator.
 
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 

@@ -16,6 +16,7 @@ pub use parser::ParseError;
 pub use parser::Parser;
 pub use parser::ast::Program;
 pub use parser::ast::Stmt;
+pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive};
 pub use session::{
     CheckedProgram, CompileOptions, ExecutionMode, ObjectArtifact, Session, SessionArtifact,
     SessionDiagnostics, render_batch,

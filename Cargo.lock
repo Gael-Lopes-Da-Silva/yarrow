@@ -749,7 +749,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "half",
- "libc",
+ "yarrow_runtime",
 ]
 
 [[package]]
@@ -759,6 +759,20 @@ version = "0.1.0"
 [[package]]
 name = "yarrow_lsp"
 version = "0.1.0"
+
+[[package]]
+name = "yarrow_runtime"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "yarrow_runtime_aot"
+version = "0.1.0"
+dependencies = [
+ "yarrow_runtime",
+]
 
 [[package]]
 name = "zerocopy"

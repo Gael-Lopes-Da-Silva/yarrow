@@ -31,8 +31,8 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe                       |
 | Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return                         |
 | Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                                          |
-| AOT / link  | 🟡     | Relocatable `.o` bytes; no linkable runtime or host executable yet                         |
-| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT-only symbol install                          |
+| AOT / link  | 🟡     | Linkable runtime archive (`yarrow_runtime_aot`); program `.o` + link in Stages 17–18       |
+| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT via `install_runtime`; AOT via staticlib     |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`                          |
 
 **Gates today:** all `docs/examples/valid/**` compile and run (JIT); all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
@@ -71,13 +71,13 @@ Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [
 
 These are remaining mismatches or thin areas inside this crate, not CLI work.
 
-| Area        | Gap                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------ |
-| AOT         | Object bytes only; need linkable runtime, entry/CRT, and host link to a real executable (Stages 16–18) |
-| Entry       | `Program::entry_function("main")`; Stage 17 wires `CompileOptions::entry_name`                         |
-| Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile           |
-| Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                            |
-| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)      |
+| Area        | Gap                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| AOT         | Program `.o` + runtime `.a` ready; CRT + host link to executable remain (Stages 17–18)            |
+| Entry       | `Program::entry_function("main")`; Stage 17 wires `CompileOptions::entry_name`                    |
+| Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile      |
+| Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                       |
+| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages) |
 
 ---
 
@@ -94,7 +94,7 @@ Boundary:
 
 Do **not** put clap or process exit codes in this crate. Invoking the host `cc`/`ld` from a library helper is allowed for Stage 18.
 
-### Stage 16 — Linkable host runtime ⬜
+### Stage 16 — Linkable host runtime ✅
 
 Today `HOST_FNS` are installed only into the JIT builder (`install_runtime`). Object files import the same names but nothing defines them for AOT.
 
@@ -104,6 +104,8 @@ Today `HOST_FNS` are installed only into the JIT builder (`install_runtime`). Ob
 4. Keep JIT `install_runtime` working unchanged.
 
 **Gate:** runtime artifact is non-empty and exports the host symbols used by `01_hello.yar` (e.g. print helpers). `compile_object_source` still produces a valid `.o`. `cargo clippy` green.
+
+**Notes (landed):** `yarrow_runtime` (rlib) holds implementation + `HOST_FNS`. `yarrow_runtime_aot` (`staticlib`, `aot-exports`) exports linker names without polluting the JIT binary. `yarrow_core::linkable_archive()` reads `libyarrow_runtime_aot.a`.
 
 ---
 
@@ -183,7 +185,7 @@ Wire Stages 13c + 16 + 17 into one library API that produces a runnable host bin
 
 ### Phase D (open)
 
-9. Host runtime is linkable for AOT (Stage 16).
+9. Host runtime is linkable for AOT (Stage 16 ✅).
 10. Entry/CRT calls the chosen program entry (`CompileOptions::entry_name`, default `main`) with a documented ABI (Stage 17).
 11. `Session` (or equivalent) can produce a runnable host executable for `01_hello.yar` (Stage 18).
 

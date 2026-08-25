@@ -1,0 +1,1147 @@
+//! Host runtime for Yarrow values (strings, lists, hashmaps) plus the symbol
+//! table that exposes these functions to JIT-compiled code.
+//!
+//! Values are opaque `u64` handles that point to heap-allocated headers whose
+//! layout is private to this module; compiled code only ever passes handles
+//! around and calls back into the runtime to inspect or mutate them.
+//!
+//! # Ownership, regions and frees
+//!
+//! Heap values are freed through [`yarrow_free_value`], which recurses into
+//! nested values using a compiler-produced *kind code* (see [`Kind`]). The
+//! compiler also registers the layout of every struct (via
+//! [`yarrow_register_struct_descs`]) so structs can be freed field by field.
+//!
+//! [`yarrow_region_register`] attaches a value to a region; freeing the region
+//! frees every value attached to it as a unit. A global registry of attached
+//! values lets ordinary frees detach a value from its region first, and a set
+//! of already-freed handles guards against double frees (e.g. a value freed by
+//! a region and again by a variable drop at scope exit).
+
+// Every function in this module is unsafe by design (raw pointers to the heap
+// header structures); allow the explicit inner-unsafe lint.
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// Kind codes
+// ---------------------------------------------------------------------------
+
+/// Type codes used by `yarrow_free_value` / `yarrow_region_register` to decide
+/// how to recurse into a value. These are produced by the compiler
+/// (`Compiler::encode_kind`); the encoding here must stay in sync.
+///
+/// * `0..=15` — scalar (nothing to free).
+/// * `16` — a string handle.
+/// * `0x20` — a list; element kind in bits 8..; the low byte is the tag.
+/// * `0x30` — a hashmap; key kind in bits 8.., value kind in bits 40.. .
+/// * `0x40` — a struct; struct layout id in bits 8.. .
+/// * `0x50` — a generic pointer (cannot recurse).
+/// * `0x60` — a fixed-size array; element kind in bits 8.. .
+/// * `0x70` — a union; union id in bits 8.. . The union block stores the
+///   active member's index (a tag) and an inline payload; the member kind
+///   codes are registered via `yarrow_register_union_descs`.
+pub const KIND_STRING: u64 = 16;
+pub const KIND_LIST: u64 = 0x20;
+pub const KIND_MAP: u64 = 0x30;
+pub const KIND_STRUCT: u64 = 0x40;
+pub const KIND_PTR: u64 = 0x50;
+pub const KIND_ARRAY: u64 = 0x60;
+pub const KIND_UNION: u64 = 0x70;
+
+/// Byte offsets inside a union block, in sync with the compiler's
+/// `emit_union_wrap`.
+pub const UNION_TAG_OFFSET: u64 = 0;
+pub const UNION_PAYLOAD_OFFSET: u64 = 8;
+
+#[inline]
+fn tag(kind: u64) -> u64 {
+    kind & 0xff
+}
+
+// ---------------------------------------------------------------------------
+// Headers
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+struct Str {
+    ptr: *mut u8,
+    len: usize,
+}
+
+#[repr(C)]
+struct List {
+    len: usize,
+    cap: usize,
+    elem_size: usize,
+    data: *mut u8,
+}
+
+#[repr(C)]
+struct Map {
+    len: usize,
+    cap: usize,
+    keys_string: u8,
+    _pad: [u8; 7],
+    keys: *mut u64,
+    vals: *mut u64,
+    used: *mut u8,
+}
+
+/// A heap region: an owning set of values freed as a unit.
+#[repr(C)]
+struct Region {
+    cap: usize,
+    len: usize,
+    values: *mut RegionEntry,
+}
+
+/// One registered value: the handle plus the kind code needed to free it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RegionEntry {
+    value: u64,
+    kind: u64,
+}
+
+/// A single struct field's layout as registered by the compiler.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FieldDesc {
+    pub offset: u32,
+    pub _pad: u32,
+    pub kind: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Global bookkeeping
+// ---------------------------------------------------------------------------
+
+/// Value handle -> the region it is currently attached to. Only *top-level*
+/// values registered by `@put_region` appear here; nested values are reached
+/// through their parent and are freed with it.
+static REGISTRY: std::sync::LazyLock<Mutex<HashMap<u64, u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Handles already freed, so a second free of the same handle is a no-op.
+/// Without a GC this is how the runtime survives cases like a region free
+/// followed by a variable drop of the same value.
+static FREED: std::sync::LazyLock<Mutex<std::collections::HashSet<u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Struct layout id -> registered field descriptors.
+static STRUCT_DESCS: std::sync::LazyLock<Mutex<HashMap<u32, Vec<FieldDesc>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Union id -> registered member kind codes (one per member, indexed by the
+/// union's active-member tag).
+static UNION_DESCS: std::sync::LazyLock<Mutex<HashMap<u32, Vec<u64>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// ---------------------------------------------------------------------------
+// Heap
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "alloc"))]
+pub extern "C" fn yarrow_alloc(size: u64) -> u64 {
+    unsafe { libc::malloc(size as usize) as u64 }
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "free"))]
+pub extern "C" fn yarrow_free(ptr: u64) {
+    unsafe { libc::free(ptr as *mut libc::c_void) };
+}
+
+/// Detach `handle` from whatever region it is attached to (no-op if none).
+/// Called before freeing a value so a later `@free_region` won't free it again.
+fn detach(handle: u64) {
+    let region = match REGISTRY.lock().unwrap().remove(&handle) {
+        Some(r) => r,
+        None => return,
+    };
+    let region_ptr = region as *mut Region;
+    if region_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let reg = &mut *region_ptr;
+        let n = reg.len;
+        for i in 0..n {
+            if (*reg.values.add(i)).value == handle {
+                // Move the last entry into this slot and shrink.
+                let last = *reg.values.add(n - 1);
+                *reg.values.add(i) = last;
+                reg.len -= 1;
+                break;
+            }
+        }
+    }
+}
+
+/// Mark `handle` as freed, guarding against double frees.
+fn mark_freed(handle: u64) {
+    FREED.lock().unwrap().insert(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+
+/// Build a string from a byte buffer (copied; must not be freed by the
+/// caller). Returns a handle to the header.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "str_new"))]
+pub extern "C" fn yarrow_str_new(ptr: u64, len: u64) -> u64 {
+    let buf = unsafe { libc::malloc(len as usize + 1) } as *mut u8;
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr as *const u8, buf, len as usize);
+        *buf.add(len as usize) = 0;
+    }
+    let hdr = unsafe { libc::malloc(std::mem::size_of::<Str>()) } as *mut Str;
+    unsafe {
+        *hdr = Str {
+            ptr: buf,
+            len: len as usize,
+        };
+    }
+    hdr as u64
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "str_len"))]
+pub extern "C" fn yarrow_str_len(s: u64) -> u64 {
+    unsafe { (*(s as *const Str)).len as u64 }
+}
+
+/// Copy a string handle's bytes into a Rust `Vec<u8>` (used by `run_main` to
+/// surface a `string` result to the driver). Returns `None` for a null handle.
+pub fn string_bytes(s: u64) -> Option<Vec<u8>> {
+    if s == 0 {
+        return None;
+    }
+    unsafe {
+        let str = &*(s as *const Str);
+        Some(std::slice::from_raw_parts(str.ptr, str.len).to_vec())
+    }
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "str_join"))]
+pub extern "C" fn yarrow_str_join(a: u64, b: u64) -> u64 {
+    unsafe {
+        let sa = &*(a as *const Str);
+        let sb = &*(b as *const Str);
+        let buf = libc::malloc(sa.len + sb.len + 1) as *mut u8;
+        std::ptr::copy_nonoverlapping(sa.ptr, buf, sa.len);
+        std::ptr::copy_nonoverlapping(sb.ptr, buf.add(sa.len), sb.len);
+        *buf.add(sa.len + sb.len) = 0;
+        let hdr = libc::malloc(std::mem::size_of::<Str>()) as *mut Str;
+        *hdr = Str {
+            ptr: buf,
+            len: sa.len + sb.len,
+        };
+        hdr as u64
+    }
+}
+
+/// Lexicographic comparison: -1, 0 or 1.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "str_cmp"))]
+pub extern "C" fn yarrow_str_cmp(a: u64, b: u64) -> i64 {
+    unsafe {
+        let sa = &*(a as *const Str);
+        let sb = &*(b as *const Str);
+        let n = sa.len.min(sb.len);
+        let ab = std::slice::from_raw_parts(sa.ptr, n);
+        let bb = std::slice::from_raw_parts(sb.ptr, n);
+        match ab.cmp(bb) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => sa.len.cmp(&sb.len) as i64,
+        }
+    }
+}
+
+fn free_str(s: u64) {
+    if s == 0 || FREED.lock().unwrap().contains(&s) {
+        return;
+    }
+    detach(s);
+    unsafe {
+        let str = &mut *(s as *mut Str);
+        libc::free(str.ptr as *mut libc::c_void);
+        libc::free(s as *mut libc::c_void);
+    }
+    mark_freed(s);
+}
+
+// ---------------------------------------------------------------------------
+// Lists
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "list_new"))]
+pub extern "C" fn yarrow_list_new(elem_size: u64) -> u64 {
+    let hdr = unsafe { libc::malloc(std::mem::size_of::<List>()) } as *mut List;
+    unsafe {
+        *hdr = List {
+            len: 0,
+            cap: 0,
+            elem_size: elem_size as usize,
+            data: std::ptr::null_mut(),
+        };
+    }
+    hdr as u64
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "list_len"))]
+pub extern "C" fn yarrow_list_len(l: u64) -> u64 {
+    unsafe { (*(l as *const List)).len as u64 }
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "list_push"))]
+pub extern "C" fn yarrow_list_push(l: u64, value: u64) {
+    unsafe {
+        let list = &mut *(l as *mut List);
+        if list.len == list.cap {
+            let new_cap = if list.cap == 0 { 4 } else { list.cap * 2 };
+            list.data =
+                libc::realloc(list.data as *mut libc::c_void, new_cap * list.elem_size) as *mut u8;
+            list.cap = new_cap;
+        }
+        let dst = list.data.add(list.len * list.elem_size);
+        let src = (&value as *const u64) as *const u8;
+        std::ptr::copy_nonoverlapping(src, dst, list.elem_size);
+        list.len += 1;
+    }
+}
+
+/// Free a list and every element, using `elem_kind` to decide how to recurse.
+fn free_list(l: u64, elem_kind: u64) {
+    if l == 0 || FREED.lock().unwrap().contains(&l) {
+        return;
+    }
+    detach(l);
+    unsafe {
+        let list = &*(l as *const List);
+        if tag(elem_kind) > 15 && elem_kind != KIND_PTR && !list.data.is_null() {
+            for i in 0..list.len {
+                let elem = read_elem(list, i);
+                free_value(elem, elem_kind);
+            }
+        }
+        libc::free(list.data as *mut libc::c_void);
+        libc::free(l as *mut libc::c_void);
+    }
+    mark_freed(l);
+}
+
+unsafe fn read_elem(list: &List, i: usize) -> u64 {
+    unsafe {
+        let p = list.data.add(i * list.elem_size);
+        match list.elem_size {
+            1 => *p as u64,
+            2 => *(p as *const u16) as u64,
+            4 => *(p as *const u32) as u64,
+            _ => *(p as *const u64),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hashmaps (linear probing; keys are either integers or string handles)
+// ---------------------------------------------------------------------------
+
+unsafe fn hash_key(map: &Map, key: u64) -> u64 {
+    if map.keys_string != 0 {
+        let s = unsafe { &*(key as *const Str) };
+        let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    } else {
+        key.wrapping_mul(0x9E3779B97F4A7C15)
+    }
+}
+
+unsafe fn key_eq(map: &Map, a: u64, b: u64) -> bool {
+    if map.keys_string != 0 {
+        let sa = unsafe { &*(a as *const Str) };
+        let sb = unsafe { &*(b as *const Str) };
+        sa.len == sb.len
+            && unsafe { std::slice::from_raw_parts(sa.ptr, sa.len) }
+                == unsafe { std::slice::from_raw_parts(sb.ptr, sb.len) }
+    } else {
+        a == b
+    }
+}
+
+unsafe fn map_grow(map: &mut Map) {
+    let new_cap = if map.cap == 0 { 8 } else { map.cap * 2 };
+    let new_keys = libc::calloc(new_cap, std::mem::size_of::<u64>()) as *mut u64;
+    let new_vals = libc::calloc(new_cap, std::mem::size_of::<u64>()) as *mut u64;
+    let new_used = libc::calloc(new_cap, 1) as *mut u8;
+    for i in 0..map.cap {
+        if *map.used.add(i) == 0 {
+            continue;
+        }
+        let key = *map.keys.add(i);
+        let val = *map.vals.add(i);
+        let mut idx = (hash_key(map, key) % new_cap as u64) as usize;
+        while *new_used.add(idx) != 0 {
+            idx = (idx + 1) % new_cap;
+        }
+        *new_keys.add(idx) = key;
+        *new_vals.add(idx) = val;
+        *new_used.add(idx) = 1;
+    }
+    libc::free(map.keys as *mut libc::c_void);
+    libc::free(map.vals as *mut libc::c_void);
+    libc::free(map.used as *mut libc::c_void);
+    map.keys = new_keys;
+    map.vals = new_vals;
+    map.used = new_used;
+    map.cap = new_cap;
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "map_new"))]
+pub extern "C" fn yarrow_map_new(keys_string: u64) -> u64 {
+    let hdr = unsafe { libc::malloc(std::mem::size_of::<Map>()) } as *mut Map;
+    unsafe {
+        *hdr = Map {
+            len: 0,
+            cap: 0,
+            keys_string: keys_string as u8,
+            _pad: [0; 7],
+            keys: std::ptr::null_mut(),
+            vals: std::ptr::null_mut(),
+            used: std::ptr::null_mut(),
+        };
+    }
+    hdr as u64
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "map_insert"))]
+pub extern "C" fn yarrow_map_insert(m: u64, key: u64, value: u64) {
+    unsafe {
+        let map = &mut *(m as *mut Map);
+        if map.cap == 0 || map.len as f64 > map.cap as f64 * 0.7 {
+            map_grow(map);
+        }
+        let mut idx = (hash_key(map, key) % map.cap as u64) as usize;
+        loop {
+            if *map.used.add(idx) == 0 {
+                *map.keys.add(idx) = key;
+                *map.vals.add(idx) = value;
+                *map.used.add(idx) = 1;
+                map.len += 1;
+                return;
+            }
+            if key_eq(map, *map.keys.add(idx), key) {
+                *map.vals.add(idx) = value;
+                return;
+            }
+            idx = (idx + 1) % map.cap;
+        }
+    }
+}
+
+/// Look up `key`; sets `*found` to 1/0 and returns the stored value (0 when
+/// absent).
+///
+/// # Safety
+///
+/// `m` must be a valid map handle and `found` a valid writable pointer.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "map_get"))]
+pub unsafe extern "C" fn yarrow_map_get(m: u64, key: u64, found: *mut u8) -> u64 {
+    unsafe {
+        let map = &*(m as *const Map);
+        if map.cap == 0 {
+            *found = 0;
+            return 0;
+        }
+        let mut idx = (hash_key(map, key) % map.cap as u64) as usize;
+        loop {
+            if *map.used.add(idx) == 0 {
+                *found = 0;
+                return 0;
+            }
+            if key_eq(map, *map.keys.add(idx), key) {
+                *found = 1;
+                return *map.vals.add(idx);
+            }
+            idx = (idx + 1) % map.cap;
+        }
+    }
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "map_len"))]
+pub extern "C" fn yarrow_map_len(m: u64) -> u64 {
+    unsafe { (*(m as *const Map)).len as u64 }
+}
+
+/// Free a map and every key/value, using `key_kind`/`val_kind` to recurse.
+fn free_map(m: u64, key_kind: u64, val_kind: u64) {
+    if m == 0 || FREED.lock().unwrap().contains(&m) {
+        return;
+    }
+    detach(m);
+    unsafe {
+        let map = &*(m as *const Map);
+        for i in 0..map.cap {
+            if *map.used.add(i) == 0 {
+                continue;
+            }
+            let key = *map.keys.add(i);
+            let val = *map.vals.add(i);
+            if tag(key_kind) > 15 && key_kind != KIND_PTR {
+                free_value(key, key_kind);
+            }
+            if tag(val_kind) > 15 && val_kind != KIND_PTR {
+                free_value(val, val_kind);
+            }
+        }
+        libc::free(map.keys as *mut libc::c_void);
+        libc::free(map.vals as *mut libc::c_void);
+        libc::free(map.used as *mut libc::c_void);
+        libc::free(m as *mut libc::c_void);
+    }
+    mark_freed(m);
+}
+
+// ---------------------------------------------------------------------------
+// Structs
+// ---------------------------------------------------------------------------
+
+/// Free a struct value's heap fields, then the struct storage itself. Struct
+/// instances are heap-allocated by the compiler (`yarrow_alloc`), so the
+/// pointer is released here rather than recovered from a frame slot.
+fn free_struct(s: u64, id: u32) {
+    if s == 0 || FREED.lock().unwrap().contains(&s) {
+        return;
+    }
+    detach(s);
+    let descs = match STRUCT_DESCS.lock().unwrap().get(&id) {
+        Some(d) => d.clone(),
+        None => return,
+    };
+    for desc in &descs {
+        if tag(desc.kind) <= 15 || desc.kind == KIND_PTR {
+            continue;
+        }
+        unsafe {
+            let value =
+                std::ptr::read_unaligned((s as *const u8).add(desc.offset as usize) as *const u64);
+            free_value(value, desc.kind);
+        }
+    }
+    unsafe { libc::free(s as *mut libc::c_void) };
+    mark_freed(s);
+}
+
+/// Free a fixed-size array: its storage is one `yarrow_alloc` block holding
+/// scalar elements, so nothing recurses.
+fn free_array(a: u64) {
+    if a == 0 || FREED.lock().unwrap().contains(&a) {
+        return;
+    }
+    detach(a);
+    unsafe { libc::free(a as *mut libc::c_void) };
+    mark_freed(a);
+}
+
+/// Free a union block: read the active member's tag, free the inline payload
+/// using that member's registered kind code, then free the block itself.
+fn free_union(u: u64, id: u32) {
+    if u == 0 || FREED.lock().unwrap().contains(&u) {
+        return;
+    }
+    detach(u);
+    unsafe {
+        let tag = std::ptr::read_unaligned((u as *const u64).add(UNION_TAG_OFFSET as usize));
+        let descs = match UNION_DESCS.lock().unwrap().get(&id) {
+            Some(d) => d.clone(),
+            None => Vec::new(),
+        };
+        let payload = std::ptr::read_unaligned(
+            (u as *const u8).add(UNION_PAYLOAD_OFFSET as usize) as *const u64
+        );
+        if let Some(kind) = descs.get(tag as usize) {
+            free_value(payload, *kind);
+        }
+        libc::free(u as *mut libc::c_void);
+    }
+    mark_freed(u);
+}
+
+// ---------------------------------------------------------------------------
+// Generic free
+// ---------------------------------------------------------------------------
+
+/// Free a value and everything it owns, driven by a compiler kind code.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "free_value"))]
+pub extern "C" fn free_value(v: u64, kind: u64) {
+    if v == 0 {
+        return;
+    }
+    match tag(kind) {
+        0..=15 => {}
+        16 => free_str(v),
+        KIND_LIST => free_list(v, kind >> 8),
+        KIND_MAP => free_map(v, (kind >> 8) & 0xffffffff, kind >> 40),
+        KIND_STRUCT => free_struct(v, (kind >> 8) as u32),
+        KIND_PTR => {}
+        KIND_ARRAY => free_array(v),
+        KIND_UNION => free_union(v, (kind >> 8) as u32),
+        _ => {}
+    }
+}
+
+/// Register a struct's field layouts so `yarrow_free_value` can free structs.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid `FieldDesc` array of at least `count` elements.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "register_struct_descs"))]
+pub unsafe extern "C" fn yarrow_register_struct_descs(id: u32, ptr: *const FieldDesc, count: u64) {
+    let mut descs = Vec::with_capacity(count as usize);
+    for i in 0..count as usize {
+        descs.push(*ptr.add(i));
+    }
+    STRUCT_DESCS.lock().unwrap().insert(id, descs);
+}
+
+/// Register a union's member kind codes so `yarrow_free_value` can free the
+/// union's active payload.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid array of at least `count` `u64` kind codes.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "register_union_descs"))]
+pub unsafe extern "C" fn yarrow_register_union_descs(id: u32, ptr: *const u64, count: u64) {
+    let mut descs = Vec::with_capacity(count as usize);
+    for i in 0..count as usize {
+        descs.push(*ptr.add(i));
+    }
+    UNION_DESCS.lock().unwrap().insert(id, descs);
+}
+
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+
+/// Create a new heap region; returns a handle.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "region_new"))]
+pub extern "C" fn yarrow_region_new() -> u64 {
+    let hdr = unsafe { libc::malloc(std::mem::size_of::<Region>()) } as *mut Region;
+    unsafe {
+        *hdr = Region {
+            cap: 0,
+            len: 0,
+            values: std::ptr::null_mut(),
+        };
+    }
+    hdr as u64
+}
+
+/// Attach `value` (with its kind code) to `region`. Nested values are freed
+/// through their parent, so only the top-level handle is registered.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "region_register"))]
+pub extern "C" fn yarrow_region_register(value: u64, kind: u64, region: u64) {
+    if region == 0 || tag(kind) <= 15 {
+        return;
+    }
+    detach(value);
+    unsafe {
+        let reg = &mut *(region as *mut Region);
+        if reg.len == reg.cap {
+            let new_cap = if reg.cap == 0 { 8 } else { reg.cap * 2 };
+            reg.values = libc::realloc(
+                reg.values as *mut libc::c_void,
+                new_cap * std::mem::size_of::<RegionEntry>(),
+            ) as *mut RegionEntry;
+            reg.cap = new_cap;
+        }
+        *reg.values.add(reg.len) = RegionEntry { value, kind };
+        reg.len += 1;
+    }
+    REGISTRY.lock().unwrap().insert(value, region);
+}
+
+/// Free every value attached to `region`, then the region itself.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "region_free"))]
+pub extern "C" fn yarrow_region_free(region: u64) {
+    if region == 0 || FREED.lock().unwrap().contains(&region) {
+        return;
+    }
+    unsafe {
+        let reg = &mut *(region as *mut Region);
+        for i in 0..reg.len {
+            let entry = *reg.values.add(i);
+            // Remove from the registry before freeing so a later free of the
+            // same handle (e.g. a variable drop at scope exit) is a no-op.
+            REGISTRY.lock().unwrap().remove(&entry.value);
+            free_value(entry.value, entry.kind);
+        }
+        libc::free(reg.values as *mut libc::c_void);
+        libc::free(region as *mut libc::c_void);
+    }
+    mark_freed(region);
+}
+
+// ---------------------------------------------------------------------------
+// Printing (used by the '@print...' builtins)
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_str"))]
+pub extern "C" fn yarrow_print_str(s: u64) {
+    use std::io::Write;
+    unsafe {
+        let str = &*(s as *const Str);
+        let bytes = std::slice::from_raw_parts(str.ptr, str.len);
+        let _ = std::io::stdout().lock().write_all(bytes);
+        let _ = std::io::stdout().lock().flush();
+    }
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_int"))]
+pub extern "C" fn yarrow_print_int(v: i64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(v.to_string().as_bytes());
+    let _ = out.flush();
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_float"))]
+pub extern "C" fn yarrow_print_float(v: f64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(v.to_string().as_bytes());
+    let _ = out.flush();
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_newline"))]
+pub extern "C" fn yarrow_print_newline() {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(b"\n");
+    let _ = out.flush();
+}
+
+// ---------------------------------------------------------------------------
+// Container printing (@print_array / @print_list / @print_hashmap)
+// ---------------------------------------------------------------------------
+
+/// Byte width of a scalar kind code (`scalar_code` encoding, plus the string
+/// and pointer handles at 8 bytes).
+fn scalar_bits(code: u64) -> u64 {
+    match code {
+        0 | 1 | 6 => 8,
+        2 | 7 | 12 => 16,
+        3 | 8 | 11 | 13 => 32,
+        _ => 64,
+    }
+}
+
+/// Read a scalar of `bits` width from `p` (used for fixed-size arrays, whose
+/// storage is one contiguous block).
+unsafe fn read_scalar(p: *const u8, bits: u64) -> u64 {
+    unsafe {
+        match bits {
+            8 => *p as u64,
+            16 => *(p as *const u16) as u64,
+            32 => *(p as *const u32) as u64,
+            _ => *(p as *const u64),
+        }
+    }
+}
+
+fn print_scalar(out: &mut dyn std::io::Write, v: u64, code: u64) {
+    match code {
+        0 => {
+            let _ = write!(out, "{}", v != 0);
+        }
+        1 => {
+            let _ = write!(out, "{}", v as i8);
+        }
+        2 => {
+            let _ = write!(out, "{}", v as i16);
+        }
+        3 => {
+            let _ = write!(out, "{}", v as i32);
+        }
+        4 => {
+            let _ = write!(out, "{}", v as i64);
+        }
+        6 => {
+            let _ = write!(out, "{}", v as u8);
+        }
+        7 => {
+            let _ = write!(out, "{}", v as u16);
+        }
+        8 => {
+            let _ = write!(out, "{}", v as u32);
+        }
+        9 => {
+            let _ = write!(out, "{}", v);
+        }
+        11 => match char::from_u32(v as u32) {
+            Some(c) => {
+                let _ = write!(out, "{c}");
+            }
+            None => {
+                let _ = write!(out, "<invalid rune>");
+            }
+        },
+        13 => {
+            let _ = write!(out, "{}", f32::from_bits(v as u32));
+        }
+        14 => {
+            let _ = write!(out, "{}", f64::from_bits(v));
+        }
+        _ => {
+            let _ = write!(out, "{}", v as i64);
+        }
+    }
+}
+
+unsafe fn print_str_to(out: &mut dyn std::io::Write, s: u64) {
+    if s == 0 {
+        return;
+    }
+    let str = unsafe { &*(s as *const Str) };
+    let bytes = unsafe { std::slice::from_raw_parts(str.ptr, str.len) };
+    let _ = out.write_all(bytes);
+}
+
+/// Print one value by its runtime kind code. Scalars/strings/containers print
+/// their contents; structs, unions and generic pointers have no runtime field
+/// names or element kind, so they degrade to a descriptor.
+unsafe fn print_value_to(out: &mut dyn std::io::Write, v: u64, kind: u64) {
+    match tag(kind) {
+        0..=15 => print_scalar(out, v, kind),
+        16 => unsafe { print_str_to(out, v) },
+        0x20 => unsafe { print_list_to(out, v, kind >> 8) },
+        0x30 => unsafe { print_map_to(out, v, (kind >> 8) & 0xffffffff, kind >> 40) },
+        0x60 => unsafe { print_array_to(out, v, kind >> 8, kind >> 40) },
+        0x40 => {
+            let _ = write!(out, "#<struct {}>", kind >> 8);
+        }
+        0x50 => {
+            let _ = write!(out, "#<ptr {v:#x}>");
+        }
+        0x70 => {
+            let _ = write!(out, "#<union {}>", kind >> 8);
+        }
+        _ => {
+            let _ = write!(out, "{v}");
+        }
+    }
+}
+
+unsafe fn print_list_to(out: &mut dyn std::io::Write, l: u64, elem_kind: u64) {
+    if l == 0 {
+        let _ = write!(out, "()");
+        return;
+    }
+    let list = unsafe { &*(l as *const List) };
+    let _ = write!(out, "(");
+    for i in 0..list.len {
+        if i > 0 {
+            let _ = write!(out, ", ");
+        }
+        let elem = read_elem(list, i);
+        unsafe { print_value_to(out, elem, elem_kind) };
+    }
+    let _ = write!(out, ")");
+}
+
+unsafe fn print_map_to(out: &mut dyn std::io::Write, m: u64, key_kind: u64, val_kind: u64) {
+    if m == 0 {
+        let _ = write!(out, "{{}}");
+        return;
+    }
+    let map = unsafe { &*(m as *const Map) };
+    let _ = write!(out, "{{");
+    let mut first = true;
+    for i in 0..map.cap {
+        if unsafe { *map.used.add(i) } == 0 {
+            continue;
+        }
+        if !first {
+            let _ = write!(out, ", ");
+        }
+        let key = unsafe { *map.keys.add(i) };
+        let val = unsafe { *map.vals.add(i) };
+        unsafe { print_value_to(out, key, key_kind) };
+        let _ = write!(out, ": ");
+        unsafe { print_value_to(out, val, val_kind) };
+        first = false;
+    }
+    let _ = write!(out, "}}");
+}
+
+unsafe fn print_array_to(out: &mut dyn std::io::Write, a: u64, elem_kind: u64, count: u64) {
+    if a == 0 {
+        let _ = write!(out, "[]");
+        return;
+    }
+    let bits = scalar_bits(elem_kind);
+    let step = (bits / 8) as usize;
+    let _ = write!(out, "[");
+    for i in 0..count {
+        if i > 0 {
+            let _ = write!(out, ", ");
+        }
+        let elem = read_scalar((a as *const u8).add(i as usize * step), bits);
+        unsafe { print_value_to(out, elem, elem_kind) };
+    }
+    let _ = write!(out, "]");
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_array"))]
+pub extern "C" fn yarrow_print_array(a: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_array_to(&mut out, a, kind >> 8, kind >> 40) };
+    let _ = out.flush();
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_list"))]
+pub extern "C" fn yarrow_print_list(l: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_list_to(&mut out, l, kind >> 8) };
+    let _ = out.flush();
+}
+
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "print_hashmap"))]
+pub extern "C" fn yarrow_print_hashmap(m: u64, kind: u64) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    unsafe { print_map_to(&mut out, m, (kind >> 8) & 0xffffffff, kind >> 40) };
+    let _ = out.flush();
+}
+
+// ---------------------------------------------------------------------------
+// Host function registry
+// ---------------------------------------------------------------------------
+
+/// Scalar kind codes used in host-function signatures; they match
+/// `scalar_code`/`scalar_ty` in the compiler (and the runtime `tag()` cut-off
+/// at 16 keeps them distinct from heap value kinds).
+pub const KIND_I64: u64 = 4;
+pub const KIND_F64: u64 = 14;
+
+/// Whether a host function is only callable from an unsafe context (an
+/// `unsafe` block or an unsafe function). Safe functions are always callable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Safety {
+    Safe,
+    Unsafe,
+}
+
+/// A host function callable from Yarrow: its C ABI signature encoded with
+/// scalar kind codes plus the symbol's address. The compiler resolves `@name`
+/// words and calls to undefined functions against this table, so adding a host
+/// function needs no compiler changes (the generic lowering reads the
+/// signature here).
+pub struct HostFn {
+    pub name: &'static str,
+    pub params: &'static [u64],
+    pub returns: &'static [u64],
+    pub address: usize,
+    /// Whether calling this function requires an unsafe context.
+    pub safety: Safety,
+}
+
+/// The tiny host surface: raw memory only (`alloc`/`free`) plus the scalar
+/// helpers the compiler still inlines around until Stage 5 moves them into
+/// Yarrow's std library. Signatures are all 64-bit. Built lazily because the
+/// symbol addresses are only known at runtime.
+pub static HOST_FNS: std::sync::LazyLock<Vec<HostFn>> = std::sync::LazyLock::new(|| {
+    vec![
+        HostFn {
+            name: "alloc",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_alloc as *const () as usize,
+            safety: Safety::Unsafe,
+        },
+        HostFn {
+            name: "free",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_free as *const () as usize,
+            safety: Safety::Unsafe,
+        },
+        HostFn {
+            name: "str_new",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_new as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "str_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_len as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "str_join",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_join as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "str_cmp",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_str_cmp as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "list_new",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_list_new as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "list_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_list_len as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "list_push",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_list_push as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "map_new",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_new as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "map_insert",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_map_insert as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "map_get",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_get as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "map_len",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_map_len as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_str",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_print_str as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_int",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_print_int as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_float",
+            params: &[KIND_F64],
+            returns: &[],
+            address: yarrow_print_float as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_newline",
+            params: &[],
+            returns: &[],
+            address: yarrow_print_newline as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_array",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_array as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_list",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_list as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "print_hashmap",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_print_hashmap as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "free_value",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[],
+            address: free_value as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "register_struct_descs",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_register_struct_descs as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "register_union_descs",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_register_union_descs as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "region_new",
+            params: &[],
+            returns: &[KIND_I64],
+            address: yarrow_region_new as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "region_register",
+            params: &[KIND_I64, KIND_I64, KIND_I64],
+            returns: &[],
+            address: yarrow_region_register as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "region_free",
+            params: &[KIND_I64],
+            returns: &[],
+            address: yarrow_region_free as *const () as usize,
+            safety: Safety::Safe,
+        },
+    ]
+});

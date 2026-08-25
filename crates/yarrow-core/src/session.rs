@@ -71,8 +71,8 @@ pub struct SessionArtifact {
 
 /// Relocatable native object produced by [`Session::compile_object_source`].
 ///
-/// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`yarrow_str_new`,
-/// etc.) remain unresolved imports for a later link step (CLI / Stage follow-up).
+/// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`print_str`, …)
+/// remain unresolved imports until linked with [`linkable_archive`].
 pub struct ObjectArtifact {
     pub file: SourceFile,
     /// Object file bytes (non-empty on success).
