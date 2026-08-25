@@ -30,8 +30,14 @@ pub struct CompileOptions {
     pub source_path: String,
     /// Extra module lookup roots (`"a.b"` => `a/b.yar`).
     pub module_search_paths: Vec<PathBuf>,
-    /// Whether this session should require a top-level `main`.
+    /// Whether this session should require a top-level entry function.
     pub require_main: bool,
+    /// Top-level entry function name (default [`crate::DEFAULT_ENTRY_NAME`]).
+    ///
+    /// Used by require-entry (E360), JIT / interpret `run_main`, and object
+    /// emit (CRT trampoline target). CLI `--main` maps here; core does not
+    /// parse argv.
+    pub entry_name: String,
     /// Maximum number of diagnostics to collect before aborting.
     pub error_limit: usize,
     /// Backend / check mode for this session.
@@ -44,6 +50,7 @@ impl CompileOptions {
             source_path: source_path.into(),
             module_search_paths: Vec::new(),
             require_main: true,
+            entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
             error_limit: crate::diagnostics::DEFAULT_ERROR_LIMIT,
             mode: ExecutionMode::Jit,
         }
@@ -72,13 +79,17 @@ pub struct SessionArtifact {
 /// Relocatable native object produced by [`Session::compile_object_source`].
 ///
 /// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`print_str`, …)
-/// remain unresolved imports until linked with [`linkable_archive`].
+/// remain unresolved imports until linked with [`crate::linkable_archive`].
+/// The program entry is exported as [`crate::ENTRY_LINK_SYMBOL`] for the CRT
+/// from [`crate::entry_crt_source`].
 pub struct ObjectArtifact {
     pub file: SourceFile,
     /// Object file bytes (non-empty on success).
     pub bytes: Vec<u8>,
     /// Cranelift IR captured during the same lower pass (debug / dump).
     pub ir: String,
+    /// Yarrow entry name bound to [`crate::ENTRY_LINK_SYMBOL`] in this object.
+    pub entry_name: String,
 }
 
 /// Diagnostics emitted while tokenizing/parsing/compiling one source file.
@@ -202,10 +213,16 @@ impl Session {
                 ),
             });
         }
-        Ok(ObjectArtifact { file, bytes, ir })
+        Ok(ObjectArtifact {
+            file,
+            bytes,
+            ir,
+            entry_name: self.options.entry_name.clone(),
+        })
     }
 
-    /// Check source, then execute `main` on the AST interpreter (Stage 13b).
+    /// Check source, then execute the configured entry on the AST interpreter
+    /// (Stage 13b).
     ///
     /// Returns the same [`RunResult`] shape as JIT `run_main` when supported.
     pub fn interpret_source(&self, source: String) -> Result<RunResult, SessionDiagnostics> {
@@ -225,13 +242,18 @@ impl Session {
                 batch: one_compile_error(e.into_compile_error(), self.options.error_limit),
             });
         }
-        match ctx.run_main() {
+        match ctx.run_entry(&self.options.entry_name) {
             Ok(result) => Ok(result),
             Err(e) => Err(SessionDiagnostics {
                 file: checked.file,
                 batch: one_compile_error(e.into_compile_error(), self.options.error_limit),
             }),
         }
+    }
+
+    /// CRT C source for this session's [`CompileOptions::entry_name`].
+    pub fn entry_crt(&self) -> crate::EntryCrt {
+        crate::entry_crt_source(&self.options.entry_name)
     }
 
     fn backend_not_ready(
@@ -257,30 +279,31 @@ impl Session {
         file: &SourceFile,
         program: &Program,
     ) -> Result<(), SessionDiagnostics> {
-        // Stage 17 will honor `CompileOptions::entry_name`; until then the entry is `main`.
-        const ENTRY: &str = "main";
-        if !self.options.require_main || program.has_entry(ENTRY) {
+        let entry = self.options.entry_name.as_str();
+        if !self.options.require_main || program.has_entry(entry) {
             return Ok(());
         }
         let path = self.options.source_path.clone();
         let mut batch = DiagnosticBatch::with_limit(self.options.error_limit);
         let span = program
-            .items
-            .iter()
-            .find_map(|item| match &item.kind {
-                StmtKind::Function(_) => Some(item.span),
-                _ => None,
+            .entry_function(entry)
+            .map(|(_, span)| span)
+            .or_else(|| {
+                program.items.iter().find_map(|item| match &item.kind {
+                    StmtKind::Function(_) => Some(item.span),
+                    _ => None,
+                })
             })
             .or_else(|| program.items.first().map(|item| item.span))
             .unwrap_or_default();
-        let diag = Diagnostic::error("E360", format!("program has no '{ENTRY}' function"))
+        let diag = Diagnostic::error("E360", format!("program has no '{entry}' function"))
             .with_path(path)
             .with_primary(span, "")
             .with_note(format!(
-                "running a `.yar` file requires a top-level `{ENTRY}` entry point"
+                "running a `.yar` file requires a top-level `{entry}` entry point"
             ))
             .with_help(format!(
-                "add `{ENTRY} function do ... end`, optionally `with T` for a printable result"
+                "add `{entry} function do ... end`, optionally `with T` for a printable result"
             ));
         batch.push(diag);
         Err(SessionDiagnostics {
@@ -306,6 +329,7 @@ impl Session {
         })?;
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
+        compiler.set_entry_name(self.options.entry_name.clone());
         if let LowerKind::Jit { check_only } = kind {
             compiler.set_check_only(check_only);
         }

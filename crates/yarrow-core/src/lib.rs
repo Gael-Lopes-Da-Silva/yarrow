@@ -1,5 +1,6 @@
 pub mod compiler;
 pub mod diagnostics;
+pub mod entry;
 pub mod interpreter;
 pub mod parser;
 pub mod runtime;
@@ -11,6 +12,7 @@ pub use diagnostics::{
     ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, SourceFile, Span,
     explain_code, format_explain, normalize_code, render,
 };
+pub use entry::{DEFAULT_ENTRY_NAME, ENTRY_LINK_SYMBOL, EntryCrt, entry_crt_source};
 pub use interpreter::{EvalContext, InterpretError, Interpreter, Value as InterpretValue};
 pub use parser::ParseError;
 pub use parser::Parser;

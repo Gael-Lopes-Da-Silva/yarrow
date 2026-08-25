@@ -264,6 +264,8 @@ pub struct Compiler {
     /// for analysis, but do not `define_function` or finalize a JIT module.
     /// Used by `ExecutionMode::Check` (Stage 13a).
     check_only: bool,
+    /// Top-level entry function name (default `main`). See session `CompileOptions::entry_name`.
+    entry_name: String,
 }
 
 impl Compiler {
@@ -321,6 +323,7 @@ impl Compiler {
             errors: DiagnosticBatch::with_limit(DEFAULT_ERROR_LIMIT),
             ir_dump: String::new(),
             check_only: false,
+            entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
         })
     }
 
@@ -357,6 +360,20 @@ impl Compiler {
 
     pub fn is_check_only(&self) -> bool {
         self.check_only
+    }
+
+    /// Set the top-level entry function name (default `main`).
+    pub fn set_entry_name(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        self.entry_name = if name.is_empty() {
+            crate::DEFAULT_ENTRY_NAME.to_string()
+        } else {
+            name
+        };
+    }
+
+    pub fn entry_name(&self) -> &str {
+        &self.entry_name
     }
 
     pub fn set_error_limit(&mut self, error_limit: usize) {
@@ -405,8 +422,9 @@ impl Compiler {
     }
 
     fn compile_inner(&mut self, program: &Program) -> CResult<()> {
+        let entry = self.entry_name.clone();
         self.program_span = program
-            .entry_function("main")
+            .entry_function(&entry)
             .map(|(_, span)| span)
             .or_else(|| {
                 program.items.iter().find_map(|item| match &item.kind {
@@ -689,6 +707,9 @@ impl Compiler {
                 }
             }
         }
+
+        // Object / AOT: export a fixed-ABI trampoline for the CRT (Stage 17).
+        self.emit_aot_entry_trampoline()?;
 
         Ok(())
     }
@@ -1016,13 +1037,15 @@ impl Compiler {
         Ok(())
     }
 
-    /// Run the compiled `main` function and return its result (if any) in a
-    /// driver-displayable form. Supports void `main` and integer, float, bool
+    /// Run the compiled entry function and return its result (if any) in a
+    /// driver-displayable form. Supports void entry and integer, float, bool
     /// and string results; other result types are rejected with `E360`.
+    ///
+    /// The entry name comes from [`Self::set_entry_name`] (default `main`).
     pub fn run_main(&mut self) -> CResult<RunResult> {
         if self.check_only {
             return Err(CompileError::new(
-                "cannot run main: this compiler was built in check-only mode",
+                "cannot run entry: this compiler was built in check-only mode",
                 self.program_span,
                 "E390",
             )
@@ -1030,27 +1053,42 @@ impl Compiler {
         }
         if self.module.is_object() {
             return Err(CompileError::new(
-                "cannot run main: this compiler was built for object emit",
+                "cannot run entry: this compiler was built for object emit",
                 self.program_span,
                 "E391",
             )
             .with_help("link the object and execute externally, or use ExecutionMode::Jit"));
         }
         self.finalize()?;
-        let id = *self.func_ids.get("main").ok_or_else(|| {
-            CompileError::new("program has no 'main' function", self.program_span, "E360")
-                .with_note("running a `.yar` file requires a top-level `main` entry point")
-                .with_help(
-                    "add `main function do ... end`, optionally `with T` for a printable result",
-                )
+        let entry = self.entry_name.clone();
+        let id = *self.func_ids.get(&entry).ok_or_else(|| {
+            CompileError::new(
+                format!("program has no '{entry}' function"),
+                self.program_span,
+                "E360",
+            )
+            .with_note(format!(
+                "running a `.yar` file requires a top-level `{entry}` entry point"
+            ))
+            .with_help(format!(
+                "add `{entry} function do ... end`, optionally `with T` for a printable result"
+            ))
         })?;
-        let (_, return_tys) = self.sig_tys.get("main").cloned().ok_or_else(|| {
-            CompileError::new("missing signature for 'main'", self.program_span, "E360")
+        let (_, return_tys) = self.sig_tys.get(&entry).cloned().ok_or_else(|| {
+            CompileError::new(
+                format!("missing signature for '{entry}'"),
+                self.program_span,
+                "E360",
+            )
         })?;
-        let sig = self.sigs.get("main").cloned().ok_or_else(|| {
-            CompileError::new("missing signature for 'main'", self.program_span, "E360")
+        let sig = self.sigs.get(&entry).cloned().ok_or_else(|| {
+            CompileError::new(
+                format!("missing signature for '{entry}'"),
+                self.program_span,
+                "E360",
+            )
         })?;
-        // A fallible `main` returns an envelope `(env, payload)`. Run it and
+        // A fallible entry returns an envelope `(env, payload)`. Run it and
         // surface a non-zero env as a runtime failure; success is void.
         if error_return(&return_tys)?.is_some() {
             let ptr = self.module.get_finalized_function(id);
@@ -1059,7 +1097,7 @@ impl Compiler {
                 let (env, _payload) = f();
                 if env != 0 {
                     return Err(CompileError::new(
-                        format!("main returned error tag {env}"),
+                        format!("{entry} returned error tag {env}"),
                         Span::default(),
                         "E360",
                     ));
@@ -1077,7 +1115,7 @@ impl Compiler {
                 }
                 [ty] => self.read_main_result(sig.returns[0].value_type, *ty, ptr as usize),
                 _ => Err(CompileError::new(
-                    "'main' must return at most one value to be runnable",
+                    format!("'{entry}' must return at most one value to be runnable"),
                     Span::default(),
                     "E360",
                 )),
@@ -1085,9 +1123,10 @@ impl Compiler {
         }
     }
 
-    /// Reinterpret `main`'s single return value from its Cranelift slot.
+    /// Reinterpret the entry's single return value from its Cranelift slot.
     fn read_main_result(&self, clty: CLType, ty: Ty, ptr: usize) -> CResult<RunResult> {
         let _ = clty;
+        let entry = self.entry_name.as_str();
         unsafe {
             match ty {
                 Ty::Bool => {
@@ -1124,7 +1163,7 @@ impl Compiler {
                     Ok(RunResult::Str(String::from_utf8_lossy(&bytes).into_owned()))
                 }
                 _ => Err(CompileError::new(
-                    "unsupported 'main' return type for run_main",
+                    format!("unsupported '{entry}' return type for run_main"),
                     Span::default(),
                     "E360",
                 )),
@@ -1670,12 +1709,126 @@ impl Compiler {
             sig.returns.push(AbiParam::new(irtypes::I64));
             sig.returns.push(AbiParam::new(irtypes::I64));
         }
-        let id = self.module.declare_function(name, Linkage::Export, &sig)?;
+        // Object emit: keep the Yarrow entry local under a private symbol so
+        // it does not clash with CRT `main`. The CRT calls `yarrow_entry`.
+        let (link_name, linkage) = if self.module.is_object() && name == self.entry_name.as_str() {
+            (crate::entry::USER_ENTRY_LINK_SYMBOL, Linkage::Local)
+        } else {
+            (name, Linkage::Export)
+        };
+        let id = self.module.declare_function(link_name, linkage, &sig)?;
         self.sigs.insert(name.to_string(), sig);
         self.sig_tys
             .insert(name.to_string(), (param_tys, return_tys));
         self.func_ids.insert(name.to_string(), id);
         Ok(())
+    }
+
+    /// Emit `yarrow_entry` (`() -> i64`) that calls the configured Yarrow entry
+    /// and maps its return to a process exit code for the host CRT.
+    fn emit_aot_entry_trampoline(&mut self) -> CResult<()> {
+        if !self.module.is_object() || self.check_only {
+            return Ok(());
+        }
+        let entry = self.entry_name.clone();
+        let Some(user_id) = self.func_ids.get(&entry).copied() else {
+            return Ok(());
+        };
+        let (_, return_tys) = self.sig_tys.get(&entry).cloned().ok_or_else(|| {
+            CompileError::new(
+                format!("missing signature for '{entry}'"),
+                self.program_span,
+                "E360",
+            )
+        })?;
+
+        let mut sig = self.module.make_signature();
+        sig.returns.push(AbiParam::new(irtypes::I64));
+        let tramp_id =
+            self.module
+                .declare_function(crate::ENTRY_LINK_SYMBOL, Linkage::Export, &sig)?;
+
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut fbctx = FunctionBuilderContext::new();
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let block = b.create_block();
+            b.append_block_params_for_function_params(block);
+            b.switch_to_block(block);
+            b.seal_block(block);
+
+            let callee = self.module.declare_func_in_func(user_id, b.func);
+            let call = b.ins().call(callee, &[]);
+            let exit = if error_return(&return_tys)?.is_some() {
+                let env = b.inst_results(call)[0];
+                let is_err = b.ins().icmp_imm(IntCC::NotEqual, env, 0);
+                let one = b.ins().iconst(irtypes::I64, 1);
+                let zero = b.ins().iconst(irtypes::I64, 0);
+                b.ins().select(is_err, one, zero)
+            } else {
+                match return_tys.as_slice() {
+                    [] => b.ins().iconst(irtypes::I64, 0),
+                    [ty] if matches!(
+                        ty,
+                        Ty::I8
+                            | Ty::I16
+                            | Ty::I32
+                            | Ty::I64
+                            | Ty::U8
+                            | Ty::U16
+                            | Ty::U32
+                            | Ty::U64
+                            | Ty::Rune
+                            | Ty::Bool
+                            | Ty::Enum(_)
+                    ) =>
+                    {
+                        let v = b.inst_results(call)[0];
+                        self.widen_exit_code(&mut b, v, *ty)
+                    }
+                    [_] => {
+                        // Non-integer single return: run for side effects, exit 0.
+                        b.ins().iconst(irtypes::I64, 0)
+                    }
+                    _ => {
+                        return Err(CompileError::new(
+                            format!(
+                                "'{entry}' must return at most one value for AOT entry trampoline"
+                            ),
+                            self.program_span,
+                            "E360",
+                        ));
+                    }
+                }
+            };
+            b.ins().return_(&[exit]);
+            b.finalize();
+        }
+
+        let ir_text = format!(
+            "IR for {} (entry trampoline for '{entry}'):\n{}\n",
+            crate::ENTRY_LINK_SYMBOL,
+            ctx.func.display()
+        );
+        self.ir_dump.push_str(&ir_text);
+        if let Err(e) = self.module.define_function(tramp_id, &mut ctx) {
+            return Err(e.into());
+        }
+        self.module.clear_context(&mut ctx);
+        Ok(())
+    }
+
+    fn widen_exit_code(&self, b: &mut FunctionBuilder, v: Value, ty: Ty) -> Value {
+        let vt = b.func.dfg.value_type(v);
+        if vt == irtypes::I64 {
+            return v;
+        }
+        match ty {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::Rune => b.ins().sextend(irtypes::I64, v),
+            Ty::U8 | Ty::U16 | Ty::U32 | Ty::Bool => b.ins().uextend(irtypes::I64, v),
+            _ => v,
+        }
     }
 
     fn compile_function(

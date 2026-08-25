@@ -41,7 +41,7 @@ Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **
 | AOT archive    | `yarrow_runtime_aot` (`staticlib`) | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
 | Library access | `yarrow_core::linkable_archive()`  | Reads `libyarrow_runtime_aot.a` (path from build) for Stage 18 link                  |
 
-Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` + runtime `.a` (+ CRT in Stage 17) link with the host `cc`/`ld` (Stage 18).
+Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` + runtime `.a` + CRT (below) link with the host `cc`/`ld` (Stage 18).
 
 **Imports in a typical program object** (all defined by the runtime archive):
 
@@ -55,9 +55,28 @@ Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` + runtime `
 
 Do not export those names from the JIT driver binary (`aot-exports` is AOT-only); a global `alloc` symbol would clash with the host allocator.
 
+### Program entry / CRT
+
+A Yarrow program entry is **not** C `main`. Standalone AOT binaries need a small host CRT that defines process `main`, calls the compiled entry, and maps the return value to an exit status.
+
+| Piece         | API / symbol                                                       | Role                                                                                                                            |
+| ------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Entry name    | `CompileOptions::entry_name` (default `main`)                      | Which top-level Yarrow function is the program entry. CLI `--main` maps here (CLI plan).                                        |
+| Require / run | Session require-entry, JIT `run_main`, interpret `run_entry`       | All honor `entry_name`. Missing entry is `E360` naming that function.                                                           |
+| Object export | `yarrow_entry` (`ENTRY_LINK_SYMBOL`)                               | Fixed trampoline ABI: `int64_t yarrow_entry(void)`. Object emit binds `entry_name` to a local body and exports this trampoline. |
+| CRT source    | `yarrow_core::entry_crt_source(entry_name)` / `Session::entry_crt` | C translation unit: `main` calls `yarrow_entry` and returns `(int)` of that value.                                              |
+
+Exit mapping in the trampoline:
+
+- void / non-integer single return → `0`
+- integer (including bool / enum) → value widened to `i64`
+- fallible envelope → `1` on error tag, else `0`
+
+The Yarrow entry body is **not** exported as linker `main` (that would clash with the CRT). Link order for Stage 18: program `.o` + `libyarrow_runtime_aot.a` + CRT `.o` (from the C source above).
+
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 
-Entry: every program has exactly one `main`. The driver runs it after JIT or interpret (object emit does not execute). Optional numeric return from `main` is the process exit code (grammar); the current CLI also prints supported single return values (`void`, integer, float, bool, string).
+Entry: every runnable program has a top-level entry (default `main`; override via `CompileOptions::entry_name` / CLI `--main`). The driver runs it after JIT or interpret (object emit does not execute). Optional numeric return from the entry is the process exit code for native CRT; the current CLI also prints supported single return values (`void`, integer, float, bool, string).
 
 ---
 
@@ -141,11 +160,12 @@ A thin host surface backs heap ops and raw memory (`alloc`, `free`, string/list/
 
 Std modules (`std.mem`, `std.io`, …) wrap host behavior in Yarrow where possible so user code stays in the safe model.
 
-### `main`
+### `main` (program entry)
 
-- Required; public by default; no parameter list in surface syntax.
-- Return optional; numeric return may set the process exit code.
-- Fallible `main` (`with |T Err|`) is not part of the supported driver surface yet.
+- Required for runnable sessions (`require_main`); public by default; no parameter list in surface syntax.
+- Default name is `main`; `CompileOptions::entry_name` (CLI `--main`) may select another top-level function.
+- Return optional; numeric return may set the process exit code (native CRT / grammar).
+- Fallible entry (`with |T Err|`) is not part of the supported driver print surface yet; AOT trampoline maps error tags to exit `1`.
 
 ---
 

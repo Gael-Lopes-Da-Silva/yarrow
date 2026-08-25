@@ -73,8 +73,8 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------- |
-| AOT         | Program `.o` + runtime `.a` ready; CRT + host link to executable remain (Stages 17–18)            |
-| Entry       | `Program::entry_function("main")`; Stage 17 wires `CompileOptions::entry_name`                    |
+| AOT         | Program `.o` + runtime `.a` + CRT source; host link to executable remains (Stage 18)              |
+| Entry       | `CompileOptions::entry_name` (default `main`); object exports `yarrow_entry` trampoline + CRT C   |
 | Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile      |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                       |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages) |
@@ -109,7 +109,7 @@ Today `HOST_FNS` are installed only into the JIT builder (`install_runtime`). Ob
 
 ---
 
-### Stage 17 — Program entry / CRT glue ⬜
+### Stage 17 — Program entry / CRT glue ✅
 
 A Yarrow program entry is not a C `main`. Standalone binaries need a small host CRT that calls the compiled entry with the right ABI and maps the return value to a process exit status.
 
@@ -117,7 +117,7 @@ Default entry name is `main`. Callers (CLI `--main`) may choose another top-leve
 
 1. **`CompileOptions::entry_name`** (default `"main"`):
    - `require_main` looks up this name (E360 names the chosen entry, not a hardcoded `main`).
-   - JIT `run_main`, interpret `run_main`, and object emit all use the same name.
+   - JIT `run_main`, interpret `run_entry`, and object emit all use the same name.
 2. Provide entry / CRT object or source (library surface) that:
    - calls the exported Yarrow entry (agree and document the mangled / exported symbol; default `main`);
    - is parameterized by `entry_name` so a non-`main` function can be the process start;
@@ -127,6 +127,8 @@ Default entry name is `main`. Callers (CLI `--main`) may choose another top-leve
 4. Document the entry contract (default `main`, override via options / CLI `--main`) next to the runtime link surface in `RUNTIME.md`.
 
 **Gate:** entry artifact + program object + runtime object are linkable together in principle (symbol resolution) for default `main`. `entry_name` is on `CompileOptions` and used by require-entry / lower / CRT glue. Missing entry still fails with E360 naming the requested function. No requirement yet that core shells out to `cc`.
+
+**Notes (landed):** `entry_crt_source` / `Session::entry_crt` emit C `main` calling fixed `yarrow_entry` (`ENTRY_LINK_SYMBOL`). Object emit keeps the Yarrow entry local as `yarrow_user_entry` and exports an `() -> i64` trampoline. JIT/interpret honor `entry_name`.
 
 ---
 
@@ -186,7 +188,7 @@ Wire Stages 13c + 16 + 17 into one library API that produces a runnable host bin
 ### Phase D (open)
 
 9. Host runtime is linkable for AOT (Stage 16 ✅).
-10. Entry/CRT calls the chosen program entry (`CompileOptions::entry_name`, default `main`) with a documented ABI (Stage 17).
+10. Entry/CRT calls the chosen program entry (`CompileOptions::entry_name`, default `main`) with a documented ABI (Stage 17 ✅).
 11. `Session` (or equivalent) can produce a runnable host executable for `01_hello.yar` (Stage 18).
 
 ---

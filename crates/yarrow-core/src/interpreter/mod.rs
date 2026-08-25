@@ -140,7 +140,12 @@ impl EvalContext {
 
     /// Execute `main` and return a driver-displayable result.
     pub fn run_main(&mut self) -> IResult<RunResult> {
-        self.interp.run_main()
+        self.run_entry(crate::DEFAULT_ENTRY_NAME)
+    }
+
+    /// Execute the named top-level entry and return a driver-displayable result.
+    pub fn run_entry(&mut self, name: &str) -> IResult<RunResult> {
+        self.interp.run_entry(name)
     }
 }
 
@@ -186,8 +191,16 @@ impl Interpreter {
     }
 
     pub fn run_main(&mut self) -> IResult<RunResult> {
-        let entry = self.funcs.get("main").cloned().ok_or_else(|| {
-            InterpretError::new("program has no 'main' function", Span::default(), "E360")
+        self.run_entry(crate::DEFAULT_ENTRY_NAME)
+    }
+
+    pub fn run_entry(&mut self, name: &str) -> IResult<RunResult> {
+        let entry = self.funcs.get(name).cloned().ok_or_else(|| {
+            InterpretError::new(
+                format!("program has no '{name}' function"),
+                Span::default(),
+                "E360",
+            )
         })?;
         let mut stack = Vec::new();
         self.call_function(&entry, &mut stack)?;
@@ -200,7 +213,7 @@ impl Interpreter {
         if stack.len() != 1 {
             return Err(InterpretError::new(
                 format!(
-                    "main left {} value(s) on the stack; expected 1",
+                    "{name} left {} value(s) on the stack; expected 1",
                     stack.len()
                 ),
                 Span::default(),
