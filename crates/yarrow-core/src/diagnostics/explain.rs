@@ -76,6 +76,33 @@ For floats, use `/` for division. There is no float power operator yet; use \
 integer `^` or an explicit conversion if you need exponentiation on integers \
 first.",
     },
+    ExplainEntry {
+        code: "E394",
+        title: "system linker or CRT missing",
+        body: "\
+Native executable emit links the program object with the host runtime archive \
+using a system linker (`ld` / `lld`). Yarrow does not drive `cc` / `gcc` / \
+`clang` to compile CRT or user code.
+
+Install binutils `ld` or LLVM `lld`, and ensure host libc CRT objects are \
+visible (on NixOS, a stdenv with glibc). Path discovery may use \
+`cc -print-file-name` when present; that is lookup only.",
+    },
+    ExplainEntry {
+        code: "E395",
+        title: "native link failed",
+        body: "\
+The system linker ran but failed to produce an executable. Check the linker \
+message for missing libraries or CRT objects. Fix the host link environment; \
+do not fall back to JIT for `--target object`.",
+    },
+    ExplainEntry {
+        code: "E396",
+        title: "runtime archive unavailable",
+        body: "\
+AOT link needs `libyarrow_runtime_aot` (the Stage 16 static archive). Rebuild \
+`yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` points at a non-empty archive.",
+    },
 ];
 
 /// Normalize a user-supplied code (`e308`, `308`, `E308`) to `E308` form.

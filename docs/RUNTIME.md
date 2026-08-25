@@ -15,7 +15,7 @@ Runtime
 Pipeline:
 
 ```text
-source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | interpret }
+source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | executable | interpret }
 ```
 
 | Backend     | Role                                                                |
@@ -23,6 +23,7 @@ source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | 
 | `check`     | Type / ownership / stack / region analysis; no machine code         |
 | `jit`       | Cranelift in-process machine code; driver may run `main`            |
 | `object`    | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
+| `executable`| Object emit + system `ld`/`lld` link with the runtime archive       |
 | `interpret` | Tree-walk interpreter over the checked AST (file / future REPL)     |
 
 - User modules resolve relative to the source file’s directory (`"a.b"` → `a/b.yar`).
@@ -39,9 +40,10 @@ Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **
 | Implementation | `yarrow_runtime` (rlib)            | Heap, `@print_*`, regions, `HOST_FNS`                                                |
 | JIT            | `runtime::install_runtime`         | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
 | AOT archive    | `yarrow_runtime_aot` (`staticlib`) | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
-| Library access | `yarrow_core::linkable_archive()`  | Reads `libyarrow_runtime_aot.a` (path from build) for Stage 19 link                  |
+| Library access | `yarrow_core::linkable_archive()`  | Reads `libyarrow_runtime_aot.a` (path from build) for AOT link                       |
+| Executable     | `Session::compile_executable_source` | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)            |
 
-Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Cranelift process `main`, Stage 18) + runtime `.a` link with a system linker (Stage 19). No C CRT and no `cc` compile step.
+Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Cranelift process `main`) + runtime `.a` are linked by `compile_executable_source`. No C CRT source and no `cc` compile step; CRT object paths may be discovered with `cc -print-file-name` when present.
 
 **Imports in a typical program object** (all defined by the runtime archive):
 
@@ -52,6 +54,8 @@ Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Crane
 | `print_str`, `print_int`, `print_float`, `print_newline`, `print_*` | Std I/O backing                       |
 | `free_value`, `register_struct_descs`, `register_union_descs`       | Drop / layout registration            |
 | `region_new`, `region_register`, `region_free`                      | Region lifetime                       |
+
+`free` is exported under that linker name for object imports; on glibc the implementation forwards to `__libc_free` so it does not recurse into itself when other translation units call `free`.
 
 Do not export those names from the JIT driver binary (`aot-exports` is AOT-only); a global `alloc` symbol would clash with the host allocator.
 
@@ -71,7 +75,7 @@ Exit mapping (process `main` trampoline):
 - integer (including bool / enum) → value as exit status
 - fallible envelope → `1` on error tag, else `0`
 
-**Link target (Stage 19):** program `.o` + `libyarrow_runtime_aot.a` only, via `ld`/`lld` (not `cc`). No C CRT source and no `cc` compile step.
+**Link:** `Session::compile_executable_source` links program `.o` + `libyarrow_runtime_aot.a` with `ld`/`lld` (not `cc`). Diagnostics: `E394` linker/CRT missing, `E395` link failed, `E396` runtime archive unavailable. Host support is linux-gnu for now.
 
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 

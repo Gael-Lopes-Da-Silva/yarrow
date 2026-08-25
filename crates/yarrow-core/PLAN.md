@@ -30,14 +30,14 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Parser/AST  | ✅     | Flat postfix `Apply*`; `Program::entry_function`; `StructLit` / `Map` / `EmptyMapOrStruct` |
 | Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe                       |
 | Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return                         |
-| Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                                          |
-| AOT / link  | 🟡     | Runtime archive + `entry_name` + Cranelift `main` (18 ✅); link without `cc` (19)          |
+| Library API | ✅     | `Session`: check, JIT, object emit, executable link, interpret MVP                         |
+| AOT / link  | ✅     | Runtime archive + Cranelift `main` + `compile_executable_source` (`ld`/`lld`)              |
 | Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT via `install_runtime`; AOT via staticlib     |
 | Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`                          |
 
 **Gates today:** all `docs/examples/valid/**` compile and run (JIT); all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
-**Execution backends (landed):** `Check`, `Jit`, `Object` (relocatable bytes), `Interpret` (MVP). **Next:** Phase D turns object emit into a runnable host binary.
+**Execution backends (landed):** `Check`, `Jit`, `Object` (relocatable bytes), `Interpret` (MVP), executable link (`compile_executable_source`). CLI wiring for `run --target object` is still CLI-plan work.
 
 ---
 
@@ -63,7 +63,7 @@ Full rustc-style rendering (`Span`, labels, notes, help), teachable error catalo
 | 14    | Float smallest-fit (`float_literal_kind`); teachable `E334` for float `%` / `^`; `f16` as `f32` CLIF on x64 |
 | 15    | Flat postfix `Apply*` / flat `Seq`; `Program::entry_function`; `StructLit` / `Map` / `EmptyMapOrStruct`     |
 
-Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [`docs/RUNTIME.md`](../../docs/RUNTIME.md)). Object emit leaves host runtime symbols as `Linkage::Import`; linking and a runnable executable are Phase D.
+Pipeline: `tokenize → parse → check → { jit | object | executable | interpret }` (see [`docs/RUNTIME.md`](../../docs/RUNTIME.md)). Object emit leaves host runtime symbols as `Linkage::Import`; `compile_executable_source` links with the runtime archive via `ld`/`lld`.
 
 ---
 
@@ -73,8 +73,8 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 | Area        | Gap                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------- |
-| AOT         | Program `.o` exports process `main`; host link without `cc` remains (Stage 19)                    |
-| Entry       | `CompileOptions::entry_name` + Cranelift process `main` (Stage 18 ✅); link API is Stage 19       |
+| AOT         | Host linux-gnu link only; no cross-compile / DWARF / bundled linker                               |
+| Entry       | CLI `--main` / `run --target object` wiring remains in `yarrow-cli`                               |
 | Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile      |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                       |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages) |
@@ -141,17 +141,19 @@ Yarrow object emit already uses Cranelift. The process entry shim lives in that 
 
 ---
 
-### Stage 19 — Link to host executable (no C compiler) ⬜
+### Stage 19 — Link to host executable (no C compiler) ✅
 
 Wire Stages 13c + 16 + 18 into one library API that produces a runnable host binary **without** a C compiler.
 
-1. **`Session::compile_executable_source`** (name can adjust) — check, emit program object (already contains process `main`), link with the runtime archive via a system **linker** (`ld` / `lld` / equivalent), not `cc` as a compile driver.
-2. Return a structured artifact (e.g. `ExecutableArtifact { file, bytes }` or path + bytes); include IR when useful for dump parity.
-3. Clear diagnostics when the linker is missing or link fails (`E39x`), with help pointing at needing a system linker (not a C toolchain).
+1. **`Session::compile_executable_source`** — check, emit program object (already contains process `main`), link with the runtime archive via a system **linker** (`ld` / `lld` / equivalent), not `cc` as a compile driver.
+2. Return **`ExecutableArtifact { file, bytes, ir, entry_name }`**.
+3. Diagnostics: `E394` linker/CRT missing, `E395` link failed, `E396` runtime archive unavailable; help points at a system linker (not a C toolchain).
 4. No silent fallback to JIT.
-5. CLI consumes this for `compile --target object` (write `-o`) and later `run --target object` (write temp + exec); that wiring is CLI-plan work.
+5. CLI consumes this for `compile --target object` / `run --target object` later (CLI-plan work).
 
 **Gate:** `01_hello.yar` via the new API yields a host executable that runs and prints the same lines as JIT `run`, then exits cleanly. Invalid programs still fail before link. Core never invokes `cc`/`gcc`/`clang` to compile CRT or user code. `cargo clippy` green.
+
+**Notes (landed):** `link::link_executable` drives host `ld` with glibc CRT objects (path discovery may use `cc -print-file-name`). AOT `export_name = "free"` forwards to `__libc_free` so it does not recurse into itself. Host support is linux-gnu for now.
 
 #### Out of scope for Phase D (backlog)
 
@@ -194,12 +196,12 @@ Wire Stages 13c + 16 + 18 into one library API that produces a runnable host bin
 7. Execution backends: check / JIT / object emit / interpret MVP.
 8. Float smallest-fit and teachable `E334`; flat postfix AST and struct/map disambiguation.
 
-### Phase D (open)
+### Phase D (done)
 
 9. Host runtime is linkable for AOT (Stage 16 ✅).
 10. `CompileOptions::entry_name` selects the program entry (Stage 17 ✅).
 11. Object emit exports Cranelift process `main` (no C CRT) (Stage 18 ✅).
-12. `Session` (or equivalent) can produce a runnable host executable for `01_hello.yar` without a C compiler (Stage 19).
+12. `Session::compile_executable_source` produces a runnable host executable for `01_hello.yar` without a C compiler (Stage 19 ✅).
 
 ---
 

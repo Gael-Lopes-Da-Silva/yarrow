@@ -91,6 +91,20 @@ pub struct ObjectArtifact {
     pub entry_name: String,
 }
 
+/// Host executable produced by [`Session::compile_executable_source`].
+///
+/// Linked from the program object (with process `main`) and
+/// [`crate::linkable_archive`] via a system linker (`ld` / `lld`), not `cc`.
+pub struct ExecutableArtifact {
+    pub file: SourceFile,
+    /// Executable file bytes (non-empty on success).
+    pub bytes: Vec<u8>,
+    /// Cranelift IR from the object lower pass (dump parity).
+    pub ir: String,
+    /// Yarrow entry name that process `main` calls.
+    pub entry_name: String,
+}
+
 /// Diagnostics emitted while tokenizing/parsing/compiling one source file.
 pub struct SessionDiagnostics {
     pub file: SourceFile,
@@ -217,6 +231,49 @@ impl Session {
             bytes,
             ir,
             entry_name: self.options.entry_name.clone(),
+        })
+    }
+
+    /// Check, emit a program object (with process `main`), and link with the
+    /// host runtime archive into a runnable executable (Stage 19).
+    ///
+    /// Uses a system linker (`ld` / `lld`). Does not invoke `cc` / `gcc` /
+    /// `clang` as a compile or link driver, and never falls back to JIT.
+    pub fn compile_executable_source(
+        &self,
+        source: String,
+    ) -> Result<ExecutableArtifact, SessionDiagnostics> {
+        let object = self.compile_object_source(source)?;
+        let archive = match crate::linkable_archive() {
+            Ok(archive) => archive,
+            Err(msg) => {
+                return Err(SessionDiagnostics {
+                    file: object.file,
+                    batch: crate::link::LinkError::new(
+                        "E396",
+                        format!("runtime archive unavailable: {msg}"),
+                    )
+                    .with_help(
+                        "rebuild yarrow-core so `YARROW_RUNTIME_AOT_ARCHIVE` points at libyarrow_runtime_aot",
+                    )
+                    .into_batch(self.options.error_limit),
+                });
+            }
+        };
+        let bytes = match crate::link::link_executable(&object.bytes, &archive.bytes) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return Err(SessionDiagnostics {
+                    file: object.file,
+                    batch: err.into_batch(self.options.error_limit),
+                });
+            }
+        };
+        Ok(ExecutableArtifact {
+            file: object.file,
+            bytes,
+            ir: object.ir,
+            entry_name: object.entry_name,
         })
     }
 

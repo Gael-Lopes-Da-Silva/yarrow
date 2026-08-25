@@ -149,9 +149,27 @@ pub extern "C" fn yarrow_alloc(size: u64) -> u64 {
     unsafe { libc::malloc(size as usize) as u64 }
 }
 
+/// Host `free` for `@free` / drop paths.
+///
+/// Under `aot-exports` this is exported as the linker symbol `free`. Calling
+/// `libc::free` from that body would recurse into this same symbol, so on
+/// glibc we forward to `__libc_free` instead. Internal `libc::free` calls
+/// elsewhere bind to this export and then reach glibc through this trampoline.
 #[cfg_attr(feature = "aot-exports", unsafe(export_name = "free"))]
 pub extern "C" fn yarrow_free(ptr: u64) {
-    unsafe { libc::free(ptr as *mut libc::c_void) };
+    unsafe {
+        #[cfg(all(feature = "aot-exports", target_os = "linux", target_env = "gnu"))]
+        {
+            unsafe extern "C" {
+                fn __libc_free(ptr: *mut libc::c_void);
+            }
+            __libc_free(ptr as *mut libc::c_void);
+        }
+        #[cfg(not(all(feature = "aot-exports", target_os = "linux", target_env = "gnu")))]
+        {
+            libc::free(ptr as *mut libc::c_void);
+        }
+    }
 }
 
 /// Detach `handle` from whatever region it is attached to (no-op if none).
