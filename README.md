@@ -41,7 +41,7 @@ Everything lives on a stack. Values are owned. Borrow creates safe references. R
 
 ## Status
 
-Early but already usable. Tokenizer, parser, ownership model, unsafe enforcement, and the core of the pure-Yarrow standard library are in place. See `crates/**/PLAN.md` for the roadmaps and [`README.md`](docs/README.md) for the full language tour.
+Early but already usable. Tokenizer, parser, ownership model, unsafe enforcement, and the core of the pure-Yarrow standard library are in place. See `crates/**/PLAN.md` for the roadmaps and [`docs/README.md`](docs/README.md) for the full language tour.
 
 ## Build & run
 
