@@ -65,6 +65,17 @@ reference (for example with `pop`) before borrowing again.",
 Values put into a region become invalid after `region.free`. Finish using \
 borrows of region-attached values before freeing the region.",
     },
+    ExplainEntry {
+        code: "E334",
+        title: "integer-only remainder and power",
+        body: "\
+`%` is integer remainder and `^` is integer exponentiation. They apply to \
+integer operands only, not to floats.
+
+For floats, use `/` for division. There is no float power operator yet; use \
+integer `^` or an explicit conversion if you need exponentiation on integers \
+first.",
+    },
 ];
 
 /// Normalize a user-supplied code (`e308`, `308`, `E308`) to `E308` form.

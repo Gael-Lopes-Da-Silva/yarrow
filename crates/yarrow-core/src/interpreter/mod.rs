@@ -850,9 +850,22 @@ impl Interpreter {
             Gte => Value::Bool(a >= b),
             Lt => Value::Bool(a < b),
             Lte => Value::Bool(a <= b),
-            Mod | Pow | Fdiv => {
+            Mod | Pow => {
+                let sym = if matches!(op, Mod) { "%" } else { "^" };
+                let what = if matches!(op, Mod) {
+                    "remainder"
+                } else {
+                    "exponentiation"
+                };
                 return Err(InterpretError::new(
-                    "float 'mod'/'^'/'//' are not supported",
+                    format!("'{sym}' is integer {what}, not defined on floats"),
+                    span,
+                    "E334",
+                ));
+            }
+            Fdiv => {
+                return Err(InterpretError::new(
+                    "integer floor division '//' is not defined on floats",
                     span,
                     "E334",
                 ));

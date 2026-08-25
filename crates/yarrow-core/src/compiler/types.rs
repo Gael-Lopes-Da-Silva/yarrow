@@ -198,7 +198,7 @@ impl Ty {
             Ty::I32 | Ty::U32 | Ty::Rune => irtypes::I32,
             Ty::I64 | Ty::U64 => irtypes::I64,
             Ty::I128 | Ty::U128 => irtypes::I128,
-            Ty::F16 => irtypes::F16,
+            Ty::F16 => irtypes::F32,
             Ty::F32 => irtypes::F32,
             Ty::F64 => irtypes::F64,
             Ty::F128 => irtypes::F128,
@@ -573,6 +573,7 @@ pub fn coerce(
         return Ok(value);
     }
 
+    let from_cl = from.clty(ptr_type);
     let to_cl = to.clty(ptr_type);
 
     // Any pointer value satisfies a generic `pointer<T>` target (used by
@@ -630,6 +631,9 @@ pub fn coerce(
 
     // float -> float
     if from.is_float() && to.is_float() {
+        if from_cl == to_cl {
+            return Ok(value);
+        }
         return Ok(if from.bits() < to.bits() {
             builder.ins().fpromote(to_cl, value)
         } else {

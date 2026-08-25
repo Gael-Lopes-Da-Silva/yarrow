@@ -75,7 +75,7 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 | ----------- | --------------------------------------------------------------------------------------------------------------- |
 | AOT         | Object bytes only; need linkable runtime, entry/CRT, and host link to a real executable (Stages 16–18)          |
 | Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
-| Types       | Float `%` / `^` rejected (`E334`); `f16` smallest-fit not implemented; floats default to `f64`                  |
+| Types       | Float `%` / `^` teachable (`E334`); `f16` smallest-fit via `float_literal_kind`         |
 | Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile                    |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
@@ -86,7 +86,7 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 Language surface, diagnostics, session API, and backend split are done. Remaining Phase C stages close type/AST debt that is already in the docs. These can run in parallel with Phase D when useful.
 
-### Stage 14 — Numeric / literal polish ⬜
+### Stage 14 — Numeric / literal polish ✅
 
 Close type-system gaps that are already in the docs.
 
@@ -95,6 +95,8 @@ Close type-system gaps that are already in the docs.
 3. Keep integer smallest-fit behavior (already implemented).
 
 **Gate:** grammar/examples that rely on float defaulting still compile or are updated with the docs; `E334` help is teachable; `cargo clippy` green.
+
+**Notes (landed):** `float_literal_kind` in `parser/literals.rs`; `f16` values use `f32` CLIF registers on x64 (logical type stays `f16`). If/else float merges widen to `f64` when the then-branch sets up the merge block.
 
 ---
 
@@ -208,7 +210,7 @@ Wire Stages 13c + 16 + 17 into one library API that produces a runnable host bin
 5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup (Stage 11).
 6. Stack-effect notes on high-traffic stack errors (Stage 12).
 7. Execution backends: check / JIT / object emit / interpret MVP (Stage 13).
-8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled.
+8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled; float smallest-fit + `E334` landed (Stage 14).
 
 ### Phase D (open)
 

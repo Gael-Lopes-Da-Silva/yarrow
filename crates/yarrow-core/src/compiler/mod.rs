@@ -27,7 +27,8 @@ use crate::parser::ast::{
     Stmt, StmtKind, UnOp, Visibility,
 };
 use crate::parser::literals::{
-    decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
+    FloatLiteralKind, decode_float_literal, decode_int_literal, decode_rune_literal,
+    decode_string_literal, float_literal_kind,
 };
 use crate::parser::parse;
 use crate::tokenizer::Tokenizer;
@@ -3386,13 +3387,15 @@ impl Compiler {
         let mut merge_tys: Vec<Ty> = Vec::new();
         if !then_terminated {
             for s in &then_extra {
-                params.push(b.append_block_param(merge, s.ty.clty(self.ptr_type)));
-                merge_tys.push(s.ty);
+                let join_ty = if_merge_ty_from_then(s.ty);
+                params.push(b.append_block_param(merge, join_ty.clty(self.ptr_type)));
+                merge_tys.push(join_ty);
             }
-            let tv: Vec<BlockArg> = then_extra
-                .iter()
-                .map(|s| BlockArg::Value(s.value))
-                .collect();
+            let mut tv: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
+            for (s, join_ty) in then_extra.iter().zip(&merge_tys) {
+                let v = coerce(b, s.value, s.ty, *join_ty, self.ptr_type, st.current_span)?;
+                tv.push(BlockArg::Value(v));
+            }
             b.ins().jump(merge, &tv);
         }
 
@@ -3441,8 +3444,8 @@ impl Compiler {
                     ));
                 }
                 let mut ev: Vec<BlockArg> = Vec::with_capacity(then_extra.len());
-                for (s, want) in else_extra.iter().zip(&then_extra) {
-                    let v = coerce(b, s.value, s.ty, want.ty, self.ptr_type, st.current_span)?;
+                for (s, join_ty) in else_extra.iter().zip(&merge_tys) {
+                    let v = coerce(b, s.value, s.ty, *join_ty, self.ptr_type, st.current_span)?;
                     ev.push(BlockArg::Value(v));
                 }
                 b.ins().jump(merge, &ev);
@@ -3975,6 +3978,10 @@ impl Compiler {
                     .map_err(|m| CompileError::new(m, st.current_span, "E363"))?;
                 let ty = float_literal_ty(n);
                 let v = match ty {
+                    Ty::F16 => {
+                        use half::f16;
+                        b.ins().f32const(f16::from_f64(n).to_f32())
+                    }
                     Ty::F32 => b.ins().f32const(n as f32),
                     _ => b.ins().f64const(n),
                 };
@@ -5842,13 +5849,10 @@ impl Compiler {
                         Plus => b.ins().fadd(ll, rr),
                         Minus => b.ins().fsub(ll, rr),
                         Mul => b.ins().fmul(ll, rr),
-                        _ => {
-                            return Err(CompileError::unsupported(
-                                "float 'mod'/'^' are not yet supported",
-                                st.current_span,
-                                "E334",
-                            ));
+                        Mod | Pow => {
+                            return Err(float_mod_pow_error(op, st.current_span));
                         }
+                        _ => unreachable!(),
                     };
                     stack.push(Slot {
                         value: v,
@@ -6236,9 +6240,34 @@ fn int_literal_ty(n: i128) -> Ty {
     }
 }
 
-/// Float literals: prefer `f64` for Cranelift lowering for now.
-fn float_literal_ty(_n: f64) -> Ty {
-    Ty::F64
+fn if_merge_ty_from_then(t: Ty) -> Ty {
+    // Merge block params are created before the else branch is compiled. Float
+    // results must be wide enough for a wider else branch (see `common_type`).
+    if t.is_float() { Ty::F64 } else { t }
+}
+
+fn float_literal_ty(n: f64) -> Ty {
+    match float_literal_kind(n) {
+        FloatLiteralKind::F16 => Ty::F16,
+        FloatLiteralKind::F32 => Ty::F32,
+        FloatLiteralKind::F64 => Ty::F64,
+    }
+}
+
+fn float_mod_pow_error(op: BinOp, span: Span) -> CompileError {
+    use BinOp::*;
+    let (sym, what) = match op {
+        Mod => ("%", "remainder"),
+        Pow => ("^", "exponentiation"),
+        _ => unreachable!("float_mod_pow_error called for non-mod/pow op"),
+    };
+    CompileError::unsupported(
+        format!("'{sym}' is integer {what}, not defined on floats"),
+        span,
+        "E334",
+    )
+    .with_note("use integer operands for '%' and '^'")
+    .with_help("for float division use '/'; there is no float power operator yet")
 }
 
 fn loop_helper_parts(e: &Expr) -> Option<(&str, &str)> {

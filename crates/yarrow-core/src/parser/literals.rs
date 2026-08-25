@@ -41,6 +41,29 @@ pub fn decode_float_literal(s: &str) -> Result<f64, String> {
         .map_err(|_| format!("invalid float literal '{s}'"))
 }
 
+/// Smallest IEEE float type that exactly represents `n` (`f16`, then `f32`, else `f64`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatLiteralKind {
+    F16,
+    F32,
+    F64,
+}
+
+/// Pick the smallest float kind that round-trips `n` without loss.
+pub fn float_literal_kind(n: f64) -> FloatLiteralKind {
+    use half::f16;
+
+    let h = f16::from_f64(n);
+    if h.to_f64().to_bits() == n.to_bits() {
+        return FloatLiteralKind::F16;
+    }
+    let f = n as f32;
+    if (f as f64).to_bits() == n.to_bits() {
+        return FloatLiteralKind::F32;
+    }
+    FloatLiteralKind::F64
+}
+
 /// Decode a rune literal lexeme (`'a'`, `'\n'`) into a Unicode code point.
 pub fn decode_rune_literal(s: &str) -> Result<u32, String> {
     let inner = s

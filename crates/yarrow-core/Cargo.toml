@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+half = "2.4"
 libc = "0.2"
 cranelift-codegen = "0.133"
 cranelift-frontend = "0.133"
