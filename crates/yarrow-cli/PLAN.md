@@ -80,7 +80,7 @@ yarrow run --main start <file>              # execute top-level `start` instead 
 yarrow compile <file>                       # --target jit (default): lower/codegen, do not run
 yarrow compile --target jit <file>          # same, explicit
 yarrow compile --target object <file>       # emit native object (-o when implemented)
-yarrow compile --main start --target object <file>  # CRT calls `start`
+yarrow compile --main start --target object <file>  # object binds process main → `start`
 yarrow interpret <file>                     # interpreter; execute entry
 ```
 
@@ -156,7 +156,7 @@ Keep the current driver convention and align with rustc-ish practice:
 | `2`   | Usage, missing file, I/O, or unimplemented target/command (`object` / `interpret` before ready). |
 | `101` | Internal compiler error if we later distinguish ICE from user errors (optional).                 |
 
-`run` / `interpret` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping the entry’s integer to the process exit code is grammar-optional for JIT/`interpret`; native CRT (core Stage 17) does map it for `--target object` executables.
+`run` / `interpret` of a well-typed program that returns an integer: **print** the value (current behavior). Mapping the entry’s integer to the process exit code is grammar-optional for JIT/`interpret`; native process `main` (core Stage 18) does map it for `--target object` executables.
 
 ---
 
@@ -227,7 +227,7 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
 3. `run --target jit`: today’s behavior (default).
 4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT. Core object emit is available (Stage 13c).
 5. Keep `yarrow <file>` as sugar for `run --target jit <file>`.
-6. Accept `--main <NAME>` on `run` / `compile` (and `check` if that command is still being extended). Until core Stage 17 lands `entry_name`, pass-through may be ignored **only** if the flag is rejected with exit `2`; do not silently run a different function.
+6. Accept `--main <NAME>` on `run` / `compile` (and `check` if that command is still being extended). Forward as `CompileOptions::entry_name` (core Stage 17 ✅).
 
 **Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow compile --target object …` writes a non-empty `.o` (core 13c). `yarrow run --target object …` exits `2` until link+exec exists.
 
@@ -247,14 +247,14 @@ Core Stage 13b interpret API is available (`Session::interpret_source`).
 
 ### Stage 8 — Native exec + `--main` ⬜
 
-Depends on core Stages 17–18 (`entry_name`, CRT, `compile_executable_source`).
+Depends on core Stages 17–19 (`entry_name`, Cranelift process `main`, `compile_executable_source`).
 
 1. Wire `--main <NAME>` into `CompileOptions::entry_name` for `run`, `check`, `compile`, and `interpret`.
-2. `compile --target object` still writes a `.o` unless later we grow a “full executable” `-o` mode; CRT uses `--main` when linking.
-3. `run --target object`: link (core 18) and exec. Honor `--main`. Do not fall back to JIT.
+2. `compile --target object` still writes a `.o` unless later we grow a “full executable” `-o` mode; process `main` inside the object honors `--main`.
+3. `run --target object`: link (core 19) and exec. Honor `--main`. Do not fall back to JIT.
 4. Unknown entry: same E360 path as JIT, exit `1`.
 
-**Gate:** `yarrow run --main main docs/examples/valid/01_hello.yar` matches default `run`. `yarrow run --main does_not_exist …` exits `1` with E360. `run --target object` runs `01_hello.yar` once core 18 is ready.
+**Gate:** `yarrow run --main main docs/examples/valid/01_hello.yar` matches default `run`. `yarrow run --main does_not_exist …` exits `1` with E360. `run --target object` runs `01_hello.yar` once core 19 is ready.
 
 ---
 
@@ -266,7 +266,7 @@ Depends on core Stages 17–18 (`entry_name`, CRT, `compile_executable_source`).
 4. Help/version/color/error-limit behave as specified.
 5. `dump` / `explain` land as core APIs allow.
 6. `compile` and `--target` exist; `object` and `interpret` are either real or explicit exit `2`, never a silent no-op.
-7. `--main <NAME>` is parsed on `run` / `check` / `compile` / `interpret` and forwarded as `CompileOptions::entry_name` once core Stage 17 lands.
+7. `--main <NAME>` is parsed on `run` / `check` / `compile` / `interpret` and forwarded as `CompileOptions::entry_name` (core Stage 17 ✅).
 
 ---
 
