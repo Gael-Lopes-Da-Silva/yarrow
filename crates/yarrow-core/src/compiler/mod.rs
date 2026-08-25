@@ -406,12 +406,8 @@ impl Compiler {
 
     fn compile_inner(&mut self, program: &Program) -> CResult<()> {
         self.program_span = program
-            .items
-            .iter()
-            .find_map(|item| match &item.kind {
-                StmtKind::Function(f) if f.name == "main" => Some(item.span),
-                _ => None,
-            })
+            .entry_function("main")
+            .map(|(_, span)| span)
             .or_else(|| {
                 program.items.iter().find_map(|item| match &item.kind {
                     StmtKind::Function(_) => Some(item.span),
@@ -1481,26 +1477,16 @@ impl Compiler {
         stack: &mut Vec<Slot>,
         id: u32,
         ptr: Value,
-        pairs: &[(Expr, Expr)],
+        pairs: &[(String, Expr)],
     ) -> CResult<()> {
         // Make sure the runtime knows this struct's field kinds so it can free
         // owned heap fields if a struct value is ever dropped.
         self.emit_register_struct(b, st, id)?;
         let fields = self.struct_layout(id).fields.clone();
-        for (key, value_expr) in pairs {
-            let field_name = match key {
-                Expr::Variable { name } => name.as_str(),
-                _ => {
-                    return Err(CompileError::new(
-                        "struct literal field names must be identifiers",
-                        Span::default(),
-                        "E340",
-                    ));
-                }
-            };
+        for (field_name, value_expr) in pairs {
             let field = fields
                 .iter()
-                .find(|f| f.name == field_name)
+                .find(|f| f.name == *field_name)
                 .cloned()
                 .ok_or_else(|| {
                     CompileError::new(
@@ -1514,7 +1500,7 @@ impl Compiler {
                 })?;
             // A nested struct literal `{inner {v 9}}` allocates a fresh slot
             // for the inner struct and stores a pointer to it in the field.
-            if let (Ty::Struct(inner_id), Expr::Map(inner_pairs)) = (field.ty, value_expr) {
+            if let (Ty::Struct(inner_id), Expr::StructLit(inner_pairs)) = (field.ty, value_expr) {
                 let inner_ptr = self.alloc_struct(b, st, inner_id)?;
                 self.init_struct_fields(b, st, stack, inner_id, inner_ptr, inner_pairs)?;
                 b.ins().store(
@@ -1579,9 +1565,7 @@ impl Compiler {
             );
         }
         for field in &fields {
-            let provided = pairs
-                .iter()
-                .any(|(k, _)| matches!(k, Expr::Variable { name } if name == &field.name));
+            let provided = pairs.iter().any(|(k, _)| k == &field.name);
             if !provided {
                 let zero = b.ins().iconst(field.ty.clty(self.ptr_type), 0);
                 b.ins().store(
@@ -1977,7 +1961,7 @@ impl Compiler {
                     t = Compiler::infer_array_count(t, elems)?;
                 }
                 let (_slot, val, val_ty) = match value {
-                    Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
+                    Some(Expr::StructLit(pairs)) if matches!(t, Ty::Struct(_)) => {
                         // Struct literal `{x 5 y 20}`: allocate a slot and
                         // store each field by name.
                         let Ty::Struct(id) = t else { unreachable!() };
@@ -1993,11 +1977,24 @@ impl Compiler {
                             t,
                         )
                     }
+                    Some(Expr::EmptyMapOrStruct) if matches!(t, Ty::Struct(_)) => {
+                        let Ty::Struct(id) = t else { unreachable!() };
+                        let ptr = self.alloc_struct(b, st, id)?;
+                        (
+                            Slot {
+                                value: ptr,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            ptr,
+                            t,
+                        )
+                    }
                     Some(Expr::Seq(elems)) if matches!(t, Ty::Struct(_)) => {
                         // The parser merges every preceding stack op into the
-                        // initializer; only the trailing map is the struct
-                        // literal, the rest are side effects.
-                        if let Some((Expr::Map(pairs), _)) = elems.last() {
+                        // initializer; only the trailing struct lit is the value,
+                        // the rest are side effects.
+                        if let Some((Expr::StructLit(pairs), _)) = elems.last() {
                             for (el, span) in &elems[..elems.len() - 1] {
                                 st.current_span = *span;
                                 self.compile_expr(b, st, stack, el)?;
@@ -2005,6 +2002,22 @@ impl Compiler {
                             let Ty::Struct(id) = t else { unreachable!() };
                             let ptr = self.alloc_struct(b, st, id)?;
                             self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                            (
+                                Slot {
+                                    value: ptr,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                ptr,
+                                t,
+                            )
+                        } else if let Some((Expr::EmptyMapOrStruct, _)) = elems.last() {
+                            for (el, span) in &elems[..elems.len() - 1] {
+                                st.current_span = *span;
+                                self.compile_expr(b, st, stack, el)?;
+                            }
+                            let Ty::Struct(id) = t else { unreachable!() };
+                            let ptr = self.alloc_struct(b, st, id)?;
                             (
                                 Slot {
                                     value: ptr,
@@ -2040,6 +2053,19 @@ impl Compiler {
                             (Ty::Hashmap { .. }, Expr::Map(pairs)) => {
                                 let (handle, _, _) =
                                     self.emit_map_literal(b, st, stack, pairs, Some(t))?;
+                                (
+                                    Slot {
+                                        value: handle,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    handle,
+                                    t,
+                                )
+                            }
+                            (Ty::Hashmap { .. }, Expr::EmptyMapOrStruct) => {
+                                let (handle, _, _) =
+                                    self.emit_map_literal(b, st, stack, &[], Some(t))?;
                                 (
                                     Slot {
                                         value: handle,
@@ -2132,6 +2158,18 @@ impl Compiler {
                             t,
                         )
                     }
+                    Some(Expr::EmptyMapOrStruct) if matches!(t, Ty::Hashmap { .. }) => {
+                        let (handle, _, _) = self.emit_map_literal(b, st, stack, &[], Some(t))?;
+                        (
+                            Slot {
+                                value: handle,
+                                ty: t,
+                                own: Own::Owned,
+                            },
+                            handle,
+                            t,
+                        )
+                    }
                     Some(e) => {
                         self.compile_expr(b, st, stack, e)?;
                         let slot = self.pop_slot(st, stack, "value")?;
@@ -2175,12 +2213,15 @@ impl Compiler {
                     // A struct literal set re-initializes the existing
                     // storage in place, so the old value must NOT be freed
                     // first (the pointer is reused).
-                    let trailing_map = match value {
-                        Some(Expr::Map(_)) => true,
-                        Some(Expr::Seq(elems)) => matches!(elems.last(), Some((Expr::Map(_), _))),
+                    let trailing_struct = match value {
+                        Some(Expr::StructLit(_)) | Some(Expr::EmptyMapOrStruct) => true,
+                        Some(Expr::Seq(elems)) => matches!(
+                            elems.last(),
+                            Some((Expr::StructLit(_) | Expr::EmptyMapOrStruct, _))
+                        ),
                         _ => false,
                     };
-                    let reuses_ptr = trailing_map && matches!(t, Ty::Struct(_));
+                    let reuses_ptr = trailing_struct && matches!(t, Ty::Struct(_));
                     // Drop the value the variable currently owns (the runtime
                     // guards against double frees). Borrowed variables own
                     // nothing, so their value is left for its true owner.
@@ -2193,7 +2234,7 @@ impl Compiler {
                         self.emit_drop(b, st, old)?;
                     }
                     let (_slot, val, val_ty) = match value {
-                        Some(Expr::Map(pairs)) if matches!(t, Ty::Struct(_)) => {
+                        Some(Expr::StructLit(pairs)) if matches!(t, Ty::Struct(_)) => {
                             let Ty::Struct(id) = t else { unreachable!() };
                             let ptr = b.use_var(var);
                             self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
@@ -2207,11 +2248,23 @@ impl Compiler {
                                 t,
                             )
                         }
+                        Some(Expr::EmptyMapOrStruct) if matches!(t, Ty::Struct(_)) => {
+                            let ptr = b.use_var(var);
+                            (
+                                Slot {
+                                    value: ptr,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                ptr,
+                                t,
+                            )
+                        }
                         Some(Expr::Seq(elems)) if matches!(t, Ty::Struct(_)) => {
                             // The parser merges every preceding stack op into
-                            // the initializer; only the trailing map is the
-                            // struct literal, the rest are side effects.
-                            if let Some((Expr::Map(pairs), _)) = elems.last() {
+                            // the initializer; only the trailing struct lit is
+                            // the value, the rest are side effects.
+                            if let Some((Expr::StructLit(pairs), _)) = elems.last() {
                                 for (el, span) in &elems[..elems.len() - 1] {
                                     st.current_span = *span;
                                     self.compile_expr(b, st, stack, el)?;
@@ -2219,6 +2272,21 @@ impl Compiler {
                                 let Ty::Struct(id) = t else { unreachable!() };
                                 let ptr = b.use_var(var);
                                 self.init_struct_fields(b, st, stack, id, ptr, pairs)?;
+                                (
+                                    Slot {
+                                        value: ptr,
+                                        ty: t,
+                                        own: Own::Owned,
+                                    },
+                                    ptr,
+                                    t,
+                                )
+                            } else if let Some((Expr::EmptyMapOrStruct, _)) = elems.last() {
+                                for (el, span) in &elems[..elems.len() - 1] {
+                                    st.current_span = *span;
+                                    self.compile_expr(b, st, stack, el)?;
+                                }
+                                let ptr = b.use_var(var);
                                 (
                                     Slot {
                                         value: ptr,
@@ -2272,6 +2340,19 @@ impl Compiler {
                         Some(Expr::Map(pairs)) if matches!(t, Ty::Hashmap { .. }) => {
                             let (handle, _, _) =
                                 self.emit_map_literal(b, st, stack, pairs, Some(t))?;
+                            (
+                                Slot {
+                                    value: handle,
+                                    ty: t,
+                                    own: Own::Owned,
+                                },
+                                handle,
+                                t,
+                            )
+                        }
+                        Some(Expr::EmptyMapOrStruct) if matches!(t, Ty::Hashmap { .. }) => {
+                            let (handle, _, _) =
+                                self.emit_map_literal(b, st, stack, &[], Some(t))?;
                             (
                                 Slot {
                                     value: handle,
@@ -4261,19 +4342,7 @@ impl Compiler {
                 });
             }
             Expr::Map(pairs) => {
-                // A standalone `{...}` with identifier keys is a struct
-                // literal (only meaningful inside a typed var decl); with
-                // literal keys it is a hashmap literal.
-                let all_idents = pairs
-                    .iter()
-                    .all(|(k, _)| matches!(k, Expr::Variable { .. }));
-                if all_idents {
-                    return Err(CompileError::new(
-                        "struct literal requires a declared struct type",
-                        st.current_span,
-                        "E340",
-                    ));
-                }
+                // Standalone hashmap literal with literal keys.
                 let (handle, kcode, vcode) = self.emit_map_literal(b, st, stack, pairs, None)?;
                 self.claim(
                     st,
@@ -4291,6 +4360,20 @@ impl Compiler {
                     },
                     own: Own::Owned,
                 });
+            }
+            Expr::StructLit(_) => {
+                return Err(CompileError::new(
+                    "struct literal requires a declared struct type",
+                    st.current_span,
+                    "E340",
+                ));
+            }
+            Expr::EmptyMapOrStruct => {
+                return Err(CompileError::new(
+                    "empty '{}' needs a typed binding (hashmap or struct)",
+                    st.current_span,
+                    "E306",
+                ));
             }
             Expr::Typeof { inner } => {
                 self.compile_expr(b, st, stack, inner)?;
@@ -6119,15 +6202,25 @@ fn collect_strings<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a str>) {
                     walk_expr(v, out);
                 }
             }
+            Expr::StructLit(fields) => {
+                for (_, v) in fields {
+                    walk_expr(v, out);
+                }
+            }
             Expr::Member { base, .. }
             | Expr::Call { target: base }
             | Expr::Unwrap { inner: base }
             | Expr::Typeof { inner: base }
-            | Expr::Borrow { inner: base } => walk_expr(base, out),
+            | Expr::Borrow { inner: base }
+            | Expr::Load { inner: base } => walk_expr(base, out),
             Expr::Unary { operand, .. } => walk_expr(operand, out),
             Expr::Binary { left, right, .. } => {
                 walk_expr(left, out);
                 walk_expr(right, out);
+            }
+            Expr::Store { addr, value } => {
+                walk_expr(addr, out);
+                walk_expr(value, out);
             }
             _ => {}
         }

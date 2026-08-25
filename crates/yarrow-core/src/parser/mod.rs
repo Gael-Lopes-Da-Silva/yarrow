@@ -2,11 +2,11 @@
 //!
 //! Yarrow is a stack-based language in which whitespace/newlines are not part
 //! of the token stream. To reconstruct structure, the parser maintains an
-//! *operand stack* while scanning a body of tokens. Each value or computed
-//! expression is pushed onto the operand stack; binary operators pop two
-//! operands and push back a combined node. Declarations and control-flow
-//! keywords flush (drain) the operand stack and use its contents as their
-//! payload.
+//! *operand stack* while scanning a body of tokens. Each stack word is pushed
+//! with its own span; operators push `ApplyBin` / `ApplyUn` (flat postfix)
+//! rather than nesting `Binary` / `Unary` trees that would hide per-word spans.
+//! Declarations and control-flow keywords flush (drain) the operand stack and
+//! use its contents as their payload.
 
 pub mod ast;
 pub mod literals;
@@ -141,9 +141,7 @@ impl Parser {
             }
         }
 
-        if let Some((expr, span)) = drain_ops(&mut ops, &mut op_spans) {
-            stmts.push(Stmt::new(StmtKind::Expr(expr), span));
-        }
+        push_drained_exprs(&mut stmts, drain_ops(&mut ops, &mut op_spans));
 
         Ok(stmts)
     }
@@ -324,9 +322,7 @@ impl Parser {
             }
 
             TokenKind::Handle => {
-                if let Some((expr, span)) = drain_ops(ops, op_spans) {
-                    stmts.push(Stmt::new(StmtKind::Expr(expr), span));
-                }
+                push_drained_exprs(stmts, drain_ops(ops, op_spans));
                 let start = self.peek_span();
                 self.advance();
                 let body = self.body(&[TokenKind::End])?;
@@ -1069,42 +1065,18 @@ impl Parser {
             }
             TokenKind::Typeof => {
                 self.advance();
-                let typeof_span = self.prev_span();
-                if let Some(inner) = ops.pop() {
-                    op_spans.pop();
-                    ops.push(Expr::Typeof {
-                        inner: Box::new(inner),
-                    });
-                } else {
-                    ops.push(Expr::ApplyTypeof);
-                }
-                note_op_span(op_spans, typeof_span);
+                ops.push(Expr::ApplyTypeof);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::Borrow => {
                 self.advance();
-                let borrow_span = self.prev_span();
-                if let Some(inner) = ops.pop() {
-                    op_spans.pop();
-                    ops.push(Expr::Borrow {
-                        inner: Box::new(inner),
-                    });
-                } else {
-                    ops.push(Expr::ApplyBorrow);
-                }
-                note_op_span(op_spans, borrow_span);
+                ops.push(Expr::ApplyBorrow);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::Load => {
                 self.advance();
-                let load_span = self.prev_span();
-                if let Some(inner) = ops.pop() {
-                    op_spans.pop();
-                    ops.push(Expr::Load {
-                        inner: Box::new(inner),
-                    });
-                } else {
-                    ops.push(Expr::ApplyLoad);
-                }
-                note_op_span(op_spans, load_span);
+                ops.push(Expr::ApplyLoad);
+                note_op_span(op_spans, self.prev_span());
             }
             TokenKind::Store => {
                 self.advance();
@@ -1132,7 +1104,10 @@ impl Parser {
             TokenKind::Dup => {
                 self.advance();
                 let dup_span = self.prev_span();
-                if !ops.is_empty() {
+                // Clone a concrete value word at parse time (e.g. `i dup 1 + set`).
+                // Leave `Apply*` / stack ops to runtime so flat postfix sequences
+                // are not scrambled.
+                if ops.last().is_some_and(is_dupable_word) {
                     ops.push(ops[ops.len() - 1].clone());
                     op_spans.push(*op_spans.last().unwrap());
                 } else {
@@ -1143,8 +1118,8 @@ impl Parser {
             TokenKind::Swap => {
                 self.advance();
                 let swap_span = self.prev_span();
-                if ops.len() >= 2 {
-                    let n = ops.len();
+                let n = ops.len();
+                if n >= 2 && is_dupable_word(&ops[n - 1]) && is_dupable_word(&ops[n - 2]) {
                     ops.swap(n - 1, n - 2);
                     op_spans.swap(n - 1, n - 2);
                 } else {
@@ -1155,11 +1130,17 @@ impl Parser {
             TokenKind::Rot => {
                 self.advance();
                 let rot_span = self.prev_span();
-                if ops.len() >= 3 {
-                    let first = ops.remove(0);
-                    let first_span = op_spans.remove(0);
-                    ops.push(first);
-                    op_spans.push(first_span);
+                // Rotate only the top three value words, never the whole ops list.
+                let n = ops.len();
+                if n >= 3
+                    && is_dupable_word(&ops[n - 1])
+                    && is_dupable_word(&ops[n - 2])
+                    && is_dupable_word(&ops[n - 3])
+                {
+                    let third = ops.remove(n - 3);
+                    let third_span = op_spans.remove(n - 3);
+                    ops.push(third);
+                    op_spans.push(third_span);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Rot));
                     note_op_span(op_spans, rot_span);
@@ -1168,11 +1149,16 @@ impl Parser {
             TokenKind::Unrot => {
                 self.advance();
                 let unrot_span = self.prev_span();
-                if ops.len() >= 3 {
-                    let last = ops.pop().unwrap();
-                    let last_span = op_spans.pop().unwrap();
-                    ops.insert(0, last);
-                    op_spans.insert(0, last_span);
+                let n = ops.len();
+                if n >= 3
+                    && is_dupable_word(&ops[n - 1])
+                    && is_dupable_word(&ops[n - 2])
+                    && is_dupable_word(&ops[n - 3])
+                {
+                    let top = ops.pop().unwrap();
+                    let top_span = op_spans.pop().unwrap();
+                    ops.insert(n - 3, top);
+                    op_spans.insert(n - 3, top_span);
                 } else {
                     ops.push(Expr::StackOp(StackOp::Unrot));
                     note_op_span(op_spans, unrot_span);
@@ -1196,41 +1182,16 @@ impl Parser {
             }
             TokenKind::Not => {
                 self.advance();
-                let not_span = self.prev_span();
-                let can_combine = ops.last().is_some_and(is_value);
-                if can_combine {
-                    let operand = ops.pop().unwrap();
-                    op_spans.pop();
-                    ops.push(Expr::Unary {
-                        op: UnOp::Not,
-                        operand: Box::new(operand),
-                    });
-                } else {
-                    ops.push(Expr::ApplyUn(UnOp::Not));
-                }
-                note_op_span(op_spans, not_span);
+                // Flat postfix: keep the operand as its own word so Seq spans
+                // stay per-word (AST.md Word model).
+                ops.push(Expr::ApplyUn(UnOp::Not));
+                note_op_span(op_spans, self.prev_span());
             }
             _ => {
                 if let Some(op) = binary_op(kind) {
                     self.advance();
-                    let bin_span = self.prev_span();
-                    let can_combine = ops.len() >= 2
-                        && is_value(&ops[ops.len() - 1])
-                        && is_value(&ops[ops.len() - 2]);
-                    if can_combine {
-                        let right = ops.pop().unwrap();
-                        op_spans.pop();
-                        let left = ops.pop().unwrap();
-                        op_spans.pop();
-                        ops.push(Expr::Binary {
-                            op,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        });
-                    } else {
-                        ops.push(Expr::ApplyBin(op));
-                    }
-                    note_op_span(op_spans, bin_span);
+                    ops.push(Expr::ApplyBin(op));
+                    note_op_span(op_spans, self.prev_span());
                 } else {
                     return Err(ParseError::new(
                         format!("unexpected token '{kind:?}' in expression"),
@@ -1266,7 +1227,12 @@ impl Parser {
     }
 
     fn parse_map_literal(&mut self) -> ParseResult<Expr> {
+        let start = self.peek_location();
         self.advance(); // '{'
+        if self.peek_kind() == TokenKind::RightCurly {
+            self.advance();
+            return Ok(Expr::EmptyMapOrStruct);
+        }
         let mut pairs = Vec::new();
         while self.peek_kind() != TokenKind::RightCurly {
             let key = self.parse_literal_element()?;
@@ -1274,7 +1240,33 @@ impl Parser {
             pairs.push((key, value));
         }
         self.expect(TokenKind::RightCurly, "expected '}' to close map literal")?;
-        Ok(Expr::Map(pairs))
+        if pairs.is_empty() {
+            return Ok(Expr::EmptyMapOrStruct);
+        }
+        let all_idents = pairs
+            .iter()
+            .all(|(k, _)| matches!(k, Expr::Variable { .. }));
+        let all_literals = pairs.iter().all(|(k, _)| is_literal_key(k));
+        if all_idents {
+            let fields = pairs
+                .into_iter()
+                .map(|(k, v)| {
+                    let Expr::Variable { name } = k else {
+                        unreachable!("all_idents checked")
+                    };
+                    (name, v)
+                })
+                .collect();
+            Ok(Expr::StructLit(fields))
+        } else if all_literals {
+            Ok(Expr::Map(pairs))
+        } else {
+            Err(ParseError::new(
+                "map/struct literal keys must be all identifiers (struct) or all literals (hashmap)",
+                start,
+                "E215",
+            ))
+        }
     }
 
     fn parse_container_elements(&mut self, close: TokenKind) -> ParseResult<Vec<Expr>> {
@@ -1576,6 +1568,7 @@ fn note_op_span(op_spans: &mut Vec<Span>, span: Span) {
 }
 
 /// Drain ops + spans. Returns `(expr, merged_span)`.
+/// Multi-word drains become a flat `Expr::Seq` (nested `Seq` elements are flattened).
 fn drain_ops(ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> Option<(Expr, Span)> {
     match ops.len() {
         0 => {
@@ -1586,20 +1579,82 @@ fn drain_ops(ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> Option<(Expr, Spa
             let e = ops.pop().unwrap();
             let s = op_spans.pop().unwrap_or_default();
             op_spans.clear();
-            Some((e, s))
+            // A lone nested Seq should still be flat for consumers.
+            Some(flatten_seq_expr(e, s))
         }
         n => {
             debug_assert_eq!(op_spans.len(), n, "ops/op_spans length mismatch");
             let seq = std::mem::take(ops);
             let spans = std::mem::take(op_spans);
-            let merged = spans
+            let mut flat: Vec<(Expr, Span)> = Vec::with_capacity(n);
+            for (e, s) in seq.into_iter().zip(spans) {
+                append_flat_seq(&mut flat, e, s);
+            }
+            let merged = flat
                 .iter()
-                .copied()
+                .map(|(_, s)| *s)
                 .reduce(|a, b| a.merge(b))
                 .unwrap_or_default();
-            Some((Expr::Seq(seq.into_iter().zip(spans).collect()), merged))
+            Some((Expr::Seq(flat), merged))
         }
     }
+}
+
+/// Push drained postfix words as one `StmtKind::Expr` per word (flat, per-word spans).
+fn push_drained_exprs(stmts: &mut Vec<Stmt>, drained: Option<(Expr, Span)>) {
+    match drained {
+        None => {}
+        Some((Expr::Seq(elems), _)) => {
+            for (e, s) in elems {
+                stmts.push(Stmt::new(StmtKind::Expr(e), s));
+            }
+        }
+        Some((e, s)) => stmts.push(Stmt::new(StmtKind::Expr(e), s)),
+    }
+}
+
+fn flatten_seq_expr(e: Expr, s: Span) -> (Expr, Span) {
+    match e {
+        Expr::Seq(elems) => {
+            let mut flat = Vec::with_capacity(elems.len());
+            for (inner, is) in elems {
+                append_flat_seq(&mut flat, inner, is);
+            }
+            let merged = flat
+                .iter()
+                .map(|(_, sp)| *sp)
+                .reduce(|a, b| a.merge(b))
+                .unwrap_or(s);
+            if flat.len() == 1 {
+                flat.pop().unwrap()
+            } else {
+                (Expr::Seq(flat), merged)
+            }
+        }
+        other => (other, s),
+    }
+}
+
+fn append_flat_seq(out: &mut Vec<(Expr, Span)>, e: Expr, s: Span) {
+    match e {
+        Expr::Seq(elems) => {
+            for (inner, is) in elems {
+                append_flat_seq(out, inner, is);
+            }
+        }
+        other => out.push((other, s)),
+    }
+}
+
+fn is_literal_key(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Integer { .. }
+            | Expr::Float { .. }
+            | Expr::String { .. }
+            | Expr::Rune { .. }
+            | Expr::Bool { .. }
+    )
 }
 
 /// Pull the `fallback` statement out of a `handle` body, returning the
@@ -1669,7 +1724,10 @@ fn literal_expr(tok: &Token) -> ParseResult<Expr> {
     }
 }
 
-fn is_value(e: &Expr) -> bool {
+/// A postfix word that pushes (or names) a value and is safe to clone/reorder
+/// on the parser operand stack. `Apply*` and `StackOp` must stay in order for
+/// runtime evaluation.
+fn is_dupable_word(e: &Expr) -> bool {
     matches!(
         e,
         Expr::Integer { .. }
@@ -1683,12 +1741,14 @@ fn is_value(e: &Expr) -> bool {
             | Expr::Binary { .. }
             | Expr::Unary { .. }
             | Expr::Call { .. }
+            | Expr::Unwrap { .. }
             | Expr::Typeof { .. }
             | Expr::Borrow { .. }
             | Expr::Array(_)
             | Expr::List(_)
             | Expr::Map(_)
-            | Expr::Seq(_)
+            | Expr::StructLit(_)
+            | Expr::EmptyMapOrStruct
     )
 }
 

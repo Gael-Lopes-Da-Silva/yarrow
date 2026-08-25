@@ -257,7 +257,9 @@ impl Session {
         file: &SourceFile,
         program: &Program,
     ) -> Result<(), SessionDiagnostics> {
-        if !self.options.require_main || has_main(program) {
+        // Stage 17 will honor `CompileOptions::entry_name`; until then the entry is `main`.
+        const ENTRY: &str = "main";
+        if !self.options.require_main || program.has_entry(ENTRY) {
             return Ok(());
         }
         let path = self.options.source_path.clone();
@@ -271,13 +273,15 @@ impl Session {
             })
             .or_else(|| program.items.first().map(|item| item.span))
             .unwrap_or_default();
-        let diag = Diagnostic::error("E360", "program has no 'main' function")
+        let diag = Diagnostic::error("E360", format!("program has no '{ENTRY}' function"))
             .with_path(path)
             .with_primary(span, "")
-            .with_note("running a `.yar` file requires a top-level `main` entry point")
-            .with_help(
-                "add `main function do ... end`, optionally `with T` for a printable result",
-            );
+            .with_note(format!(
+                "running a `.yar` file requires a top-level `{ENTRY}` entry point"
+            ))
+            .with_help(format!(
+                "add `{ENTRY} function do ... end`, optionally `with T` for a printable result"
+            ));
         batch.push(diag);
         Err(SessionDiagnostics {
             file: file.clone(),
@@ -348,13 +352,6 @@ impl SessionArtifact {
     pub fn emit_ir(&self) -> String {
         self.compiler.emit_ir()
     }
-}
-
-fn has_main(program: &crate::parser::ast::Program) -> bool {
-    program
-        .items
-        .iter()
-        .any(|item| matches!(&item.kind, StmtKind::Function(f) if f.name == "main"))
 }
 
 fn tokenize_batch(

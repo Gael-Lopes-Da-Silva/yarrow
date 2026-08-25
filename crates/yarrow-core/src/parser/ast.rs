@@ -13,6 +13,21 @@ pub struct Program {
     pub items: Vec<Stmt>,
 }
 
+impl Program {
+    /// Top-level function named `name`, if present (default entry is `"main"`).
+    pub fn entry_function(&self, name: &str) -> Option<(&Function, Span)> {
+        self.items.iter().find_map(|item| match &item.kind {
+            StmtKind::Function(f) if f.name == name => Some((f, item.span)),
+            _ => None,
+        })
+    }
+
+    /// Whether this program declares a top-level function named `name`.
+    pub fn has_entry(&self, name: &str) -> bool {
+        self.entry_function(name).is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutability {
     Mutable,
@@ -239,9 +254,15 @@ pub enum Expr {
     StackOp(StackOp),
     Array(Vec<Expr>),
     List(Vec<Expr>),
+    /// `{ k v ... }` hashmap literal: keys are literals (see grammar).
     Map(Vec<(Expr, Expr)>),
-    /// Multiple stack words flushed as one statement; each element keeps its span
-    /// so lowering can attribute errors to the failing word.
+    /// `{ field value ... }` struct literal: keys are identifiers.
+    StructLit(Vec<(String, Expr)>),
+    /// `{}` empty map/struct placeholder; needs a typed binding context.
+    EmptyMapOrStruct,
+    /// Multiple stack words flushed as one expression (conditions / initializers).
+    /// Each element keeps its span so lowering can attribute errors per word.
+    /// Elements are flat (no nested `Seq`).
     Seq(Vec<(Expr, Span)>),
 }
 

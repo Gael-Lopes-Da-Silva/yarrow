@@ -24,16 +24,16 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 
 ## Current state
 
-| Component   | Status | Notes                                                                 |
-| ----------- | ------ | --------------------------------------------------------------------- |
-| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                          |
-| Parser/AST  | ✅     | Parses `docs/examples/valid/**`; some internal AST shape debt remains |
-| Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe  |
-| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return    |
-| Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                     |
-| AOT / link  | 🟡     | Relocatable `.o` bytes; no linkable runtime or host executable yet    |
-| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT-only symbol install     |
-| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`     |
+| Component   | Status | Notes                                                                                      |
+| ----------- | ------ | ------------------------------------------------------------------------------------------ |
+| Tokenizer   | ✅     | Full doc surface; UTF-8-safe                                                               |
+| Parser/AST  | ✅     | Flat postfix `Apply*`; `Program::entry_function`; `StructLit` / `Map` / `EmptyMapOrStruct` |
+| Compiler    | ✅     | JIT + check-only + object emit; ownership / borrow / region / unsafe                       |
+| Diagnostics | ✅     | Rustc-style spans; stack-effect notes on underflow / join / return                         |
+| Library API | ✅     | `Session`: check, JIT, object emit, interpret MVP                                          |
+| AOT / link  | 🟡     | Relocatable `.o` bytes; no linkable runtime or host executable yet                         |
+| Runtime     | 🟡     | Host heap, regions, lists, maps, strings; JIT-only symbol install                          |
+| Std library | 🟡     | Core modules + intrinsics; `std.fs` stub; partial `io` / `string`                          |
 
 **Gates today:** all `docs/examples/valid/**` compile and run (JIT); all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
@@ -51,19 +51,19 @@ Tokenizer, parser, and compiler aligned with the current docs: `~` concat, `|T E
 
 Full rustc-style rendering (`Span`, labels, notes, help), teachable error catalog (E373–E376, E370, E308, …), parser recovery and compiler multi-error collection with output cap.
 
-### Phase C (part 1): Session API and backends (Stages 11–13) ✅
+### Phase C: Session API, backends, and frontend polish (Stages 11–15) ✅
 
-| Stage | What landed                                                                                            |
-| ----- | ------------------------------------------------------------------------------------------------------ |
-| 11    | `CompileOptions` / `Session`; tokenize, parse, check, compile without duplicating the root driver      |
-| 12    | Stack-effect notes on underflow / branch join / return imbalance                                       |
-| 13a   | `ExecutionMode` + `CheckedProgram`; `check_source` without JIT install                                 |
-| 13b   | Tree-walk `interpret_source` / `EvalContext` MVP (`01_hello`, `02_arithmetic_and_stack`)               |
-| 13c   | `cranelift-object` via `CodeModule`; `Session::compile_object_source` → `ObjectArtifact { bytes, ir }` |
+| Stage | What landed                                                                                                 |
+| ----- | ----------------------------------------------------------------------------------------------------------- |
+| 11    | `CompileOptions` / `Session`; tokenize, parse, check, compile without duplicating the root driver           |
+| 12    | Stack-effect notes on underflow / branch join / return imbalance                                            |
+| 13a   | `ExecutionMode` + `CheckedProgram`; `check_source` without JIT install                                      |
+| 13b   | Tree-walk `interpret_source` / `EvalContext` MVP (`01_hello`, `02_arithmetic_and_stack`)                    |
+| 13c   | `cranelift-object` via `CodeModule`; `Session::compile_object_source` → `ObjectArtifact { bytes, ir }`      |
+| 14    | Float smallest-fit (`float_literal_kind`); teachable `E334` for float `%` / `^`; `f16` as `f32` CLIF on x64 |
+| 15    | Flat postfix `Apply*` / flat `Seq`; `Program::entry_function`; `StructLit` / `Map` / `EmptyMapOrStruct`     |
 
-Object emit leaves host runtime symbols as `Linkage::Import`. Linking and a runnable executable are Phase D (not CLI-only stubs).
-
-Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [`docs/RUNTIME.md`](../../docs/RUNTIME.md)).
+Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [`docs/RUNTIME.md`](../../docs/RUNTIME.md)). Object emit leaves host runtime symbols as `Linkage::Import`; linking and a runnable executable are Phase D.
 
 ---
 
@@ -71,44 +71,13 @@ Pipeline: `tokenize → parse → check → { jit | object | interpret }` (see [
 
 These are remaining mismatches or thin areas inside this crate, not CLI work.
 
-| Area        | Gap                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------- |
-| AOT         | Object bytes only; need linkable runtime, entry/CRT, and host link to a real executable (Stages 16–18)          |
-| Parser/AST  | Operand stack builds nested `Expr` trees; `Program` has no distinguished `main`; `{}` struct vs hashmap is weak |
-| Types       | Float `%` / `^` teachable (`E334`); `f16` smallest-fit via `float_literal_kind`         |
-| Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile                    |
-| Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                                     |
-| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)               |
-
----
-
-## Phase C (part 2): Checking and AST polish
-
-Language surface, diagnostics, session API, and backend split are done. Remaining Phase C stages close type/AST debt that is already in the docs. These can run in parallel with Phase D when useful.
-
-### Stage 14 — Numeric / literal polish ✅
-
-Close type-system gaps that are already in the docs.
-
-1. Float literals: smallest-fit (`3.14` → `f16` when it fits), matching [`TYPE_SYSTEM.md`](../../docs/TYPE_SYSTEM.md).
-2. Clearer reject for float `%` / `^` (`E334`): message + help that `%` is integer remainder and `^` is integer power, not float ops.
-3. Keep integer smallest-fit behavior (already implemented).
-
-**Gate:** grammar/examples that rely on float defaulting still compile or are updated with the docs; `E334` help is teachable; `cargo clippy` green.
-
-**Notes (landed):** `float_literal_kind` in `parser/literals.rs`; `f16` values use `f32` CLIF registers on x64 (logical type stays `f16`). If/else float merges widen to `f64` when the then-branch sets up the merge block.
-
----
-
-### Stage 15 — AST / frontend cleanup ⬜
-
-Internal compiler-facing AST, not new syntax.
-
-1. Flatten postfix sequences where `Expr::Seq` nesting hides per-word spans.
-2. Distinguish the program entry on `Program` (or a resolve pass) so missing-entry (`E360`) does not scan ad hoc. Default name `main`; honor `CompileOptions::entry_name` when Stage 17 lands.
-3. Tighten `{}` struct vs hashmap disambiguation per grammar (typed empty `{}` vs struct literals).
-
-**Gate:** example corpus unchanged in behavior; diagnostics do not get worse; no public language change.
+| Area        | Gap                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------ |
+| AOT         | Object bytes only; need linkable runtime, entry/CRT, and host link to a real executable (Stages 16–18) |
+| Entry       | `Program::entry_function("main")`; Stage 17 wires `CompileOptions::entry_name`                         |
+| Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile           |
+| Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                            |
+| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages)      |
 
 ---
 
@@ -205,12 +174,12 @@ Wire Stages 13c + 16 + 17 into one library API that produces a runnable host bin
 3. Failures render rustc-style with teachable notes; multi-error when recovery applies.
 4. `cargo fmt --all`, `cargo check`, `cargo clippy` green.
 
-### Phase C (Stages 11–13 done; 14–15 open)
+### Phase C (done)
 
-5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup (Stage 11).
-6. Stack-effect notes on high-traffic stack errors (Stage 12).
-7. Execution backends: check / JIT / object emit / interpret MVP (Stage 13).
-8. Literal/float polish and AST cleanup (Stages 14–15) as scheduled; float smallest-fit + `E334` landed (Stage 14).
+5. Session API is what callers use; root driver no longer duplicates tokenize/parse/compile setup.
+6. Stack-effect notes on high-traffic stack errors.
+7. Execution backends: check / JIT / object emit / interpret MVP.
+8. Float smallest-fit and teachable `E334`; flat postfix AST and struct/map disambiguation.
 
 ### Phase D (open)
 
