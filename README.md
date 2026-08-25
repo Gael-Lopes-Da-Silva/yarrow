@@ -53,4 +53,4 @@ cargo run -- <file.yar>
 
 ## Learn more
 
-- **Read the docs at** → [`README.md`](docs/README.md)
+- **Read the docs at** → [`docs/README.md`](docs/README.md)
