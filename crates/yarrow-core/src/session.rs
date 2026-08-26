@@ -64,10 +64,14 @@ pub struct Session {
 }
 
 /// Program that passed semantic analysis (Stage 13a handoff for later backends).
+///
+/// Warnings (Stage 20) may be non-empty while this remains `Ok` from
+/// [`Session::check_source`].
 #[derive(Debug, Clone)]
 pub struct CheckedProgram {
     pub file: SourceFile,
     pub program: Program,
+    pub warnings: DiagnosticBatch,
 }
 
 /// Successful JIT session artifact ready for run / IR dump.
@@ -148,11 +152,18 @@ impl Session {
     ///
     /// Uses the same semantic pipeline as JIT compile, but skips
     /// `define_function` / module finalize (`ExecutionMode::Check`).
+    /// On success, [`CheckedProgram::warnings`] may contain Stage 20 warnings;
+    /// they do not turn the result into `Err`.
     pub fn check_source(&self, source: String) -> Result<CheckedProgram, SessionDiagnostics> {
         let (file, program) = self.parse_source(source)?;
         self.require_main_if_needed(&file, &program)?;
-        let _compiler = self.lower(&file, &program, LowerKind::Jit { check_only: true })?;
-        Ok(CheckedProgram { file, program })
+        let mut compiler = self.lower(&file, &program, LowerKind::Jit { check_only: true })?;
+        let warnings = compiler.take_warnings();
+        Ok(CheckedProgram {
+            file,
+            program,
+            warnings,
+        })
     }
 
     /// Compile source according to [`CompileOptions::mode`].
@@ -461,7 +472,7 @@ pub fn render_batch(batch: &DiagnosticBatch, file: &SourceFile, color: ColorChoi
     if batch.is_at_limit() {
         out.push_str(&format!(
             "error: aborting due to {} previous errors (limit {})\n",
-            batch.len(),
+            batch.error_count(),
             batch.limit()
         ));
     }

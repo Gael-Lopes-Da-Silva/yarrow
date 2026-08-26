@@ -30,7 +30,12 @@ pub fn check_file(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCod
 
     let session = Session::new(opts);
     match session.check_source(source) {
-        Ok(_checked) => ExitCode::SUCCESS,
+        Ok(checked) => {
+            if !checked.warnings.is_empty() {
+                eprint!("{}", render_batch(&checked.warnings, &checked.file, color));
+            }
+            ExitCode::SUCCESS
+        }
         Err(diags) => {
             eprint!("{}", render_batch(&diags.batch, &diags.file, color));
             ExitCode::from(1)

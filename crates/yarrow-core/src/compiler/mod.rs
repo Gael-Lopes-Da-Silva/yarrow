@@ -21,10 +21,10 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 
-use crate::diagnostics::{DEFAULT_ERROR_LIMIT, DiagnosticBatch, Span};
+use crate::diagnostics::{DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, Span};
 use crate::parser::ast::{
-    BinOp, Expr, Function, MatchCase, MatchCaseKind, ParamModifier, Primitive, Program, StackOp,
-    Stmt, StmtKind, UnOp, Visibility,
+    BinOp, Expr, Function, MatchCase, MatchCaseKind, Mutability, ParamModifier, Primitive, Program,
+    StackOp, Stmt, StmtKind, UnOp, Visibility,
 };
 use crate::parser::literals::{
     FloatLiteralKind, decode_float_literal, decode_int_literal, decode_rune_literal,
@@ -57,6 +57,24 @@ pub enum RunResult {
     Float(f64),
     /// A string result, decoded from its heap handle.
     Str(String),
+}
+
+/// Stage 20: a root-file `require` that may be unused after check.
+#[derive(Debug, Clone)]
+struct RequireWarn {
+    span: Span,
+    alias: Option<String>,
+    module_path: String,
+    item: Option<String>,
+    used: bool,
+}
+
+/// Stage 20: local binding usage for unused-`const` / `mutable` warnings.
+#[derive(Debug, Clone)]
+struct VarWarnInfo {
+    span: Span,
+    mutability: Mutability,
+    used: bool,
 }
 
 /// Compile-time ownership of a value on the operand stack (or in a variable).
@@ -147,6 +165,11 @@ struct FnState {
     move_sites: HashMap<String, Span>,
     /// Borrowed SSA value → span of the `borrow` / region-put that created it.
     borrow_sites: HashMap<Value, Span>,
+    /// Stage 20: local bindings and whether they were used.
+    var_warns: HashMap<String, VarWarnInfo>,
+    /// Stage 20: SSA values that entered as function parameters (not warned as
+    /// dead stack when left on the stack at exit).
+    param_values: std::collections::HashSet<Value>,
 }
 
 struct LoopCtx {
@@ -256,6 +279,10 @@ pub struct Compiler {
     program_span: Span,
     /// Diagnostics collected during a compile (Stage 10 multi-error).
     errors: DiagnosticBatch,
+    /// Stage 20 warnings (emitted only when the compile succeeds with no errors).
+    warnings: DiagnosticBatch,
+    /// Root-file `require` sites for unused-require warnings.
+    require_warns: Vec<RequireWarn>,
     /// Maximum number of diagnostics to collect before aborting.
     error_limit: usize,
     /// Cranelift IR text captured after each function is lowered.
@@ -321,6 +348,8 @@ impl Compiler {
             program_span: Span::default(),
             error_limit: DEFAULT_ERROR_LIMIT,
             errors: DiagnosticBatch::with_limit(DEFAULT_ERROR_LIMIT),
+            warnings: DiagnosticBatch::unlimited(),
+            require_warns: Vec::new(),
             ir_dump: String::new(),
             check_only: false,
             entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
@@ -398,19 +427,30 @@ impl Compiler {
     /// first independent error.
     pub fn compile(&mut self, program: &Program) -> Result<(), DiagnosticBatch> {
         self.errors = DiagnosticBatch::with_limit(self.error_limit);
+        self.warnings = DiagnosticBatch::unlimited();
+        self.require_warns.clear();
         match self.compile_inner(program) {
             Ok(()) => {
                 if self.errors.is_empty() {
+                    self.emit_require_warnings();
                     Ok(())
                 } else {
+                    // Warnings are only kept on a successful check path.
+                    self.warnings = DiagnosticBatch::unlimited();
                     Err(self.errors.take())
                 }
             }
             Err(e) => {
                 self.report(e);
+                self.warnings = DiagnosticBatch::unlimited();
                 Err(self.errors.take())
             }
         }
+    }
+
+    /// Take Stage 20 warnings collected by the last successful [`Self::compile`].
+    pub fn take_warnings(&mut self) -> DiagnosticBatch {
+        self.warnings.take()
     }
 
     fn report(&mut self, err: CompileError) -> bool {
@@ -419,6 +459,101 @@ impl Compiler {
             diag.path = self.source_path.clone();
         }
         self.errors.push(diag)
+    }
+
+    fn report_warning(&mut self, mut diag: Diagnostic) {
+        if diag.path.is_empty() {
+            diag.path = self.source_path.clone();
+        }
+        self.warnings.push(diag);
+    }
+
+    fn mark_alias_used(&mut self, alias: &str) {
+        for r in &mut self.require_warns {
+            if r.alias.as_deref() == Some(alias) {
+                r.used = true;
+            }
+        }
+    }
+
+    fn mark_fq_used(&mut self, fq: &str) {
+        let Some((module_path, func)) = fq.rsplit_once("::") else {
+            return;
+        };
+        for r in &mut self.require_warns {
+            if r.module_path != module_path {
+                continue;
+            }
+            match &r.item {
+                None => r.used = true,
+                Some(item) if item == func => r.used = true,
+                _ => {}
+            }
+        }
+    }
+
+    fn emit_require_warnings(&mut self) {
+        let unused: Vec<(Span, String)> = self
+            .require_warns
+            .iter()
+            .filter(|r| !r.used)
+            .map(|r| {
+                let label = match (&r.alias, &r.item) {
+                    (Some(a), _) => format!("require '{a}'"),
+                    (None, Some(item)) => format!("require '{item}'"),
+                    (None, None) => format!("require '{}'", r.module_path),
+                };
+                (r.span, label)
+            })
+            .collect();
+        for (span, label) in unused {
+            self.report_warning(
+                Diagnostic::warning("W402", format!("unused {label}"))
+                    .with_primary(span, "never used")
+                    .with_help("remove this require, or call a function it imports"),
+            );
+        }
+    }
+
+    fn emit_fn_warnings(&mut self, st: &FnState) {
+        let mut unused: Vec<(String, Span, Mutability)> = st
+            .var_warns
+            .iter()
+            .filter(|(name, info)| !info.used && *name != "self")
+            .map(|(name, info)| (name.clone(), info.span, info.mutability))
+            .collect();
+        unused.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, span, mutability) in unused {
+            let kind = match mutability {
+                Mutability::Const => "const",
+                Mutability::Mutable => "mutable",
+                Mutability::Static => "static",
+            };
+            self.report_warning(
+                Diagnostic::warning("W401", format!("unused {kind} `{name}`"))
+                    .with_primary(span, "never used")
+                    .with_help(format!("remove `{name}`, or use its value")),
+            );
+        }
+    }
+
+    fn warn_dead_stack(&mut self, st: &FnState, stack: &[Slot]) {
+        for slot in stack {
+            if st.param_values.contains(&slot.value) {
+                continue;
+            }
+            self.report_warning(
+                Diagnostic::warning(
+                    "W403",
+                    format!(
+                        "unused value of type {} left on the stack",
+                        self.format_ty(slot.ty)
+                    ),
+                )
+                .with_primary(st.current_span, "discarded at scope exit")
+                .with_help("consume the value, or use `drop` / `pop`"),
+            );
+        }
     }
 
     fn compile_inner(&mut self, program: &Program) -> CResult<()> {
@@ -453,9 +588,11 @@ impl Compiler {
         self.public_funcs.clear();
         self.string_ids.clear();
         self.defined_funcs.clear();
+        self.require_warns.clear();
         let mut loaded = Vec::new();
         self.load_requires(program, &mut loaded)?;
         self.modules = loaded;
+        self.collect_root_require_warns(program);
 
         // Every unit to compile: `(module path, program)`. The main program
         // has no path; module functions get a fully-qualified name.
@@ -738,6 +875,72 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Record root-program `require` sites for unused-require warnings.
+    fn collect_root_require_warns(&mut self, program: &Program) {
+        self.require_warns.clear();
+        for item in &program.items {
+            match &item.kind {
+                StmtKind::Require { path, alias } => {
+                    self.record_require_warn(path, alias, item.span);
+                }
+                StmtKind::Function(f) => self.collect_require_warns_stmts(&f.body),
+                StmtKind::Implement(imp) => {
+                    for f in &imp.functions {
+                        self.collect_require_warns_stmts(&f.body);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_require_warns_stmts(&mut self, stmts: &[Stmt]) {
+        for s in stmts {
+            match &s.kind {
+                StmtKind::Require { path, alias } => {
+                    self.record_require_warn(path, alias, s.span);
+                }
+                StmtKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    self.collect_require_warns_stmts(then_branch);
+                    self.collect_require_warns_stmts(else_branch);
+                }
+                StmtKind::Defer { body }
+                | StmtKind::Handle { body, .. }
+                | StmtKind::Unsafe { body } => {
+                    self.collect_require_warns_stmts(body);
+                }
+                StmtKind::For { body, .. } => self.collect_require_warns_stmts(body),
+                StmtKind::Match {
+                    cases, else_branch, ..
+                } => {
+                    for c in cases {
+                        self.collect_require_warns_stmts(&c.body);
+                    }
+                    self.collect_require_warns_stmts(else_branch);
+                }
+                StmtKind::Function(f) => self.collect_require_warns_stmts(&f.body),
+                _ => {}
+            }
+        }
+    }
+
+    fn record_require_warn(&mut self, path: &str, alias: &Option<String>, span: Span) {
+        let Ok((module_path, item)) = self.resolve_require(path) else {
+            return;
+        };
+        self.require_warns.push(RequireWarn {
+            span,
+            alias: alias.clone(),
+            module_path,
+            item,
+            used: false,
+        });
     }
 
     fn load_requires_stmts(
@@ -1913,6 +2116,8 @@ impl Compiler {
             current_span: Span::default(),
             move_sites: HashMap::new(),
             borrow_sites: HashMap::new(),
+            var_warns: HashMap::new(),
+            param_values: std::collections::HashSet::new(),
         };
 
         // Import every declared function so any callee (free or method) can be
@@ -1976,6 +2181,7 @@ impl Compiler {
             // formed at the call site; the callee still receives a borrow.
             let _ = matches!(modifier, Some(ParamModifier::Mutable));
             stack.push(Slot { value, ty: *t, own });
+            st.param_values.insert(value);
         }
 
         // In a method body, the receiver is param 0. Bind `self` to it so a
@@ -1995,6 +2201,10 @@ impl Compiler {
         }
 
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
+
+        if !st.had_error {
+            self.emit_fn_warnings(&st);
+        }
 
         // Implicit termination for a function falling off the end. Skipped
         // when an explicit `return` already ended the flow (the current block
@@ -2020,13 +2230,22 @@ impl Compiler {
             // The block is dead; nothing left to emit.
         } else if st.error_value.is_some() {
             let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
+            if !st.had_error {
+                self.warn_dead_stack(&st, &stack);
+            }
             self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&vals);
         } else if st.returns.is_empty() {
+            if !st.had_error {
+                self.warn_dead_stack(&st, &stack);
+            }
             self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&[]);
         } else if stack.len() >= st.returns.len() {
             let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
+            if !st.had_error {
+                self.warn_dead_stack(&st, &stack);
+            }
             self.emit_scope_exit(&mut b, &mut st, &mut stack)?;
             b.ins().return_(&vals);
         } else {
@@ -2350,11 +2569,24 @@ impl Compiler {
                     Own::Trivial
                 };
                 st.vars.insert(name.clone(), (var, t, var_own));
+                if name != "self" {
+                    st.var_warns.insert(
+                        name.clone(),
+                        VarWarnInfo {
+                            span: s.span,
+                            mutability: *mutability,
+                            used: false,
+                        },
+                    );
+                }
             }
 
             StmtKind::Set { target, value } => match target {
                 Expr::Variable { name } => {
                     self.require_not_moved_var(st, name)?;
+                    if let Some(info) = st.var_warns.get_mut(name) {
+                        info.used = true;
+                    }
                     let (var, t, _old_own) = st.vars.get(name).cloned().ok_or_else(|| {
                         CompileError::new(
                             format!("unknown variable '{name}'"),
@@ -2688,6 +2920,7 @@ impl Compiler {
         } else {
             self.pop_return_values(b, st, stack)?
         };
+        self.warn_dead_stack(st, stack);
         self.emit_scope_exit(b, st, stack)?;
         b.ins().return_(&vals);
         // The rest of the function is unreachable; the compile-time stack is
@@ -4248,6 +4481,9 @@ impl Compiler {
             Expr::String { value } => self.emit_string(b, st, stack, value)?,
             Expr::Variable { name } => {
                 self.require_not_moved_var(st, name)?;
+                if let Some(info) = st.var_warns.get_mut(name) {
+                    info.used = true;
+                }
                 if let Some((var, t, _own)) = st.vars.get(name).cloned() {
                     let v = b.use_var(var);
                     self.require_region_live(st, v)?;
@@ -4277,6 +4513,9 @@ impl Compiler {
                 // `std.loop` helpers: `loop.value` / `loop.index` push the
                 // current iterable binding (no `call`).
                 if let Some((v, ty)) = self.loop_intrinsic_value(st, base, member) {
+                    if let Expr::Variable { name } = base.as_ref() {
+                        self.mark_alias_used(name);
+                    }
                     stack.push(Slot {
                         value: v,
                         ty,
@@ -5363,19 +5602,23 @@ impl Compiler {
                     if self.func_ids.contains_key(&fq) {
                         fq
                     } else if let Some(plain) = self.plain_funcs.get(name) {
-                        plain.clone()
+                        let fq = plain.clone();
+                        self.mark_fq_used(&fq);
+                        fq
                     } else {
                         name.clone()
                     }
                 } else if let Some(plain) = self.plain_funcs.get(name) {
-                    plain.clone()
+                    let fq = plain.clone();
+                    self.mark_fq_used(&fq);
+                    fq
                 } else {
                     name.clone()
                 }
             }
             Expr::Member { base, member } => {
                 if let Expr::Variable { name } = base.as_ref() {
-                    if let Some(path) = self.aliases.get(name) {
+                    if let Some(path) = self.aliases.get(name).cloned() {
                         // An item import under a scope exposes only that item.
                         if let Some(item) = self.item_aliases.get(name)
                             && item != member
@@ -5389,6 +5632,7 @@ impl Compiler {
                                 "E330",
                             ));
                         }
+                        self.mark_alias_used(name);
                         let fq = format!("{path}::{member}");
                         // Intrinsic std APIs (`std.region::*`, generalized
                         // `std.list::*`) are resolved without a Yarrow body.
@@ -5627,6 +5871,9 @@ impl Compiler {
         let src_name = match source {
             Expr::Variable { name } => {
                 self.require_not_moved_var(st, name)?;
+                if let Some(info) = st.var_warns.get_mut(name) {
+                    info.used = true;
+                }
                 Some(name.clone())
             }
             _ => None,
@@ -5652,6 +5899,9 @@ impl Compiler {
                 "E320",
             )
         })?;
+        if let Some(info) = st.var_warns.get_mut(target) {
+            info.used = true;
+        }
         // Type-check the transfer (exact type match or a valid coercion).
         coerce(b, src.value, src.ty, ty, self.ptr_type, st.current_span)?;
         // Drop the value the target currently owns (the runtime guards double

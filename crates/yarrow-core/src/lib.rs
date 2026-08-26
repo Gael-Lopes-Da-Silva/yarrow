@@ -10,8 +10,8 @@ pub mod tokenizer;
 
 pub use compiler::{CompileError, Compiler, RunResult};
 pub use diagnostics::{
-    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, SourceFile, Span,
-    explain_code, format_explain, normalize_code, render,
+    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, Severity,
+    SourceFile, Span, explain_code, format_explain, normalize_code, render,
 };
 pub use entry::{DEFAULT_ENTRY_NAME, PROCESS_MAIN_SYMBOL};
 pub use interpreter::{EvalContext, InterpretError, Interpreter, Value as InterpretValue};

@@ -14,7 +14,10 @@ pub use span::Span;
 
 use crate::tokenizer::token::Location;
 
-/// How serious a diagnostic is. Only `Error` is emitted today.
+/// How serious a diagnostic is.
+///
+/// Errors fail the session; warnings (Stage 20) are reported on success and do
+/// not change `Result::Ok` / exit status at the Session API level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -67,6 +70,18 @@ impl Diagnostic {
     pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
+            code: code.into(),
+            message: message.into(),
+            path: String::new(),
+            labels: Vec::new(),
+            notes: Vec::new(),
+            helps: Vec::new(),
+        }
+    }
+
+    pub fn warning(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
             code: code.into(),
             message: message.into(),
             path: String::new(),

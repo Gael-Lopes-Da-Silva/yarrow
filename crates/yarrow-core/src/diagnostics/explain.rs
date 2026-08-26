@@ -103,13 +103,40 @@ do not fall back to JIT for `--target object`.",
 AOT link needs `libyarrow_runtime_aot` (the Stage 16 static archive). Rebuild \
 `yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` points at a non-empty archive.",
     },
+    ExplainEntry {
+        code: "W401",
+        title: "unused binding",
+        body: "\
+A `const`, `mutable`, or `static` name was declared but never read, written, or \
+moved from. Remove the binding, or use the value (for example with `pop` / \
+`drop`, a call, or an assignment).",
+    },
+    ExplainEntry {
+        code: "W402",
+        title: "unused require",
+        body: "\
+A `require` brought a module or item into scope, but nothing in this file used \
+it (no call through the alias, and no bare imported name). Remove the require, \
+or call a function it exposes.",
+    },
+    ExplainEntry {
+        code: "W403",
+        title: "dead stack value",
+        body: "\
+A value was left on the operand stack and discarded at scope exit (return or \
+falling off the end of a function). Consume it with an operator, `pop` / \
+`drop`, a call, or a binding, or avoid pushing it.",
+    },
 ];
 
-/// Normalize a user-supplied code (`e308`, `308`, `E308`) to `E308` form.
+/// Normalize a user-supplied code (`e308`, `308`, `E308`, `w401`) to catalog form.
+///
+/// Bare digits default to an error code (`308` → `E308`). Warning codes must
+/// use a `W` prefix so they do not collide with error numbers.
 pub fn normalize_code(code: &str) -> String {
     let trimmed = code.trim().trim_start_matches('#');
     let upper = trimmed.to_ascii_uppercase();
-    if upper.starts_with('E') {
+    if upper.starts_with('E') || upper.starts_with('W') {
         upper
     } else if !upper.is_empty() && upper.chars().all(|c| c.is_ascii_digit()) {
         format!("E{upper}")
@@ -126,5 +153,13 @@ pub fn explain_code(code: &str) -> Option<&'static ExplainEntry> {
 
 /// Render a catalog entry the way `rustc --explain` prints a code.
 pub fn format_explain(entry: &ExplainEntry) -> String {
-    format!("error[{}]: {}\n\n{}\n", entry.code, entry.title, entry.body)
+    let kind = if entry.code.starts_with('W') {
+        "warning"
+    } else {
+        "error"
+    };
+    format!(
+        "{kind}[{}]: {}\n\n{}\n",
+        entry.code, entry.title, entry.body
+    )
 }

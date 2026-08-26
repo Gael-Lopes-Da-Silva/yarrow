@@ -1,12 +1,15 @@
 //! Multi-error collection with a rustc-like output cap.
 
-use super::Diagnostic;
+use super::{Diagnostic, Severity};
 
 /// Default maximum number of errors reported in one run (rustc uses 128;
 /// keep this smaller so cascades stay readable).
 pub const DEFAULT_ERROR_LIMIT: usize = 20;
 
-/// Accumulates diagnostics until a configurable limit is reached.
+/// Accumulates diagnostics until a configurable error limit is reached.
+///
+/// The limit applies only to [`Severity::Error`]. Warnings are always kept
+/// (Stage 20: `--error-limit` does not drop warnings).
 #[derive(Debug, Clone)]
 pub struct DiagnosticBatch {
     items: Vec<Diagnostic>,
@@ -31,10 +34,18 @@ impl DiagnosticBatch {
         }
     }
 
-    /// Record `diag`. Returns `false` when the batch is already at the limit
-    /// (the diagnostic is discarded).
+    /// Batch that never discards diagnostics (used for warnings).
+    pub fn unlimited() -> Self {
+        Self {
+            items: Vec::new(),
+            limit: usize::MAX,
+        }
+    }
+
+    /// Record `diag`. Returns `false` when an error is discarded because the
+    /// error limit was already reached (warnings are never discarded).
     pub fn push(&mut self, diag: Diagnostic) -> bool {
-        if self.items.len() >= self.limit {
+        if diag.severity == Severity::Error && self.error_count() >= self.limit {
             return false;
         }
         self.items.push(diag);
@@ -53,8 +64,20 @@ impl DiagnosticBatch {
         self.limit
     }
 
+    /// Number of error-severity diagnostics currently stored.
+    pub fn error_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        self.error_count() > 0
+    }
+
     pub fn is_at_limit(&self) -> bool {
-        self.items.len() >= self.limit
+        self.error_count() >= self.limit
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
@@ -87,9 +110,10 @@ impl FromIterator<Diagnostic> for DiagnosticBatch {
     fn from_iter<I: IntoIterator<Item = Diagnostic>>(iter: I) -> Self {
         let mut batch = Self::new();
         for d in iter {
-            if !batch.push(d) {
+            if d.severity == Severity::Error && batch.is_at_limit() {
                 break;
             }
+            batch.push(d);
         }
         batch
     }

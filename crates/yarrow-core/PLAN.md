@@ -37,14 +37,14 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 
 ## Known gaps
 
-| Area        | Gap                                                                                |
-| ----------- | ---------------------------------------------------------------------------------- |
-| AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                        |
-| Backends    | Check still lowers via Cranelift; interpret is MVP (not full JIT intrinsic parity) |
-| Warnings    | No unused-binding / dead-stack / unused-`require` diagnostics                      |
-| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial                          |
-| Projects    | Single-file + `require` only; no multi-root project graph                          |
-| Formatter   | Comments skipped in tokenize; `yarrow-fmt` needs trivia (see `yarrow-fmt` Stage 1) |
+| Area        | Gap                                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------- |
+| AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                                        |
+| Backends    | Check still lowers via Cranelift; interpret is MVP (not full JIT intrinsic parity)                 |
+| Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
+| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial                                          |
+| Projects    | Single-file + `require` only; no multi-root project graph                                          |
+| Formatter   | Comments skipped in tokenize; `yarrow-fmt` needs trivia (see `yarrow-fmt` Stage 1)                 |
 | LSP         | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`) |
 
 ---
@@ -53,15 +53,17 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 
 Focus: teachable diagnostics, interpreter depth, and std/runtime usefulness. Keep AOT polish (DWARF / opts / cross) for Phase F unless a small fix blocks CLI use.
 
-### Stage 20 - Warning catalog
+### Stage 20 - Warning catalog ✅
 
 Unused `const` / `mutable`, unused `require`, and obvious dead stack values after check.
 
-1. Define warning codes (do not reuse error numbers) and `Diagnostic` severity for warnings.
-2. Emit after a successful check path; `--error-limit` does not drop warnings unless a separate cap is added later.
-3. Document codes in the explain table.
+1. Warning codes `W401` / `W402` / `W403` (not error numbers); `Diagnostic::warning` + unlimited warning batch (`--error-limit` does not drop them).
+2. Emitted only on a successful check/compile path; [`CheckedProgram::warnings`](src/session.rs) stays `Ok` with a non-empty batch.
+3. Codes documented in the explain table (`yarrow explain W401`).
 
-**Gate:** at least one valid example (or a new `docs/examples/warnings/` file) produces a warning under `check` without failing exit status at the Session API level. `cargo clippy` green.
+**Gate:** `docs/examples/warnings/01_unused.yar` produces warnings under `check` without failing Session `Ok` / CLI exit 0. `cargo clippy` green.
+
+**Notes:** Root-file requires only; parameter leftovers on the stack are not W403; warnings cleared if the compile had errors.
 
 ### Stage 21 - Interpreter corpus parity
 

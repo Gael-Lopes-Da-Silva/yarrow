@@ -202,7 +202,10 @@ pub fn render(diag: &Diagnostic, file: &SourceFile, color: ColorChoice) -> Strin
 
         let underline = String::from_utf8(marks).unwrap_or_default();
         let painted = if labels_on_line.iter().any(|l| l.primary) {
-            style.error(underline.trim_end())
+            match diag.severity {
+                Severity::Warning => style.warning(underline.trim_end()),
+                _ => style.error(underline.trim_end()),
+            }
         } else {
             style.blue(underline.trim_end())
         };
@@ -218,7 +221,10 @@ pub fn render(diag: &Diagnostic, file: &SourceFile, color: ColorChoice) -> Strin
         for (col, primary, msg) in messages {
             let pad = " ".repeat(col);
             let colored = if primary {
-                style.error(msg)
+                match diag.severity {
+                    Severity::Warning => style.warning(msg),
+                    _ => style.error(msg),
+                }
             } else {
                 style.blue(msg)
             };
