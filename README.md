@@ -3,14 +3,16 @@
 </p>
 
 <p align="center">
-  <b>A typed stack-based language with ownership, regions, and explicit unsafe</b>
+  <b>A typed, stack-based language with ownership, regions, and explicit unsafe</b>
 </p>
 
 <p align="center">
-  Safe by default · No lifetime annotations · Cranelift JIT
+  Safe by default · No lifetime annotations · Cranelift JIT, object emit, and host link
 </p>
 
 ---
+
+Yarrow is postfix and stack-oriented: you push values, then the word that consumes them. Heap data is owned; `borrow` creates safe `reference<T>` values; regions free groups of allocations together. Raw pointers stay behind a visible `unsafe` boundary that does **not** turn off ownership or borrow checking.
 
 ## Quick look
 
@@ -18,39 +20,70 @@
 "std.io" io require
 
 greet function
-  string
+	string
 do
-  "Hello, " swap ~ io.write_line call
+	"Hello, " swap ~ io.write_line call
 end
 
 main function do
-  "Yarrow!" greet call
+	"Yarrow!" greet call
 end
 ```
 
-Everything lives on a stack. Values are owned. Borrow creates safe references. Regions free whole groups of heap data at once. Raw pointers and manual memory stay behind an explicit unsafe boundary.
+```bash
+cargo run -- docs/examples/valid/01_hello.yar
+# Hello, Yarrow!
+```
 
-## Highlights
+## What you get
 
-- **Stack-oriented**: postfix, explicit, and composable
-- **Ownership + regions**: no user-visible lifetimes
-- **Safe references** (`reference<T>`) vs **raw pointers** (`pointer<T>`)
-- **Modules**: `"path" [scope] require`
-- **Unsafe is visible**: `unsafe function` and `unsafe … end` never disable the borrow checker
-- **Pure-Yarrow std**: growing standard library written in the language itself
+- **Stack-oriented** - postfix words, explicit stack effects, composable phrases
+- **Ownership and regions** - no user-visible lifetime parameters on types
+- **Safe vs unsafe** - `reference<T>` in safe code; `pointer<T>` and `mem.*` only in `unsafe`
+- **Modules** - `"path" [alias] require` (keyword last); std is embedded
+- **Tooling today** - `run` (JIT or native), `compile`, `check`, `interpret`, `dump`, `explain`
+- **In progress** - formatter (`yarrow-fmt`) and language server (`yarrow-lsp`)
 
-## Status
+## Build and run
 
-Early but already usable. Tokenizer, parser, ownership model, unsafe enforcement, and the core of the pure-Yarrow standard library are in place. See `crates/**/PLAN.md` for the roadmaps and [`docs/README.md`](docs/README.md) for the full language tour.
-
-## Build & run
+Requires a Rust toolchain (edition 2024) and, for native `object` / executable linking on Linux, a system linker (`ld` or `lld`).
 
 ```bash
 cargo build --release
-# Or
-cargo run -- <file.yar>
+cargo run -- docs/examples/valid/01_hello.yar
 ```
+
+Useful commands:
+
+```bash
+cargo run -- check docs/examples/valid/01_hello.yar
+cargo run -- compile --target object -o /tmp/hello.o docs/examples/valid/01_hello.yar
+cargo run -- run --target object docs/examples/valid/01_hello.yar
+cargo run -- interpret docs/examples/valid/01_hello.yar
+cargo run -- dump --emit ast docs/examples/valid/01_hello.yar
+cargo run -- explain E360
+```
+
+`cargo run -- <file.yar>` is the same as `run --target jit` with entry `main`. Use `--main` to pick another entry name.
+
+## Repository layout
+
+- [`crates/yarrow-core`](crates/yarrow-core) - tokenizer, parser, checker, JIT / object / executable / interpret (`Session` API)
+- [`crates/yarrow-runtime`](crates/yarrow-runtime) - host heap and `HOST_FNS`; [`aot/`](crates/yarrow-runtime/aot) staticlib for linking
+- [`crates/yarrow-cli`](crates/yarrow-cli) - Clap driver used by the root `yarrow` binary
+- [`crates/yarrow-fmt`](crates/yarrow-fmt) / [`crates/yarrow-lsp`](crates/yarrow-lsp) - formatter and LSP (planned)
+- [`docs/`](docs/README.md) - language reference, style guide, and examples
+- [`crates/yarrow-core/lib/std`](crates/yarrow-core/lib/std) - standard library written in Yarrow
+
+Roadmaps and gates: `crates/**/PLAN.md`. Agent conventions: [`AGENTS.md`](AGENTS.md).
+
+## Status
+
+Core and CLI through the planned compile / check / interpret / native-run stages are landed. The language docs and [`docs/examples`](docs/examples/README.md) describe the intended shape; prefer the grammar when an example and the unfinished compiler disagree. Formatter and LSP are staged next in their crate plans.
 
 ## Learn more
 
-- **Read the docs at** → [`docs/README.md`](docs/README.md)
+- [Documentation index](docs/README.md) - grammar, syntax, types, memory, runtime, style
+- [Grammar tour](docs/GRAMMAR.md) - language by annotated example
+- [Examples](docs/examples/README.md) - valid and invalid programs
+- [Style guide](docs/STYLE_GUIDE.md) - layout for human code and the future formatter

@@ -2,29 +2,19 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-```
-Runtime
-├── Stack
-├── Functions
-├── Errors
-└── Modules
-```
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules).
 
 ## Execution model
 
-Pipeline:
+Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emitted via one of `check`, `jit`, `object`, `executable`, or `interpret`.
 
-```text
-source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | executable | interpret }
-```
-
-| Backend     | Role                                                                |
-| ----------- | ------------------------------------------------------------------- |
-| `check`     | Type / ownership / stack / region analysis; no machine code         |
-| `jit`       | Cranelift in-process machine code; driver may run `main`            |
-| `object`    | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
-| `executable`| Object emit + system `ld`/`lld` link with the runtime archive       |
-| `interpret` | Tree-walk interpreter over the checked AST (file / future REPL)     |
+| Backend      | Role                                                                |
+| ------------ | ------------------------------------------------------------------- |
+| `check`      | Type / ownership / stack / region analysis; no machine code         |
+| `jit`        | Cranelift in-process machine code; driver may run `main`            |
+| `object`     | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
+| `executable` | Object emit + system `ld`/`lld` link with the runtime archive       |
+| `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)     |
 
 - User modules resolve relative to the source file’s directory (`"a.b"` → `a/b.yar`).
 - The standard library is embedded and imported the same way as user code (`"std.io"`, …).
@@ -35,13 +25,13 @@ source .yar  →  tokenize  →  parse (AST)  →  check  →  { jit | object | 
 
 Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **`Linkage::Import`** symbols. Names and C ABIs come from the [`HOST_FNS`](../../crates/yarrow-runtime/src/lib.rs) table in `yarrow_runtime` (single source of truth with JIT `install_runtime`).
 
-| Layer          | Crate / API                        | Role                                                                                 |
-| -------------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
-| Implementation | `yarrow_runtime` (rlib)            | Heap, `@print_*`, regions, `HOST_FNS`                                                |
-| JIT            | `runtime::install_runtime`         | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
-| AOT archive    | `yarrow_runtime_aot` (`staticlib`) | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
-| Library access | `yarrow_core::linkable_archive()`  | Reads `libyarrow_runtime_aot.a` (path from build) for AOT link                       |
-| Executable     | `Session::compile_executable_source` | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)            |
+| Layer          | Crate / API                          | Role                                                                                 |
+| -------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
+| Implementation | `yarrow_runtime` (rlib)              | Heap, `@print_*`, regions, `HOST_FNS`                                                |
+| JIT            | `runtime::install_runtime`           | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
+| AOT archive    | `yarrow_runtime_aot` (`staticlib`)   | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
+| Library access | `yarrow_core::linkable_archive()`    | Reads `libyarrow_runtime_aot.a` (path from build) for AOT link                       |
+| Executable     | `Session::compile_executable_source` | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)               |
 
 Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Cranelift process `main`) + runtime `.a` are linked by `compile_executable_source`. No C CRT source and no `cc` compile step; CRT object paths may be discovered with `cc -print-file-name` when present.
 

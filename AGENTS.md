@@ -29,6 +29,7 @@ Yarrow is a typed, stack-based programming language with ownership, borrow check
 - Do not invent lifetime syntax (`reference<'a, T>`). Ownership and regions are the model.
 - Module imports use the form `"path" [scope] require` (keyword last).
 - In comments and documentation, never use `—`.
+- Prefer clear prose, short lists, and linked tables of contents over ASCII tree or box-drawing “schema” diagrams in docs humans read (for example nested `│ ├── └──` maps). Use a diagram only when it is the simplest accurate explanation.
 
 ## Build & run
 

@@ -11,13 +11,7 @@ Notation:
 - `Option<T>` for optional children
 - Spans / source locations are assumed on every node and omitted below
 
-```
-Program
-├── Expression   (words / stack terms)
-├── Statement
-├── Type
-└── Pattern      (match cases)
-```
+Contents: [Program](#program), [Type](#type), [Expression](#expression) (words / stack terms), [Statement](#statement), [Pattern](#pattern) (match cases), [Declarations](#declarations-top-level-and-nested).
 
 ---
 

@@ -2,13 +2,7 @@
 
 How Yarrow allocates, owns, borrows, and frees values. Derived from [`GRAMMAR.md`](GRAMMAR.md), with types and stack effects from [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`AST.md`](AST.md).
 
-```
-Memory Model
-├── Ownership
-├── Borrowing
-├── Regions
-└── Unsafe
-```
+Contents: [Ownership](#ownership), [Borrowing](#borrowing), [Regions](#regions), [Unsafe](#unsafe), [Mental model](#mental-model).
 
 Yarrow is safe by default. Heap lifetimes are tracked at compile time through ownership and borrows. There are no user-visible lifetime parameters on `reference<T>`. Every escape from the safe model is syntactically visible: `unsafe function`, `unsafe … end`, and `pointer<T>` operations.
 
@@ -253,19 +247,14 @@ cp mem.free call
 
 ## Mental model
 
-```text
-create value
-	│
-	├─ copy type ──► duplicate freely; drop is trivial
-	│
-	└─ non-copy
-		│
-		├─ owned by stack ── pop / drop / consume ──► free
-		├─ owned by variable ── set / scope / move away ──► free or transfer
-		├─ borrowed ── one live reference<T> ── pop / consume ──► release
-		└─ put in region ── region.free ──► free as a unit
+After a value is created:
 
-pointer<T> / mem.* ── only inside unsafe ── validity unchecked by borrow rules
-```
+- **Copy type:** duplicate freely; drop is trivial.
+- **Non-copy, owned by the stack:** `pop` / drop / consume frees it.
+- **Non-copy, owned by a variable:** `set` / leaving scope / `move` frees or transfers ownership.
+- **Borrowed:** at most one live `reference<T>`; `pop` / consume releases the borrow.
+- **In a region:** `region.free` frees the whole unit.
+
+`pointer<T>` and `mem.*` are only allowed inside `unsafe`. Borrow rules do not check raw-address validity.
 
 Implementation (JIT handles, kind codes, region registry) lives in `crates/yarrow-core` and must implement this model; the grammar and this document are the authority when they diverge from code.

@@ -4,12 +4,7 @@ Language illustrations for Yarrow. They follow [`GRAMMAR.md`](../GRAMMAR.md) and
 [`SYNTAX.md`](../SYNTAX.md), not the current compiler snapshot. The implementation
 is still catching up; treat these as the intended language shape.
 
-```
-docs/examples
-├── valid/      # well-formed programs
-│   └── helpers/
-└── invalid/    # should be rejected by a conforming checker / compiler
-```
+Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), and [`invalid/`](invalid/) for cases a conforming checker should reject.
 
 ## How to read them
 
@@ -20,22 +15,22 @@ docs/examples
 
 ## Valid programs
 
-| File                                                                       | Topic                                                                      |
-| -------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [`valid/00_grammar_tour.yar`](valid/00_grammar_tour.yar)             | Full illustrative program (twin of [`GRAMMAR.md`](../GRAMMAR.md)) |
-| [`valid/01_hello.yar`](valid/01_hello.yar)                                 | Entry point, `require`, `io.write_line`                                    |
-| [`valid/02_arithmetic_and_stack.yar`](valid/02_arithmetic_and_stack.yar)   | Operators, `dup` / `swap` / `rot`, `drop`                                  |
-| [`valid/03_variables_and_typeof.yar`](valid/03_variables_and_typeof.yar)   | `mutable` / `const` / `static`, coercion, `typeof`                         |
-| [`valid/04_functions.yar`](valid/04_functions.yar)                         | Nested function, `copy` parameter, `call`                                  |
-| [`valid/05_control_flow.yar`](valid/05_control_flow.yar)                   | `if`, value `match`, `for` (condition and iterable)                        |
-| [`valid/06_structs_and_enums.yar`](valid/06_structs_and_enums.yar)         | Struct, `implement`, `borrow`, enum `match`                                |
-| [`valid/07_unions.yar`](valid/07_unions.yar)                               | Union store and `Type case` match                                          |
-| [`valid/08_ownership_borrow_move.yar`](valid/08_ownership_borrow_move.yar) | Stack/variable ownership, `borrow`, `move`                                 |
-| [`valid/09_regions_and_defer.yar`](valid/09_regions_and_defer.yar)         | `region.put` / `free`, `defer`                                             |
-| [`valid/10_errors.yar`](valid/10_errors.yar)                               | `error`, `\|T Err\|`, `unwrap`, `handle`                                   |
-| [`valid/11_unsafe_pointers.yar`](valid/11_unsafe_pointers.yar)             | `unsafe function`, `pointer<T>`, `std.mem`                                 |
+| File                                                                       | Topic                                                                            |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [`valid/00_grammar_tour.yar`](valid/00_grammar_tour.yar)                   | Full illustrative program (twin of [`GRAMMAR.md`](../GRAMMAR.md))                |
+| [`valid/01_hello.yar`](valid/01_hello.yar)                                 | Entry point, `require`, `io.write_line`                                          |
+| [`valid/02_arithmetic_and_stack.yar`](valid/02_arithmetic_and_stack.yar)   | Operators, `dup` / `swap` / `rot`, `drop`                                        |
+| [`valid/03_variables_and_typeof.yar`](valid/03_variables_and_typeof.yar)   | `mutable` / `const` / `static`, coercion, `typeof`                               |
+| [`valid/04_functions.yar`](valid/04_functions.yar)                         | Nested function, `copy` parameter, `call`                                        |
+| [`valid/05_control_flow.yar`](valid/05_control_flow.yar)                   | `if`, value `match`, `for` (condition and iterable)                              |
+| [`valid/06_structs_and_enums.yar`](valid/06_structs_and_enums.yar)         | Struct, `implement`, `borrow`, enum `match`                                      |
+| [`valid/07_unions.yar`](valid/07_unions.yar)                               | Union store and `Type case` match                                                |
+| [`valid/08_ownership_borrow_move.yar`](valid/08_ownership_borrow_move.yar) | Stack/variable ownership, `borrow`, `move`                                       |
+| [`valid/09_regions_and_defer.yar`](valid/09_regions_and_defer.yar)         | `region.put` / `free`, `defer`                                                   |
+| [`valid/10_errors.yar`](valid/10_errors.yar)                               | `error`, `\|T Err\|`, `unwrap`, `handle`                                         |
+| [`valid/11_unsafe_pointers.yar`](valid/11_unsafe_pointers.yar)             | `unsafe function`, `pointer<T>`, `std.mem`                                       |
 | [`valid/12_modules.yar`](valid/12_modules.yar)                             | Aliased / bare / item `require` ([`helpers/greet.yar`](valid/helpers/greet.yar)) |
-| [`valid/13_containers.yar`](valid/13_containers.yar)                       | Array, list, hashmap literals                                              |
+| [`valid/13_containers.yar`](valid/13_containers.yar)                       | Array, list, hashmap literals                                                    |
 
 ## Invalid programs
 

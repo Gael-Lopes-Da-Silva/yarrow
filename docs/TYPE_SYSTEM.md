@@ -2,15 +2,7 @@
 
 Static types for Yarrow, derived from [`GRAMMAR.md`](GRAMMAR.md), [`SYNTAX.md`](SYNTAX.md), and [`AST.md`](AST.md). Ownership, borrowing, and regions are summarized only where they affect typing; see [`MEMORY_MODEL.md`](MEMORY_MODEL.md).
 
-```
-Type System
-├── Primitive Types
-├── Composite Types
-├── Copy vs non-copy
-├── Coercions
-├── Conversions
-└── Type Checking
-```
+Contents: [Primitive types](#primitive-types), [Composite types](#composite-types), [Copy vs non-copy](#copy-vs-non-copy), [Coercions](#coercions), [Conversions](#conversions), [Type checking](#type-checking).
 
 Yarrow is stack-typed: every value on the evaluation stack has a static type, and every word has a known stack effect. There are no lifetime parameters on types; `reference<T>` is a borrow, not a named lifetime.
 
