@@ -21,14 +21,14 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 
 ## Current state
 
-| Piece              | Status | Notes                                                              |
-| ------------------ | ------ | ------------------------------------------------------------------ |
-| `yarrow-cli` crate | ✅     | Argument parsing + command dispatch                                |
-| Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run`                       |
-| Commands           | ✅     | `run`, `check`, `compile`, `dump`, `explain`, `version`            |
-| Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v`, `--target`, `--main` |
+| Piece              | Status | Notes                                                                |
+| ------------------ | ------ | -------------------------------------------------------------------- |
+| `yarrow-cli` crate | ✅     | Argument parsing + command dispatch                                  |
+| Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run`                         |
+| Commands           | ✅     | `run`, `check`, `compile`, `interpret`, `dump`, `explain`, `version` |
+| Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v`, `--target`, `--main`   |
 
-**Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure. `compile --target jit|object` and `run --target` are available; `run --target object` exits `2` until Stage 8.
+**Today’s UX:** `check` / `run` / `compile` / `interpret` with `--target jit|object` on `run` and `compile`, and `--main <NAME>` for the entry. `run --target object` links via core `compile_executable_source` and execs the binary. Exit `0` ok, `1` compile/parse/link, `2` usage / I/O / signal.
 
 **Target UX (this plan):** `check` / `run` / `compile` / `interpret`, with `--target jit|object` on `run` and `compile`, and `--main <NAME>` to pick the program entry (default `main`). See [Command set](#command-set).
 
@@ -57,11 +57,11 @@ Shared by `run` and `compile` via `--target`:
 | Value    | Meaning                                                                                   | Core mode               |
 | -------- | ----------------------------------------------------------------------------------------- | ----------------------- |
 | `jit`    | Cranelift in-process machine code (default). Whole program lowered, then used in-process. | `ExecutionMode::Jit`    |
-| `object` | Native relocatable object (AOT). Write an artifact; linking/exec is CLI-side when ready.  | `ExecutionMode::Object` |
+| `object` | Native relocatable object (AOT). `compile` writes `.o`; `run` links + execs.              | `ExecutionMode::Object` |
 
 Interpretation is **not** a `--target`. It is its own command (`interpret`) so the UX stays: compile backends vs evaluate in the VM.
 
-There is no separate `build` command; native emit is `compile --target object` (and optionally `run --target object` once link+exec exists).
+There is no separate `build` command; native emit is `compile --target object`; native run is `run --target object` (link + exec).
 
 ---
 
@@ -75,11 +75,11 @@ Modeled on common compiler / language CLIs. Yarrow is a single-file-plus-`requir
 yarrow check <file>                         # type / ownership / stack check only
 yarrow run <file>                           # --target jit (default): JIT + execute entry
 yarrow run --target jit <file>              # same, explicit
-yarrow run --target object <file>           # native: compile (+ link when ready) and execute
+yarrow run --target object <file>           # native: compile, link, and execute
 yarrow run --main start <file>              # execute top-level `start` instead of `main`
 yarrow compile <file>                       # --target jit (default): lower/codegen, do not run
 yarrow compile --target jit <file>          # same, explicit
-yarrow compile --target object <file>       # emit native object (-o when implemented)
+yarrow compile --target object <file>       # emit native object (-o / stem.o)
 yarrow compile --main start --target object <file>  # object binds process main → `start`
 yarrow interpret <file>                     # interpreter; execute entry
 ```
@@ -88,22 +88,19 @@ yarrow interpret <file>                     # interpreter; execute entry
 
 ### Ship in this phase (landed or in progress)
 
-| Command   | Analog                          | Behavior                                                                   |
-| --------- | ------------------------------- | -------------------------------------------------------------------------- |
-| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute entry (`main` or `--main`).       |
-| `compile` | `rustc`, `go build -o`          | Check + codegen per `--target`; do not run. Object writes `-o` / `stem.o`. |
-| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run entry.  |
-| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.            |
-| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                      |
-| `version` | `rustc -V`                      | Crate / git version string.                                                |
+| Command     | Analog                          | Behavior                                                                   |
+| ----------- | ------------------------------- | -------------------------------------------------------------------------- |
+| `run`       | `cargo run`, `go run`           | Check + codegen per `--target` + execute entry (`main` or `--main`).       |
+| `compile`   | `rustc`, `go build -o`          | Check + codegen per `--target`; do not run. Object writes `-o` / `stem.o`. |
+| `check`     | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run entry.  |
+| `interpret` | language VM                     | Check + interpret entry (`main` or `--main`); no `--target`.               |
+| `dump`      | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.            |
+| `explain`   | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                      |
+| `version`   | `rustc -V`                      | Crate / git version string.                                                |
 
 ### Next (CLI stages below)
 
-| Command               | Behavior                                                                   | Core need                              |
-| --------------------- | -------------------------------------------------------------------------- | -------------------------------------- |
-| `interpret`           | Check + interpret the entry (no machine code).                             | Stage 13b interpret API ✅             |
-| `run --target object` | Native compile, then link + execute. Stage 6 stubs with exit `2`.          | Object emit + link (core 13c/19 ✅)    |
-| `--main` on interpret | Already parsed on `run` / `check` / `compile`; Stage 8 finishes interpret. | `CompileOptions::entry_name` (core 17) |
+_(none for this phase; Stages 1–8 are landed. See Later for `fmt` / `lsp` / `repl` / `clean`.)_
 
 ### Later (other crates or language)
 
@@ -232,7 +229,7 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
 
 ---
 
-### Stage 7 — `interpret` ⬜
+### Stage 7 — `interpret` ✅
 
 Core Stage 13b interpret API is available (`Session::interpret_source`).
 
@@ -240,20 +237,20 @@ Core Stage 13b interpret API is available (`Session::interpret_source`).
 2. No `--target` on `interpret`.
 3. Optional later: `yarrow repl` on `EvalContext` (separate stage; not required here).
 
-**Gate:** `yarrow interpret docs/examples/valid/01_hello.yar` matches `yarrow run` output for that file once core interpret MVP exists. Before that: command may be stubbed with exit `2`.
+**Gate:** `yarrow interpret docs/examples/valid/01_hello.yar` matches `yarrow run` output for that file.
 
 ---
 
-### Stage 8 — Native exec + `--main` ⬜
+### Stage 8 — Native exec + `--main` ✅
 
 Depends on core Stages 17–19 (`entry_name`, Cranelift process `main`, `compile_executable_source`).
 
 1. Wire `--main <NAME>` into `CompileOptions::entry_name` for `run`, `check`, `compile`, and `interpret`.
 2. `compile --target object` still writes a `.o` unless later we grow a “full executable” `-o` mode; process `main` inside the object honors `--main`.
-3. `run --target object`: link (core 19) and exec. Honor `--main`. Do not fall back to JIT.
+3. `run --target object`: link via `Session::compile_executable_source`, write a temp executable, exec it. Honor `--main`. Do not fall back to JIT.
 4. Unknown entry: same E360 path as JIT, exit `1`.
 
-**Gate:** `yarrow run --main main docs/examples/valid/01_hello.yar` matches default `run`. `yarrow run --main does_not_exist …` exits `1` with E360. `run --target object` runs `01_hello.yar` once core 19 is ready.
+**Gate:** `yarrow run --main main docs/examples/valid/01_hello.yar` matches default `run`. `yarrow run --main does_not_exist …` exits `1` with E360. `run --target object` runs `01_hello.yar`.
 
 ---
 
@@ -264,7 +261,7 @@ Depends on core Stages 17–19 (`entry_name`, Cranelift process `main`, `compile
 3. `check` is usable for CI (`exit 0` / `1` only from program validity).
 4. Help/version/color/error-limit behave as specified.
 5. `dump` / `explain` land as core APIs allow.
-6. `compile` and `--target` exist; `object` and `interpret` are either real or explicit exit `2`, never a silent no-op.
+6. `compile` and `--target` exist; `interpret` and `run --target object` are real (link + exec), never a silent no-op.
 7. `--main <NAME>` is parsed on `run` / `check` / `compile` / `interpret` and forwarded as `CompileOptions::entry_name` (core Stage 17 ✅).
 
 ---

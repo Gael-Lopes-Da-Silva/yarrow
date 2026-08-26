@@ -37,7 +37,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 
 **Gates today:** all `docs/examples/valid/**` compile and run (JIT); all `docs/examples/invalid/**` fail for the stated reason; `cargo fmt --all && cargo check && cargo clippy` green.
 
-**Execution backends (landed):** `Check`, `Jit`, `Object` (relocatable bytes), `Interpret` (MVP), executable link (`compile_executable_source`). CLI wiring for `run --target object` is still CLI-plan work.
+**Execution backends (landed):** `Check`, `Jit`, `Object` (relocatable bytes), `Interpret` (MVP), executable link (`compile_executable_source`). CLI `run --target object` / `--main` consume this API (see `yarrow-cli` Stage 8).
 
 ---
 
@@ -74,7 +74,6 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 | Area        | Gap                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | AOT         | Host linux-gnu link only; no cross-compile / DWARF / bundled linker                               |
-| Entry       | CLI `--main` / `run --target object` wiring remains in `yarrow-cli`                               |
 | Backends    | Check still uses Cranelift as analysis vehicle; interpret MVP only; no DWARF / cross-compile      |
 | Warnings    | No unused-binding / dead-stack / unused-require diagnostics                                       |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial (runtime, not blocking compiler stages) |
@@ -83,7 +82,7 @@ These are remaining mismatches or thin areas inside this crate, not CLI work.
 
 ## Phase D: Object / AOT to executable
 
-Stage 13c emits a relocatable host object. Phase D makes that path produce a **real runnable binary** the CLI can write and exec (`compile --target object`, later `run --target object`).
+Stage 13c emits a relocatable host object. Phase D makes that path produce a **real runnable binary** the CLI can write and exec (`compile --target object`, `run --target object`).
 
 Boundary:
 

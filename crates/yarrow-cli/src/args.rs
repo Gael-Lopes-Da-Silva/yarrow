@@ -137,6 +137,20 @@ pub enum Cmd {
         main: String,
     },
 
+    /// Check and interpret a Yarrow source file (no machine code).
+    ///
+    /// Executes the entry (`main` or `--main`) on the stack VM. There is no
+    /// `--target` on this command; use `run` / `compile` for JIT or object.
+    Interpret {
+        /// Source file to interpret.
+        #[arg(value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Top-level entry function name (default `main`).
+        #[arg(long, value_name = "NAME", default_value = "main")]
+        main: String,
+    },
+
     /// Print the long form of a diagnostic code.
     Explain {
         /// Diagnostic code, for example `E308`.
