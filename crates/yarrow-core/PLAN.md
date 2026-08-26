@@ -40,7 +40,7 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 | Area        | Gap                                                                                                |
 | ----------- | -------------------------------------------------------------------------------------------------- |
 | AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                                        |
-| Backends    | Check still lowers via Cranelift; interpret is MVP (not full JIT intrinsic parity)                 |
+| Backends    | Check still lowers via Cranelift; interpret covers Stage 21 subset (not full JIT parity)           |
 | Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial                                          |
 | Projects    | Single-file + `require` only; no multi-root project graph                                          |
@@ -65,7 +65,7 @@ Unused `const` / `mutable`, unused `require`, and obvious dead stack values afte
 
 **Notes:** Root-file requires only; parameter leftovers on the stack are not W403; warnings cleared if the compile had errors.
 
-### Stage 21 - Interpreter corpus parity
+### Stage 21 - Interpreter corpus parity ✅
 
 Grow `interpret_source` / `EvalContext` toward the valid example corpus (not only `01_hello` / `02_arithmetic`).
 
@@ -74,6 +74,12 @@ Grow `interpret_source` / `EvalContext` toward the valid example corpus (not onl
 3. Do not block on REPL UI (CLI owns `repl`).
 
 **Gate:** a documented subset of valid examples (listed in this stage’s notes when landed) matches JIT stdout for `interpret`. Prefer growing the subset over claiming full parity early.
+
+**Notes (interpret = JIT stdout):**
+
+- `01_hello`, `02_arithmetic_and_stack`, `03_variables_and_typeof`, `04_functions`, `05_control_flow`, `12_modules`
+- Added: locals / `set`, `if`, value `match`, condition + array `for`, `typeof` / type values, nested functions, item-import plain bindings after an aliased module load
+- Still E393 / unsupported: structs, unions, regions, unsafe, errors/`unwrap`, lists/maps
 
 ### Stage 22 - Std / runtime: `io` + `string` depth
 
