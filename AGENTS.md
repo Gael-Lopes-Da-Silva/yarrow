@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Yarrow is a typed, stack-based programming language with ownership, borrow checking, regions, and an explicit `unsafe` boundary. Implemented in Rust; compiles to Cranelift JIT.
+Yarrow is a typed, stack-based programming language with ownership, borrow checking, regions, and an explicit `unsafe` boundary. Implemented in Rust; Cranelift JIT, object emit, and host executable link.
 
 ## Source of truth
 
@@ -12,6 +12,7 @@ Yarrow is a typed, stack-based programming language with ownership, borrow check
 - `crates/yarrow-core`: tokenizer → parser → compiler → session (Cranelift JIT / object / interpret)
 - `crates/yarrow-runtime`: host heap + `HOST_FNS` (rlib); `crates/yarrow-runtime/aot`: AOT staticlib
 - `crates/yarrow-cli`: CLI driver made with Clap (modules resolve relative to the source file)
+- `crates/yarrow-fmt`: formatter (style guide); `crates/yarrow-lsp`: language server
 - `src/main.rs`: entry point of the project, linked to the CLI
 - `docs/`: documentation of the project, from grammar and syntax to memory model and type system or style guide
 
