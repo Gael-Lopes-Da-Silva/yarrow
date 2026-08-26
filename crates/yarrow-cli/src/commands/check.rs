@@ -8,7 +8,7 @@ use yarrow_core::{CompileOptions, ExecutionMode, Session};
 use crate::args::GlobalArgs;
 use crate::diagnostics::render_batch;
 
-pub fn check_file(file: &Path, global: &GlobalArgs) -> ExitCode {
+pub fn check_file(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
     let path = file.to_string_lossy().into_owned();
     let color = global.color.to_core();
 
@@ -25,6 +25,7 @@ pub fn check_file(file: &Path, global: &GlobalArgs) -> ExitCode {
         opts.module_search_paths.push(p.clone());
     }
     opts.error_limit = global.error_limit;
+    opts.entry_name = entry_name.to_string();
     opts.mode = ExecutionMode::Check;
 
     let session = Session::new(opts);

@@ -18,7 +18,7 @@ mod args;
 mod commands;
 mod diagnostics;
 
-pub use args::{Cli, Cmd};
+pub use args::{Cli, Cmd, TargetKind};
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -42,9 +42,23 @@ where
     };
 
     match (cli.cmd, cli.file) {
-        (Some(Cmd::Run { file }), None) => commands::run_file(&file, &cli.global),
-        (None, Some(file)) => commands::run_file(&file, &cli.global),
-        (Some(Cmd::Check { file }), None) => commands::check_file(&file, &cli.global),
+        (Some(Cmd::Run { file, target, main }), None) => {
+            commands::run_file(&file, target, &main, &cli.global)
+        }
+        (None, Some(file)) => {
+            // `yarrow <file>` is sugar for `yarrow run --target jit <file>`.
+            commands::run_file(&file, TargetKind::Jit, "main", &cli.global)
+        }
+        (
+            Some(Cmd::Compile {
+                file,
+                target,
+                main,
+                output,
+            }),
+            None,
+        ) => commands::compile_file(&file, target, &main, output.as_deref(), &cli.global),
+        (Some(Cmd::Check { file, main }), None) => commands::check_file(&file, &main, &cli.global),
         (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
         (Some(Cmd::Explain { code }), None) => commands::explain_code(&code, &cli.global),
         (Some(Cmd::Version), None) => {
@@ -62,7 +76,9 @@ where
         (None, None) => {
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
-            eprintln!("usage: yarrow <file.yar>\n       yarrow run <file.yar>");
+            eprintln!(
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar>\n       yarrow compile [--target jit|object] <file.yar>"
+            );
             ExitCode::from(2)
         }
     }

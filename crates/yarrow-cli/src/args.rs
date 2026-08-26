@@ -57,6 +57,15 @@ pub enum EmitKind {
     Ir,
 }
 
+/// Compile / run backend selected with `--target`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TargetKind {
+    /// Cranelift in-process machine code (default).
+    Jit,
+    /// Native relocatable object (AOT).
+    Object,
+}
+
 /// `--color` argument value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ColorArg {
@@ -85,6 +94,36 @@ pub enum Cmd {
         /// Source file to compile and run.
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
+
+        /// Codegen backend (`jit` or `object`). Default: `jit`.
+        #[arg(long, value_enum, default_value = "jit")]
+        target: TargetKind,
+
+        /// Top-level entry function name (default `main`).
+        #[arg(long, value_name = "NAME", default_value = "main")]
+        main: String,
+    },
+
+    /// Check + codegen without running the entry.
+    ///
+    /// Default `--target jit` finalizes JIT code in-process. `--target object`
+    /// writes a native relocatable object (`-o`, default `stem.o`).
+    Compile {
+        /// Source file to compile.
+        #[arg(value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Codegen backend (`jit` or `object`). Default: `jit`.
+        #[arg(long, value_enum, default_value = "jit")]
+        target: TargetKind,
+
+        /// Top-level entry function name (default `main`).
+        #[arg(long, value_name = "NAME", default_value = "main")]
+        main: String,
+
+        /// Output path for `--target object` (default: `<stem>.o`).
+        #[arg(short = 'o', long = "output", value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
     },
 
     /// Compile a Yarrow source file and report diagnostics, without running `main`.
@@ -92,6 +131,10 @@ pub enum Cmd {
         /// Source file to type-check / validate.
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
+
+        /// Top-level entry function name (default `main`).
+        #[arg(long, value_name = "NAME", default_value = "main")]
+        main: String,
     },
 
     /// Print the long form of a diagnostic code.

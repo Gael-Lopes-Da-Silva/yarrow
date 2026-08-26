@@ -21,14 +21,14 @@ Do not reimplement checking or codegen in this crate. If a command needs a compi
 
 ## Current state
 
-| Piece              | Status | Notes                                        |
-| ------------------ | ------ | -------------------------------------------- |
-| `yarrow-cli` crate | ✅     | Argument parsing + `run`/`check` dispatch    |
-| Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run` |
-| Commands           | ✅     | `run`, `check`, `dump`, `explain`, `version` |
-| Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v` |
+| Piece              | Status | Notes                                                              |
+| ------------------ | ------ | ------------------------------------------------------------------ |
+| `yarrow-cli` crate | ✅     | Argument parsing + command dispatch                                |
+| Root binary        | ✅     | `src/main.rs` delegates to `yarrow_cli::run`                       |
+| Commands           | ✅     | `run`, `check`, `compile`, `dump`, `explain`, `version`            |
+| Flags              | ✅     | `--color`, `--error-limit`, `-L`, `-q`, `-v`, `--target`, `--main` |
 
-**Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure.
+**Today’s UX:** `cargo run -- <file.yar>` tokenizes, parses, JIT-compiles, runs `main`, prints a supported return value. Exit `0` ok, `1` compile/parse, `2` usage / read failure. `compile --target jit|object` and `run --target` are available; `run --target object` exits `2` until Stage 8.
 
 **Target UX (this plan):** `check` / `run` / `compile` / `interpret`, with `--target jit|object` on `run` and `compile`, and `--main <NAME>` to pick the program entry (default `main`). See [Command set](#command-set).
 
@@ -88,23 +88,22 @@ yarrow interpret <file>                     # interpreter; execute entry
 
 ### Ship in this phase (landed or in progress)
 
-| Command   | Analog                          | Behavior                                                                  |
-| --------- | ------------------------------- | ------------------------------------------------------------------------- |
-| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute entry (`main` or `--main`).      |
-| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run entry. |
-| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.           |
-| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                     |
-| `version` | `rustc -V`                      | Crate / git version string.                                               |
+| Command   | Analog                          | Behavior                                                                   |
+| --------- | ------------------------------- | -------------------------------------------------------------------------- |
+| `run`     | `cargo run`, `go run`           | Check + codegen per `--target` + execute entry (`main` or `--main`).       |
+| `compile` | `rustc`, `go build -o`          | Check + codegen per `--target`; do not run. Object writes `-o` / `stem.o`. |
+| `check`   | `cargo check`, `tsc --noEmit`   | Tokenize, parse, semantic check. Print diagnostics. **Do not** run entry.  |
+| `dump`    | `rustc --emit`, `zig ast-check` | Print an intermediate (`tokens`, `ast`, `ir`) and exit. No run.            |
+| `explain` | `rustc --explain E0308`         | Print the long form of a diagnostic code (`E308`, …).                      |
+| `version` | `rustc -V`                      | Crate / git version string.                                                |
 
-### Next (CLI stages below; need core Stage 13)
+### Next (CLI stages below)
 
-| Command               | Behavior                                                                                       | Core need                                 |
-| --------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `compile`             | Codegen only (do not run). Default `--target jit`. `--target object` writes a native artifact. | `Jit` finalize without run; `Object` emit |
-| `--target`            | On `run` and `compile`: `jit` \| `object` (default `jit`).                                     | `ExecutionMode`                           |
-| `--main <NAME>`       | Entry function (default `main`) on `run` / `check` / `compile` / `interpret`.                  | `CompileOptions::entry_name` (core 17)    |
-| `interpret`           | Check + interpret the entry (no machine code).                                                 | Stage 13b interpret API                   |
-| `run --target object` | Native compile, then execute (link step when available). Until ready: clear exit `2`.          | Object emit (+ link story)                |
+| Command               | Behavior                                                                   | Core need                              |
+| --------------------- | -------------------------------------------------------------------------- | -------------------------------------- |
+| `interpret`           | Check + interpret the entry (no machine code).                             | Stage 13b interpret API ✅             |
+| `run --target object` | Native compile, then link + execute. Stage 6 stubs with exit `2`.          | Object emit + link (core 13c/19 ✅)    |
+| `--main` on interpret | Already parsed on `run` / `check` / `compile`; Stage 8 finishes interpret. | `CompileOptions::entry_name` (core 17) |
 
 ### Later (other crates or language)
 
@@ -216,7 +215,7 @@ Depends on core IR dump API (landed) for `ir`. Tokens/AST from tokenizer/parser.
 
 ---
 
-### Stage 6 — `compile` + `--target` ⬜
+### Stage 6 — `compile` + `--target` ✅
 
 Align the driver with the target UX. Prefer parsing the full surface early; stub backends that core has not finished.
 
@@ -225,9 +224,9 @@ Align the driver with the target UX. Prefer parsing the full surface early; stub
    - `--target jit`: check + JIT lower/finalize; **do not** call `run_main`. Exit `0` if codegen succeeds.
    - `--target object`: call `Session::compile_object_source`; write bytes to `-o` (default `stem.o`).
 3. `run --target jit`: today’s behavior (default).
-4. `run --target object`: until link+exec works, exit `2` with a clear message (or compile-only note). Do not silently fall back to JIT. Core object emit is available (Stage 13c).
+4. `run --target object`: until link+exec works (Stage 8), exit `2` with a clear message. Do not silently fall back to JIT. Core object emit is available (Stage 13c).
 5. Keep `yarrow <file>` as sugar for `run --target jit <file>`.
-6. Accept `--main <NAME>` on `run` / `compile` (and `check` if that command is still being extended). Forward as `CompileOptions::entry_name` (core Stage 17 ✅).
+6. Accept `--main <NAME>` on `run` / `compile` / `check`. Forward as `CompileOptions::entry_name` (core Stage 17 ✅).
 
 **Gate:** `--help` lists `compile`, `run --target`, and `compile --target`. `yarrow compile --target jit docs/examples/valid/01_hello.yar` exits `0` without printing `main`’s return value. `yarrow compile --target object …` writes a non-empty `.o` (core 13c). `yarrow run --target object …` exits `2` until link+exec exists.
 
