@@ -86,18 +86,18 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 ## Current state
 
-| Piece              | Status | Notes                                          |
-| ------------------ | ------ | ---------------------------------------------- |
-| `yarrow-fmt` crate | ⬜     | Empty `lib.rs`; no deps yet                    |
-| Style guide        | ✅     | Authoritative layout doc                       |
-| Core tokenize      | ⚠      | Comments are **skipped** (`#` not tokens)      |
-| Core parse         | ✅     | Enough structure to reprint once trivia exists |
+| Piece              | Status | Notes                                                                 |
+| ------------------ | ------ | --------------------------------------------------------------------- |
+| `yarrow-fmt` crate | ✅     | Stage 0: `FormatOptions` / `FormatError` / `format_source` / `format_file` stubs; path dep on `yarrow_core`; `format_source` returns input unchanged |
+| Style guide        | ✅     | Authoritative layout doc                                              |
+| Core tokenize      | ⚠      | Comments are **skipped** (`#` not tokens)                             |
+| Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
 
 ---
 
 ## Stages
 
-### Stage 0 - Crate skeleton and API stubs
+### Stage 0 - Crate skeleton and API stubs ✅
 
 1. Depend on `yarrow_core` (path).
 2. Add `FormatOptions`, `FormatError`, `format_source` stub that returns the input unchanged (or errors clearly if not implemented).
