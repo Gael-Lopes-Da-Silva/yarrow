@@ -41,6 +41,7 @@ Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Crane
 | ------------------------------------------------------------------- | ------------------------------------- |
 | `alloc`, `free`                                                     | Raw heap (`@alloc` / `@free`, unsafe) |
 | `str_new`, `str_len`, `str_join`, `str_cmp`                         | String heap helpers (`std.string`)    |
+| `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_last_error`         | File open / close / read / write (`std.fs`) |
 | `list_*`, `map_*`                                                   | List / hashmap helpers                |
 | `print_str`, `print_int`, `print_float`, `print_newline`            | `std.io` write / write_line / newline |
 | `print_array`, `print_list`, `print_hashmap`                        | Container debug print                 |
@@ -53,8 +54,11 @@ Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Crane
 | ------------ | ------------------------------------------------------------------- | --------------------------------------------------- |
 | `std.io`     | `write`, `write_line`, `write_int`, `write_float`, `newline`        | `@print` / `@print_*` → `print_str` / `print_*`     |
 | `std.string` | `len`, `concat`, `join` (left, right, sep), `compare` (−1 / 0 / 1) | `@string_len`, `~`, `@string_join`, `@str_cmp`      |
+| `std.fs`     | `open_file`, `close_file`, `read_file`, `write_file`                | `@fs_open` / `@fs_close` / `@fs_read` / `@fs_write` / `@fs_last_error` |
 
 Prefer alias `str` for `"std.string"` (`string` is a type keyword and cannot be a require scope name).
+
+`std.fs` modes: `'r'` read, `'w'` write+create+truncate, `'a'` append+create. Host status codes: `0` ok, `1` IO, `2` not found, `3` invalid argument (`fs_open` returns the negated code on failure). Fallible wrappers map those to `error.IO_ERROR` / `NOT_FOUND` / `INVALID_ARGUMENT`.
 
 `free` is exported under that linker name for object imports; on glibc the implementation forwards to `__libc_free` so it does not recurse into itself when other translation units call `free`.
 
