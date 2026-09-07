@@ -755,6 +755,9 @@ dependencies = [
 [[package]]
 name = "yarrow_fmt"
 version = "0.1.0"
+dependencies = [
+ "yarrow_core",
+]
 
 [[package]]
 name = "yarrow_lsp"
