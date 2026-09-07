@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ⬜     | Empty `lib.rs`; no deps                           |
+| `yarrow-lsp` crate | ✅     | Stage 0: stdio hello via `tower-lsp-server`       |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -119,7 +119,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ## Stages
 
-### Stage 0 - Crate skeleton and stdio hello
+### Stage 0 - Crate skeleton and stdio hello ✅
 
 1. Depend on `yarrow_core`, `tower-lsp-server`, `tokio`, `serde` / `serde_json` as needed.
 2. Binary that speaks LSP: `initialize` / `initialized` / `shutdown` / `exit`.
@@ -127,6 +127,8 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 4. `run_stdio` public API; `cargo run -p yarrow_lsp` starts the server.
 
 **Gate:** `cargo check -p yarrow_lsp` green. A client (or scripted JSON-RPC) completes initialize handshake and shuts down cleanly.
+
+**Done:** `run_stdio` / `run_with_streams`, empty `ServerCapabilities`, `serverInfo` name `yarrow-lsp`. Scripted initialize → initialized → shutdown → exit succeeds.
 
 ---
 
