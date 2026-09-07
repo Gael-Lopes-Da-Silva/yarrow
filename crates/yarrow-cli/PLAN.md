@@ -30,7 +30,7 @@ src/main.rs  →  yarrow_cli::run
 | Command     | Behavior                                                     |
 | ----------- | ------------------------------------------------------------ |
 | `run`       | `--target jit` (default) or `object` (link + exec); `--main` |
-| `compile`   | Codegen only; `object` writes `-o` / `stem.o`                |
+| `compile`   | Codegen only; `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
 | `check`     | Semantic check only                                          |
 | `interpret` | Stack VM via `interpret_source`; `--main`; no `--target`     |
 | `dump`      | `--emit tokens\|ast\|ir`                                     |
@@ -43,7 +43,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–8 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–9 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -52,7 +52,7 @@ Stages 1–8 are complete. Historical stage write-ups were removed; git history 
 | Value    | `run`                  | `compile`              |
 | -------- | ---------------------- | ---------------------- |
 | `jit`    | JIT + execute entry    | JIT lower; do not run  |
-| `object` | Link executable + exec | Write relocatable `.o` |
+| `object` | Link executable + exec | Write relocatable `.o` or linked `exe` via `--emit` |
 
 `interpret` is not a `--target`.
 
@@ -62,15 +62,11 @@ Stages 1–8 are complete. Historical stage write-ups were removed; git history 
 
 Driver polish and optional tools. Prefer core Stages 20–23 before a heavy `repl`.
 
-### Stage 9 - Executable emit from `compile`
+### Stage 9 - Executable emit from `compile` ✅
 
-Today `compile --target object` always writes a `.o`. Add an explicit way to write a linked host binary.
+`--emit object|exe` on `compile` (default `object` when `--target object`). `exe` calls `Session::compile_executable_source` and sets execute permission. `run --target object` still compile-link-execs without keeping the binary.
 
-1. Prefer `--emit object|exe` (default `object` when `--target object`) **or** a clear `-o` convention documented in `--help` (pick one; do not support silent dual meaning).
-2. `exe` path calls `Session::compile_executable_source` and writes bytes with execute permission as needed.
-3. Keep `run --target object` as compile-link-exec without requiring the user to keep the binary.
-
-**Gate:** `yarrow compile --target object --emit exe -o /tmp/hello docs/examples/valid/01_hello.yar` produces a runnable file that prints like JIT `run`. `--help` documents the flag.
+**Gate:** `yarrow compile --target object --emit exe -o /tmp/hello docs/examples/valid/01_hello.yar` produces a runnable file; `--help` documents `--emit`.
 
 ### Stage 10 - Program arguments
 

@@ -53,11 +53,12 @@ where
             Some(Cmd::Compile {
                 file,
                 target,
+                emit,
                 main,
                 output,
             }),
             None,
-        ) => commands::compile_file(&file, target, &main, output.as_deref(), &cli.global),
+        ) => commands::compile_file(&file, target, emit, &main, output.as_deref(), &cli.global),
         (Some(Cmd::Check { file, main }), None) => commands::check_file(&file, &main, &cli.global),
         (Some(Cmd::Interpret { file, main }), None) => {
             commands::interpret_file(&file, &main, &cli.global)
