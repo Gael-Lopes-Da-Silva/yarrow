@@ -31,6 +31,7 @@ Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`
 | [`valid/11_unsafe_pointers.yar`](valid/11_unsafe_pointers.yar)             | `unsafe function`, `pointer<T>`, `std.mem`                                       |
 | [`valid/12_modules.yar`](valid/12_modules.yar)                             | Aliased / bare / item `require` ([`helpers/greet.yar`](valid/helpers/greet.yar)) |
 | [`valid/13_containers.yar`](valid/13_containers.yar)                       | Array, list, hashmap literals                                                    |
+| [`valid/14_io_and_string.yar`](valid/14_io_and_string.yar)                 | `std.io` write helpers, `std.string` len / join / concat / compare               |
 
 ## Invalid programs
 

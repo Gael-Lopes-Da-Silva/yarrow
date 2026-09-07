@@ -42,7 +42,7 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 | AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                                        |
 | Backends    | Check still lowers via Cranelift; interpret covers Stage 21 subset (not full JIT parity)           |
 | Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
-| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` partial                                          |
+| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` Stage 22 wrappers landed |
 | Projects    | Single-file + `require` only; no multi-root project graph                                          |
 | Formatter   | Comments skipped in tokenize; `yarrow-fmt` needs trivia (see `yarrow-fmt` Stage 1)                 |
 | LSP         | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`) |
@@ -81,7 +81,7 @@ Grow `interpret_source` / `EvalContext` toward the valid example corpus (not onl
 - Added: locals / `set`, `if`, value `match`, condition + array `for`, `typeof` / type values, nested functions, item-import plain bindings after an aliased module load
 - Still E393 / unsupported: structs, unions, regions, unsafe, errors/`unwrap`, lists/maps
 
-### Stage 22 - Std / runtime: `io` + `string` depth
+### Stage 22 - Std / runtime: `io` + `string` depth ✅
 
 Fill gaps that real programs hit before filesystem work.
 
@@ -90,6 +90,14 @@ Fill gaps that real programs hit before filesystem work.
 3. Add or extend corpus examples that exercise the new surface.
 
 **Gate:** new or extended valid examples compile under JIT and (where applicable) interpret; docs list the new host symbols.
+
+**Notes:**
+
+- `std.io`: `write`, `write_line`, `write_int`, `write_float`, `newline` over `@print` / `@print_*`
+- `std.string`: `len`, `concat` (`~`), `join` (left / right / sep), `compare` (`@str_cmp` → −1 / 0 / 1)
+- No new host symbols; `docs/RUNTIME.md` lists `str_*` / `print_*` and the std wrappers
+- Example: `docs/examples/valid/14_io_and_string.yar` (JIT + interpret)
+- Interpreter: `@print_float`, `@string_len` / `@str_len`, `@string_join`, `@str_join`, `@str_cmp`
 
 ### Stage 23 - Std / runtime: `std.fs` host I/O
 

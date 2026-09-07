@@ -40,10 +40,21 @@ Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Crane
 | Symbol                                                              | Role                                  |
 | ------------------------------------------------------------------- | ------------------------------------- |
 | `alloc`, `free`                                                     | Raw heap (`@alloc` / `@free`, unsafe) |
-| `str_*`, `list_*`, `map_*`                                          | Container helpers                     |
-| `print_str`, `print_int`, `print_float`, `print_newline`, `print_*` | Std I/O backing                       |
+| `str_new`, `str_len`, `str_join`, `str_cmp`                         | String heap helpers (`std.string`)    |
+| `list_*`, `map_*`                                                   | List / hashmap helpers                |
+| `print_str`, `print_int`, `print_float`, `print_newline`            | `std.io` write / write_line / newline |
+| `print_array`, `print_list`, `print_hashmap`                        | Container debug print                 |
 | `free_value`, `register_struct_descs`, `register_union_descs`       | Drop / layout registration            |
 | `region_new`, `region_register`, `region_free`                      | Region lifetime                       |
+
+**Std wrappers (safe Yarrow):**
+
+| Module       | API                                                                 | Host / builtin                                      |
+| ------------ | ------------------------------------------------------------------- | --------------------------------------------------- |
+| `std.io`     | `write`, `write_line`, `write_int`, `write_float`, `newline`        | `@print` / `@print_*` → `print_str` / `print_*`     |
+| `std.string` | `len`, `concat`, `join` (left, right, sep), `compare` (−1 / 0 / 1) | `@string_len`, `~`, `@string_join`, `@str_cmp`      |
+
+Prefer alias `str` for `"std.string"` (`string` is a type keyword and cannot be a require scope name).
 
 `free` is exported under that linker name for object imports; on glibc the implementation forwards to `__libc_free` so it does not recurse into itself when other translation units call `free`.
 

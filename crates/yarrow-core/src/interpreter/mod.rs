@@ -17,9 +17,11 @@
 //!
 //! Supported surface: `require` + module / nested calls, literals, arithmetic /
 //! comparisons / bool ops / shifts, string `~`, stack words, `@print` /
-//! `@print_newline` / `@print_int`, variables / `set`, `if` / `match` (value) /
-//! condition and array `for`, `typeof` / type values, array literals, `std.loop`
-//! `value` / `index`, void `main` and simple scalar / string returns.
+//! `@print_newline` / `@print_int` / `@print_float`, `@string_len` /
+//! `@string_join` / `@str_len` / `@str_join` / `@str_cmp`, variables / `set`,
+//! `if` / `match` (value) / condition and array `for`, `typeof` / type values,
+//! array literals, `std.loop` `value` / `index`, void `main` and simple scalar /
+//! string returns.
 //!
 //! Still out of scope (clear `E393`): structs / unions / enums as values,
 //! regions / defer, unsafe / pointers, fallible `unwrap` / `handle`, lists /
@@ -1195,6 +1197,196 @@ impl Interpreter {
                     }
                 };
                 runtime::yarrow_print_int(n);
+                Ok(())
+            }
+            "print_float" => {
+                let v = self.pop(stack, span, "@print_float")?;
+                let f = match v.value {
+                    Value::Float(f) => f,
+                    Value::Int(n) => n as f64,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@print_float' requires a float",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                runtime::yarrow_print_float(f);
+                Ok(())
+            }
+            "string_len" | "str_len" => {
+                let v = self.pop(stack, span, "@string_len")?;
+                let (handle, owned) = match v.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@string_len' requires a string",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let len = runtime::yarrow_str_len(handle) as i64;
+                if owned {
+                    free_value(handle, KIND_STRING);
+                }
+                stack.push(Slot {
+                    value: Value::Int(len),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "str_join" => {
+                let right = self.pop(stack, span, "@str_join")?;
+                let left = self.pop(stack, span, "@str_join")?;
+                let (lh, lo) = match left.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        right.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@str_join' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (rh, ro) = match right.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        if lo {
+                            free_value(lh, KIND_STRING);
+                        }
+                        return Err(InterpretError::new(
+                            "'@str_join' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let out = runtime::yarrow_str_join(lh, rh);
+                if lo {
+                    free_value(lh, KIND_STRING);
+                }
+                if ro {
+                    free_value(rh, KIND_STRING);
+                }
+                stack.push(Slot {
+                    value: Value::Str {
+                        handle: out,
+                        owned: true,
+                    },
+                    kind: KIND_STRING,
+                });
+                Ok(())
+            }
+            "string_join" => {
+                let sep = self.pop(stack, span, "@string_join")?;
+                let right = self.pop(stack, span, "@string_join")?;
+                let left = self.pop(stack, span, "@string_join")?;
+                let free_owned = |handle: u64, owned: bool| {
+                    if owned {
+                        free_value(handle, KIND_STRING);
+                    }
+                };
+                let (lh, lo) = match left.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        right.drop_owned();
+                        sep.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@string_join' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (rh, ro) = match right.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        free_owned(lh, lo);
+                        sep.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@string_join' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (sh, so) = match sep.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        free_owned(lh, lo);
+                        free_owned(rh, ro);
+                        return Err(InterpretError::new(
+                            "'@string_join' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let mid = runtime::yarrow_str_join(lh, sh);
+                let out = runtime::yarrow_str_join(mid, rh);
+                free_value(mid, KIND_STRING);
+                free_owned(lh, lo);
+                free_owned(rh, ro);
+                free_owned(sh, so);
+                stack.push(Slot {
+                    value: Value::Str {
+                        handle: out,
+                        owned: true,
+                    },
+                    kind: KIND_STRING,
+                });
+                Ok(())
+            }
+            "str_cmp" => {
+                let right = self.pop(stack, span, "@str_cmp")?;
+                let left = self.pop(stack, span, "@str_cmp")?;
+                let (lh, lo) = match left.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        right.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@str_cmp' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (rh, ro) = match right.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        if lo {
+                            free_value(lh, KIND_STRING);
+                        }
+                        return Err(InterpretError::new(
+                            "'@str_cmp' requires string operands",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let cmp = runtime::yarrow_str_cmp(lh, rh);
+                if lo {
+                    free_value(lh, KIND_STRING);
+                }
+                if ro {
+                    free_value(rh, KIND_STRING);
+                }
+                stack.push(Slot {
+                    value: Value::Int(cmp),
+                    kind: 4,
+                });
                 Ok(())
             }
             other => Err(InterpretError::unsupported(
