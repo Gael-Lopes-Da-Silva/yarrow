@@ -3849,7 +3849,14 @@ impl Compiler {
         self.compile_body(b, st, stack, then_branch)?;
         let then_terminated = st.terminated;
         let then_stack = stack.clone();
-        let then_extra: Vec<Slot> = then_stack[pre.len()..].to_vec();
+        // A returning branch may drain below `pre` (e.g. fallible payload left
+        // for `return` after the condition). Only the continuing branch's
+        // extras matter for the merge.
+        let then_extra: Vec<Slot> = if then_stack.len() >= pre.len() {
+            then_stack[pre.len()..].to_vec()
+        } else {
+            Vec::new()
+        };
 
         // When the then-branch continues, fix merge params from it and jump.
         let mut params: Vec<Value> = Vec::new();
@@ -3874,7 +3881,11 @@ impl Compiler {
         self.compile_body(b, st, stack, else_branch)?;
         let else_terminated = st.terminated;
         let else_stack = stack.clone();
-        let else_extra: Vec<Slot> = else_stack[pre.len()..].to_vec();
+        let else_extra: Vec<Slot> = if else_stack.len() >= pre.len() {
+            else_stack[pre.len()..].to_vec()
+        } else {
+            Vec::new()
+        };
 
         if then_terminated && else_terminated {
             st.terminated = true;
@@ -5265,6 +5276,19 @@ impl Compiler {
                     value: out[0],
                     ty: Ty::I64,
                     own: Own::Trivial,
+                });
+            }
+            "fs_read" => {
+                // Host returns a string handle (empty on failure); typed as
+                // `string` so `std.fs` can map `@fs_last_error` to `|T Err|`.
+                let fd = self.pop_slot(st, stack, "'@fs_read'")?;
+                let arg = coerce(b, fd.value, fd.ty, Ty::I64, self.ptr_type, st.current_span)?;
+                let out = self.rt_call(b, st, "fs_read", vec![arg])?;
+                self.claim(st, out[0], Ty::String);
+                stack.push(Slot {
+                    value: out[0],
+                    ty: Ty::String,
+                    own: Own::Owned,
                 });
             }
 

@@ -22,6 +22,7 @@
 // header structures); allow the explicit inner-unsafe lint.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -942,6 +943,181 @@ pub extern "C" fn yarrow_print_hashmap(m: u64, kind: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Filesystem (`std.fs`)
+// ---------------------------------------------------------------------------
+
+/// Host error codes for `fs_*` (also negated from `fs_open` on failure).
+pub const FS_ERR_IO: i64 = 1;
+pub const FS_ERR_NOT_FOUND: i64 = 2;
+pub const FS_ERR_INVALID: i64 = 3;
+
+thread_local! {
+    static FS_LAST_ERROR: Cell<i64> = const { Cell::new(0) };
+}
+
+fn fs_set_error(code: i64) {
+    FS_LAST_ERROR.with(|c| c.set(code));
+}
+
+fn fs_map_io_error(err: &std::io::Error) -> i64 {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => FS_ERR_NOT_FOUND,
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => FS_ERR_INVALID,
+        _ => FS_ERR_IO,
+    }
+}
+
+fn fs_path_from_handle(s: u64) -> Result<std::path::PathBuf, i64> {
+    if s == 0 {
+        return Err(FS_ERR_INVALID);
+    }
+    unsafe {
+        let str = &*(s as *const Str);
+        let bytes = std::slice::from_raw_parts(str.ptr, str.len);
+        match std::str::from_utf8(bytes) {
+            Ok(p) => Ok(std::path::PathBuf::from(p)),
+            Err(_) => Err(FS_ERR_INVALID),
+        }
+    }
+}
+
+fn fs_empty_string() -> u64 {
+    yarrow_str_new(0, 0)
+}
+
+/// Open `path` with mode rune `'r'` / `'w'` / `'a'`.
+/// Returns a non-negative fd on success, or `-FS_ERR_*` on failure.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_open"))]
+pub extern "C" fn yarrow_fs_open(path: u64, mode: i64) -> i64 {
+    fs_set_error(0);
+    let path = match fs_path_from_handle(path) {
+        Ok(p) => p,
+        Err(code) => {
+            fs_set_error(code);
+            return -code;
+        }
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    match mode as u32 {
+        // 'r'
+        0x72 => {
+            opts.read(true);
+        }
+        // 'w'
+        0x77 => {
+            opts.write(true).create(true).truncate(true);
+        }
+        // 'a'
+        0x61 => {
+            opts.write(true).create(true).append(true);
+        }
+        _ => {
+            fs_set_error(FS_ERR_INVALID);
+            return -FS_ERR_INVALID;
+        }
+    };
+    match opts.open(&path) {
+        Ok(file) => {
+            use std::os::fd::IntoRawFd;
+            file.into_raw_fd() as i64
+        }
+        Err(err) => {
+            let code = fs_map_io_error(&err);
+            fs_set_error(code);
+            -code
+        }
+    }
+}
+
+/// Close a host fd. Returns `0` on success or `FS_ERR_*`. Negative / invalid
+/// fds are ignored so failed-open fallbacks (`fd -1`) are safe to close.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_close"))]
+pub extern "C" fn yarrow_fs_close(fd: i64) -> i64 {
+    fs_set_error(0);
+    if fd < 0 {
+        return 0;
+    }
+    let rc = unsafe { libc::close(fd as libc::c_int) };
+    if rc == 0 {
+        0
+    } else {
+        let code = FS_ERR_IO;
+        fs_set_error(code);
+        code
+    }
+}
+
+/// Write all bytes of string handle `s` to `fd`. Returns `0` or `FS_ERR_*`.
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_write"))]
+pub extern "C" fn yarrow_fs_write(fd: i64, s: u64) -> i64 {
+    use std::io::Write;
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    fs_set_error(0);
+    if fd < 0 {
+        fs_set_error(FS_ERR_INVALID);
+        return FS_ERR_INVALID;
+    }
+    if s == 0 {
+        fs_set_error(FS_ERR_INVALID);
+        return FS_ERR_INVALID;
+    }
+    let bytes = unsafe {
+        let str = &*(s as *const Str);
+        std::slice::from_raw_parts(str.ptr, str.len)
+    };
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) };
+    let result = file.write_all(bytes).and_then(|_| file.flush());
+    let _ = file.into_raw_fd();
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            let code = fs_map_io_error(&err);
+            fs_set_error(code);
+            code
+        }
+    }
+}
+
+/// Read the remainder of `fd` into a new string handle. On failure returns an
+/// empty string and sets [`yarrow_fs_last_error`].
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_read"))]
+pub extern "C" fn yarrow_fs_read(fd: i64) -> u64 {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    fs_set_error(0);
+    if fd < 0 {
+        fs_set_error(FS_ERR_INVALID);
+        return fs_empty_string();
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) };
+    let mut buf = Vec::new();
+    let result = file.read_to_end(&mut buf);
+    let _ = file.into_raw_fd();
+    match result {
+        Ok(_) => {
+            if buf.is_empty() {
+                fs_empty_string()
+            } else {
+                yarrow_str_new(buf.as_ptr() as u64, buf.len() as u64)
+            }
+        }
+        Err(err) => {
+            let code = fs_map_io_error(&err);
+            fs_set_error(code);
+            fs_empty_string()
+        }
+    }
+}
+
+/// Last `FS_ERR_*` from a failed `fs_*` call (`0` after success).
+#[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_last_error"))]
+pub extern "C" fn yarrow_fs_last_error() -> i64 {
+    FS_LAST_ERROR.with(|c| c.get())
+}
+
+// ---------------------------------------------------------------------------
 // Host function registry
 // ---------------------------------------------------------------------------
 
@@ -1159,6 +1335,41 @@ pub static HOST_FNS: std::sync::LazyLock<Vec<HostFn>> = std::sync::LazyLock::new
             params: &[KIND_I64],
             returns: &[],
             address: yarrow_region_free as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "fs_open",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_fs_open as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "fs_close",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_fs_close as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "fs_write",
+            params: &[KIND_I64, KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_fs_write as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "fs_read",
+            params: &[KIND_I64],
+            returns: &[KIND_I64],
+            address: yarrow_fs_read as *const () as usize,
+            safety: Safety::Safe,
+        },
+        HostFn {
+            name: "fs_last_error",
+            params: &[],
+            returns: &[KIND_I64],
+            address: yarrow_fs_last_error as *const () as usize,
             safety: Safety::Safe,
         },
     ]

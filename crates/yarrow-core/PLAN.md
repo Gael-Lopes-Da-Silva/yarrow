@@ -42,7 +42,7 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 | AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                                        |
 | Backends    | Check still lowers via Cranelift; interpret covers Stage 21 subset (not full JIT parity)           |
 | Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
-| Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` Stage 22 wrappers landed |
+| Std/runtime | `std.io` / `std.string` / `std.fs` Stage 22–23 host wrappers landed          |
 | Projects    | Single-file + `require` only; no multi-root project graph                                          |
 | Formatter   | Comments skipped in tokenize; `yarrow-fmt` needs trivia (see `yarrow-fmt` Stage 1)                 |
 | LSP         | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`) |
@@ -99,7 +99,7 @@ Fill gaps that real programs hit before filesystem work.
 - Example: `docs/examples/valid/14_io_and_string.yar` (JIT + interpret)
 - Interpreter: `@print_float`, `@string_len` / `@str_len`, `@string_join`, `@str_join`, `@str_cmp`
 
-### Stage 23 - Std / runtime: `std.fs` host I/O
+### Stage 23 - Std / runtime: `std.fs` host I/O ✅
 
 Replace the `std.fs` stub with real host file operations (read/write/open as documented).
 
@@ -108,6 +108,13 @@ Replace the `std.fs` stub with real host file operations (read/write/open as doc
 3. Fallible error mapping consistent with existing `|T Err|` conventions.
 
 **Gate:** a valid example reads or writes a temp file via `std.fs` under JIT; AOT link still resolves the new symbols.
+
+**Notes:**
+
+- Host: `fs_open` / `fs_close` / `fs_read` / `fs_write` / `fs_last_error` (modes `'r'`/`'w'`/`'a'`; status 0 / 1 IO / 2 NOT_FOUND / 3 INVALID)
+- `std.fs`: `open_file`, `close_file`, `read_file`, `write_file` → `|T error.Error|` where fallible
+- Example: `docs/examples/valid/15_fs.yar` (JIT); interpret still lacks structs/errors
+- `@fs_read` is a typed builtin (string handle); other `fs_*` use the generic host path
 
 ### Stage 24 - Check without full codegen (optional stretch)
 
