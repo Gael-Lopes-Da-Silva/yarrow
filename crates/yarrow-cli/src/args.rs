@@ -57,6 +57,15 @@ pub enum EmitKind {
     Ir,
 }
 
+/// Artifact written by `compile --target object --emit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CompileEmitKind {
+    /// Relocatable native object (`.o`). Default.
+    Object,
+    /// Linked host executable.
+    Exe,
+}
+
 /// Compile / run backend selected with `--target`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TargetKind {
@@ -107,7 +116,8 @@ pub enum Cmd {
     /// Check + codegen without running the entry.
     ///
     /// Default `--target jit` finalizes JIT code in-process. `--target object`
-    /// writes a native relocatable object (`-o`, default `stem.o`).
+    /// writes a native artifact; use `--emit object` (default, `stem.o`) or
+    /// `--emit exe` (linked host binary, default `stem`).
     Compile {
         /// Source file to compile.
         #[arg(value_name = "FILE")]
@@ -117,11 +127,16 @@ pub enum Cmd {
         #[arg(long, value_enum, default_value = "jit")]
         target: TargetKind,
 
+        /// Artifact for `--target object`: relocatable `object` or linked `exe`.
+        /// Ignored for `--target jit`. Default: `object`.
+        #[arg(long, value_enum, default_value = "object")]
+        emit: CompileEmitKind,
+
         /// Top-level entry function name (default `main`).
         #[arg(long, value_name = "NAME", default_value = "main")]
         main: String,
 
-        /// Output path for `--target object` (default: `<stem>.o`).
+        /// Output path for `--target object` (`object` → `<stem>.o`, `exe` → `<stem>`).
         #[arg(short = 'o', long = "output", value_name = "PATH")]
         output: Option<std::path::PathBuf>,
     },
