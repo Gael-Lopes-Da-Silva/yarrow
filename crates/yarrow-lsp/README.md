@@ -52,3 +52,7 @@ On a postfix call site (`name call` or `a.b call`), `textDocument/signatureHelp`
 ## Inlay hints
 
 After a successful check, `textDocument/inlayHint` places type annotations after binding names (for example `: i32` on `answer`) and short `stack: …` notes on function sites, using only core `TypeIndex` probes. Disable with `--no-inlay` or init option `inlayHints: false`.
+
+## Semantic tokens
+
+`textDocument/semanticTokens/full` classifies core tokenizer tokens (keywords, strings, numbers, comments, operators) and same-file resolved identifiers (`function` / `variable` / `type` / `property`). Unresolved names and brackets are left to the client grammar. Legend types: keyword, function, variable, type, parameter, property, string, number, comment, operator; modifier `declaration` on binding sites.
