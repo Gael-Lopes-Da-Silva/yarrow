@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 5: AST signature hover                       |
+| `yarrow-lsp` crate | ✅     | Stage 6: keyword + name completions               |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -195,7 +195,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 6 - Completions (keywords + names)
+### Stage 6 - Completions (keywords + names) ✅
 
 1. Keyword list from grammar (`function`, `do`, `end`, `if`, `match`, `require`, …).
 2. Completions from current file top-level names and, when parse succeeded, locals in the innermost span containing the cursor (best-effort).
@@ -203,6 +203,8 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 4. No AI / fuzzy ranking beyond simple prefix filter.
 
 **Gate:** in an empty-ish body, completing `fun` offers `function`. After defining `helper`, completing `hel` can offer `helper`.
+
+**Done:** `textDocument/completion` with tokenizer keywords + scoped AST names (prefix filter); line-start open `"…` suggests static `std.*` from `lib/std`; `"` trigger character. Scripted gate: `fun` → `function`; `hel` with `helper` in file → `helper`.
 
 ---
 
