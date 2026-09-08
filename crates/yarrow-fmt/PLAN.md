@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 7: control flow / defer / unsafe / handle layout |
+| `yarrow-fmt` crate | ✅     | Stage 8: line width / stack-phrase wrap |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -214,7 +214,7 @@ Layout from style-guide **Control flow**, **Defer**, **Unsafe**, **Errors**:
 
 ---
 
-### Stage 8 - Line width and stack phrases
+### Stage 8 - Line width and stack phrases ✅
 
 Style-guide **Indentation and line width** + **Stack phrases**:
 
@@ -224,6 +224,8 @@ Style-guide **Indentation and line width** + **Stack phrases**:
 4. When over width, break **before** a consuming word (`call`, operator, `if`, …), continuation indented one tab deeper.
 
 **Gate:** a deliberately long call phrase wraps before `call` like the guide example. Width-100 content stays single-line when it fits.
+
+**Notes:** `phrase` module: all-or-nothing call merge under width; over-width flattens the arg run and wraps into units (args alone, `callee call` / `callee call unwrap` together) with continuation at `depth + 1`. Indent preserves construct-layout continuation tabs. Also wraps long `set` / `return` / `if` / `for` heads. Fixture `fixtures/stage8_line_width.yar`. Comment spacing still Stage 9.
 
 ---
 

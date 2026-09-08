@@ -3,13 +3,14 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 7: construct layout including control flow, defer, unsafe, and
-//! handle/unwrap, then indent and blank-line passes.
+//! Stage 8: construct layout plus soft line-width wrap for stack phrases,
+//! then indent and blank-line passes.
 
 mod blank;
 mod hygiene;
 mod indent;
 mod ir;
+mod phrase;
 mod print;
 
 pub use blank::apply_blank_lines;
@@ -94,8 +95,9 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 7: hygiene, construct layout reprint, tab indent / `end` alignment,
-/// then blank-line rules. Parse failures surface as [`FormatError::Parse`].
+/// Stage 8: hygiene, construct layout reprint (including width wrap), tab
+/// indent / `end` alignment, then blank-line rules. Parse failures surface as
+/// [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }
@@ -110,7 +112,7 @@ fn format_source_at(
     let laid_out = apply_source_hygiene(&apply_construct_layout(&ir, options));
     // Re-parse so indent / blank line numbers match post-layout text.
     let ir = build_format_ir(&laid_out, path)?;
-    let indented = apply_source_hygiene(&apply_indent(&ir));
+    let indented = apply_source_hygiene(&apply_indent(&ir, options));
     let ir = build_format_ir(&indented, path)?;
     let blanked = apply_blank_lines(&ir);
     Ok(apply_source_hygiene(&blanked))

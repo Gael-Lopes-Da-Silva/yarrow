@@ -1,8 +1,8 @@
 //! Indentation and `end` alignment from `docs/STYLE_GUIDE.md`.
 //!
 //! Stage 4: one tab per nesting level; `end` / `else` / `do` aligned with the
-//! opener; leading spaces rewritten to tabs. Phrase layout inside a line is
-//! left alone until later printer stages.
+//! opener; leading spaces rewritten to tabs. Stage 8: continuation lines of
+//! wrapped stack phrases paint one level deeper than the phrase start.
 
 use yarrow_core::parser::ast::{
     EnumDecl, ErrorDecl, Expr, Function, Implement, MatchCase, MatchCaseKind, Stmt, StmtKind,
@@ -10,24 +10,28 @@ use yarrow_core::parser::ast::{
 };
 use yarrow_core::{SourceFile, Span};
 
+use crate::FormatOptions;
 use crate::ir::FormatIr;
+use crate::phrase::paint_expr_run_depths;
 
 /// Rewrite leading indentation on each line using AST nesting depth.
 ///
 /// Blank lines stay blank (no indent). Non-empty lines get exactly
-/// `depth` leading tabs and no leading spaces.
+/// `depth` leading tabs and no leading spaces. Wrapped phrase continuations
+/// use `depth + 1` when Stage 8 layout splits a call or long phrase.
 ///
 /// Idempotent when composed with source hygiene on accepted inputs.
-pub fn apply_indent(ir: &FormatIr) -> String {
+pub fn apply_indent(ir: &FormatIr, options: &FormatOptions) -> String {
     let file = &ir.file;
     let line_count = file.line_count();
     if line_count == 0 {
         return String::from("\n");
     }
 
+    let max_width = options.max_width.max(1);
     let mut levels: Vec<Option<usize>> = vec![None; line_count + 1];
     for item in &ir.program.items {
-        paint_stmt(item, 0, file, &mut levels);
+        paint_stmt(item, 0, max_width, file, &mut levels);
     }
     fill_unpainted_lines(file, &mut levels);
 
@@ -143,22 +147,50 @@ fn paint_span_lines(file: &SourceFile, span: Span, depth: usize, levels: &mut [O
     }
 }
 
-fn paint_stmt(stmt: &Stmt, depth: usize, file: &SourceFile, levels: &mut [Option<usize>]) {
+fn paint_stmt(
+    stmt: &Stmt,
+    depth: usize,
+    max_width: usize,
+    file: &SourceFile,
+    levels: &mut [Option<usize>],
+) {
     match &stmt.kind {
-        StmtKind::Function(func) => paint_function(func, stmt.span, depth, file, levels),
+        StmtKind::Function(func) => paint_function(func, stmt.span, depth, max_width, file, levels),
         StmtKind::If {
             then_branch,
             else_branch,
             ..
-        } => paint_if(stmt.span, then_branch, else_branch, depth, file, levels),
+        } => paint_if(
+            stmt.span,
+            then_branch,
+            else_branch,
+            depth,
+            max_width,
+            file,
+            levels,
+        ),
         StmtKind::Match {
             cases, else_branch, ..
-        } => paint_match(stmt.span, cases, else_branch, depth, file, levels),
-        StmtKind::For { body, .. } => paint_simple_block(stmt.span, body, depth, file, levels),
-        StmtKind::Defer { body } => paint_simple_block(stmt.span, body, depth, file, levels),
-        StmtKind::Unsafe { body } => paint_simple_block(stmt.span, body, depth, file, levels),
+        } => paint_match(
+            stmt.span,
+            cases,
+            else_branch,
+            depth,
+            max_width,
+            file,
+            levels,
+        ),
+        StmtKind::For { body, .. } => {
+            paint_simple_block(stmt.span, body, depth, max_width, file, levels)
+        }
+        StmtKind::Defer { body } => {
+            paint_simple_block(stmt.span, body, depth, max_width, file, levels)
+        }
+        StmtKind::Unsafe { body } => {
+            paint_simple_block(stmt.span, body, depth, max_width, file, levels)
+        }
         StmtKind::Handle { body, fallback } => {
-            paint_simple_block(stmt.span, body, depth, file, levels);
+            paint_simple_block(stmt.span, body, depth, max_width, file, levels);
             if fallback.is_some() {
                 let start = stmt.span.line.max(1);
                 let end = end_line(file, stmt.span);
@@ -177,7 +209,9 @@ fn paint_stmt(stmt: &Stmt, depth: usize, file: &SourceFile, levels: &mut [Option
             }
         }
         StmtKind::Struct(decl) => paint_struct(decl, stmt.span, depth, file, levels),
-        StmtKind::Implement(impls) => paint_implement(impls, stmt.span, depth, file, levels),
+        StmtKind::Implement(impls) => {
+            paint_implement(impls, stmt.span, depth, max_width, file, levels)
+        }
         StmtKind::Enum(decl) => paint_enum(decl, stmt.span, depth, file, levels),
         StmtKind::Union(decl) => paint_union(decl, stmt.span, depth, file, levels),
         StmtKind::Error(decl) => paint_error(decl, stmt.span, depth, file, levels),
@@ -193,10 +227,39 @@ fn paint_stmt(stmt: &Stmt, depth: usize, file: &SourceFile, levels: &mut [Option
     }
 }
 
+/// Paint a statement list, grouping consecutive `Expr` stmts so wrapped
+/// call-phrase continuations get `depth + 1`.
+fn paint_body(
+    stmts: &[Stmt],
+    depth: usize,
+    max_width: usize,
+    file: &SourceFile,
+    levels: &mut [Option<usize>],
+) {
+    let mut i = 0;
+    while i < stmts.len() {
+        if matches!(stmts[i].kind, StmtKind::Expr(_)) {
+            let start = i;
+            i += 1;
+            while i < stmts.len() && matches!(stmts[i].kind, StmtKind::Expr(_)) {
+                i += 1;
+            }
+            let run = &stmts[start..i];
+            for (line, line_depth) in paint_expr_run_depths(run, depth, max_width, file) {
+                set_level(levels, line, line_depth);
+            }
+        } else {
+            paint_stmt(&stmts[i], depth, max_width, file, levels);
+            i += 1;
+        }
+    }
+}
+
 fn paint_function(
     func: &Function,
     span: Span,
     depth: usize,
+    max_width: usize,
     file: &SourceFile,
     levels: &mut [Option<usize>],
 ) {
@@ -216,9 +279,7 @@ fn paint_function(
         set_level(levels, do_line, depth);
     }
 
-    for stmt in &func.body {
-        paint_stmt(stmt, depth + 1, file, levels);
-    }
+    paint_body(&func.body, depth + 1, max_width, file, levels);
 }
 
 fn paint_if(
@@ -226,6 +287,7 @@ fn paint_if(
     then_branch: &[Stmt],
     else_branch: &[Stmt],
     depth: usize,
+    max_width: usize,
     file: &SourceFile,
     levels: &mut [Option<usize>],
 ) {
@@ -261,12 +323,8 @@ fn paint_if(
         set_level(levels, else_line, depth);
     }
 
-    for stmt in then_branch {
-        paint_stmt(stmt, depth + 1, file, levels);
-    }
-    for stmt in else_branch {
-        paint_stmt(stmt, depth + 1, file, levels);
-    }
+    paint_body(then_branch, depth + 1, max_width, file, levels);
+    paint_body(else_branch, depth + 1, max_width, file, levels);
 }
 
 fn paint_match(
@@ -274,6 +332,7 @@ fn paint_match(
     cases: &[MatchCase],
     else_branch: &[Stmt],
     depth: usize,
+    max_width: usize,
     file: &SourceFile,
     levels: &mut [Option<usize>],
 ) {
@@ -284,7 +343,7 @@ fn paint_match(
 
     let mut cursor = start.saturating_add(1);
     for case in cases {
-        cursor = paint_match_case(case, depth + 1, cursor, end, file, levels);
+        cursor = paint_match_case(case, depth + 1, max_width, cursor, end, file, levels);
     }
 
     let after_cases = cases
@@ -300,9 +359,7 @@ fn paint_match(
         levels.len(),
     ) {
         set_level(levels, else_line, depth + 1);
-        for stmt in else_branch {
-            paint_stmt(stmt, depth + 2, file, levels);
-        }
+        paint_body(else_branch, depth + 2, max_width, file, levels);
         let after_else_body = else_branch
             .last()
             .map(|s| end_line(file, s.span).saturating_add(1))
@@ -322,6 +379,7 @@ fn paint_match(
 fn paint_match_case(
     case: &MatchCase,
     depth: usize,
+    max_width: usize,
     search_from: usize,
     match_end: usize,
     file: &SourceFile,
@@ -333,9 +391,7 @@ fn paint_match_case(
     };
     set_level(levels, header, depth);
 
-    for stmt in &case.body {
-        paint_stmt(stmt, depth + 1, file, levels);
-    }
+    paint_body(&case.body, depth + 1, max_width, file, levels);
 
     let after_body = case
         .body
@@ -358,6 +414,7 @@ fn paint_simple_block(
     span: Span,
     body: &[Stmt],
     depth: usize,
+    max_width: usize,
     file: &SourceFile,
     levels: &mut [Option<usize>],
 ) {
@@ -370,9 +427,7 @@ fn paint_simple_block(
     if start == end {
         return;
     }
-    for stmt in body {
-        paint_stmt(stmt, depth + 1, file, levels);
-    }
+    paint_body(body, depth + 1, max_width, file, levels);
     // Re-assert opener / `end` after body paint (shared-line fallback, etc.).
     set_level(levels, start, depth);
     set_level(levels, end, depth);
@@ -398,6 +453,7 @@ fn paint_implement(
     impls: &Implement,
     span: Span,
     depth: usize,
+    max_width: usize,
     file: &SourceFile,
     levels: &mut [Option<usize>],
 ) {
@@ -414,7 +470,7 @@ fn paint_implement(
         let lo = file.line_start_offset(header);
         let hi = file.line_start_offset(method_end) + file.line_text(method_end).len();
         let method_span = Span::at(lo, hi, header, 1);
-        paint_function(func, method_span, depth + 1, file, levels);
+        paint_function(func, method_span, depth + 1, max_width, file, levels);
         search_from = method_end.saturating_add(1);
     }
 }
