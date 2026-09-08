@@ -105,14 +105,12 @@ fn write_bytes(out: &Path, bytes: &[u8], executable: bool, global: &GlobalArgs) 
         eprintln!("error: cannot write {}: {e}", out.to_string_lossy());
         return ExitCode::from(2);
     }
-    if executable {
-        if let Err(e) = set_executable(out) {
-            eprintln!(
-                "error: cannot set execute permission on {}: {e}",
-                out.to_string_lossy()
-            );
-            return ExitCode::from(2);
-        }
+    if executable && let Err(e) = set_executable(out) {
+        eprintln!(
+            "error: cannot set execute permission on {}: {e}",
+            out.to_string_lossy()
+        );
+        return ExitCode::from(2);
     }
     if !global.quiet {
         eprintln!("wrote {}", out.to_string_lossy());
