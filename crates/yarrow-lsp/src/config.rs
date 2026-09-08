@@ -14,6 +14,8 @@ pub struct LspConfig {
     pub entry_name: String,
     /// When false, do not advertise or serve `textDocument/formatting`.
     pub format_enable: bool,
+    /// When false, do not advertise or serve `textDocument/inlayHint`.
+    pub inlay_hints_enable: bool,
 }
 
 impl Default for LspConfig {
@@ -22,6 +24,7 @@ impl Default for LspConfig {
             search_paths: Vec::new(),
             entry_name: DEFAULT_ENTRY_NAME.to_string(),
             format_enable: true,
+            inlay_hints_enable: true,
         }
     }
 }
@@ -60,6 +63,9 @@ impl LspConfig {
             if let Some(fmt) = init.format {
                 self.format_enable = fmt;
             }
+            if let Some(inlays) = init.inlay_hints {
+                self.inlay_hints_enable = inlays;
+            }
         }
         for folder in workspace_folders {
             self.push_search_path(folder.clone());
@@ -86,6 +92,9 @@ pub struct InitializationOptions {
     /// Enable document formatting (default true).
     #[serde(default)]
     pub format: Option<bool>,
+    /// Enable inlay hints (default true).
+    #[serde(default)]
+    pub inlay_hints: Option<bool>,
 }
 
 impl InitializationOptions {

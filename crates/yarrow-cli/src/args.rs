@@ -238,6 +238,10 @@ pub enum Cmd {
         #[arg(long)]
         no_format: bool,
 
+        /// Disable `textDocument/inlayHint`.
+        #[arg(long)]
+        no_inlay: bool,
+
         /// Log level for process messages on stderr.
         #[arg(long, value_enum, default_value = "info")]
         log_level: crate::commands::LspLogLevel,

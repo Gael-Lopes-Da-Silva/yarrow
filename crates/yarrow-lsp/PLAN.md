@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–11)
+### Landed (v1, Stages 0–13)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
@@ -34,11 +34,11 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Document formatting via `yarrow-fmt`
 - Code actions / hover that surface `explain_code` for diagnostic codes
 - `LspConfig`, init options, `yarrow lsp` CLI wrapper
+- Signature help at postfix `name call` sites
+- Inlay hints from core type probes (`--no-inlay` / init `inlayHints`)
 
-### In scope (next, Stages 12+)
+### In scope (next, Stages 14+)
 
-- Signature help at call sites
-- Inlay hints from core type probes
 - Semantic tokens for theme highlighting
 - File-local rename (cautious cross-file only when resolve is solid)
 - Workspace symbols over open buffers + resolved `require`s
@@ -120,7 +120,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 12: signature help                       |
+| `yarrow-lsp` crate | ✅     | Stage 13: inlay hints                          |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -130,9 +130,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–11)
+## Landed (Stages 0–12)
 
-Stages 0–11 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–12 are complete. Historical stage write-ups for 0–11 were removed; git history keeps them. Stage 12 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -148,6 +148,7 @@ Stages 0–11 are complete. Historical stage write-ups were removed; git history
 | 9 | Typed hover via `CheckedProgram::type_at` |
 | 10 | `LspConfig` / init options + `yarrow lsp` wrapper |
 | 11 | `codeAction` Explain Exxx + `yarrow.explain` command |
+| 12 | `signatureHelp` for postfix `name call` |
 
 ---
 
@@ -169,7 +170,7 @@ Call-site parameter / stack-effect hints so editors can show a signature popup w
 
 ---
 
-### Stage 13 - Inlay hints (types / stack)
+### Stage 13 - Inlay hints (types / stack) ✅
 
 Non-editing type / stack annotations after bindings and optionally after call results, driven only by core probes.
 
@@ -181,6 +182,8 @@ Non-editing type / stack annotations after bindings and optionally after call re
 6. Keep latency acceptable: reuse the same check cache as diagnostics / hover when possible; do not JIT.
 
 **Gate:** open `03_variables_and_typeof.yar`; inlay on `answer` (or the typed binding used in Stage 9) shows `i32` (or the same string as typed hover). Empty / unchecked buffer yields no fake hints. Scripted or editor probe documents the range.
+
+**Done:** `textDocument/inlayHint` from `TypeIndex::probes` (sites intersecting the request range); binding labels `: ty`, function sites use the `stack: …` line when present; kind `Type`; skip on check failure / missing probe. Toggle via `--no-inlay` and init `inlayHints` (default on). Scripted gate on `03_variables_and_typeof.yar`: hint after `answer` includes `i32`.
 
 ---
 
@@ -298,7 +301,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | formatting                             | 8 ✅     | `yarrow-fmt`                       |
 | codeAction / explain                   | 11 ✅    | `explain_code`                     |
 | signatureHelp                          | 12 ✅    | AST + `type_at`                    |
-| inlayHint                              | 13       | `type_at`                          |
+| inlayHint                              | 13 ✅    | `TypeIndex` probes                 |
 | semanticTokens                         | 14       | tokens + AST                       |
 | rename                                 | 15       | references / resolve               |
 | workspaceSymbol                        | 16       | open buffers + require ASTs         |

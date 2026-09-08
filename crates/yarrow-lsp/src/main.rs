@@ -29,6 +29,10 @@ struct Args {
     #[arg(long)]
     no_format: bool,
 
+    /// Disable `textDocument/inlayHint`.
+    #[arg(long)]
+    no_inlay: bool,
+
     /// Log level for process messages on stderr.
     #[arg(long, value_enum, default_value = "info")]
     log_level: LogLevel,
@@ -75,15 +79,17 @@ async fn main() -> ExitCode {
         search_paths: args.search_paths,
         entry_name: args.main,
         format_enable: !args.no_format,
+        inlay_hints_enable: !args.no_inlay,
     };
 
     log_stderr(
         LogLevel::Info,
         args.log_level,
         &format!(
-            "starting (stdio; entry={}; format={}; search_paths={})",
+            "starting (stdio; entry={}; format={}; inlay={}; search_paths={})",
             config.entry_name,
             config.format_enable,
+            config.inlay_hints_enable,
             config.search_paths.len()
         ),
     );

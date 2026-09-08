@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 12 adds
-//! `textDocument/signatureHelp` for postfix `name call` sites.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 13 adds
+//! `textDocument/inlayHint` from core type probes.
 
 mod analysis;
 mod code_action;
@@ -11,6 +11,7 @@ mod definition;
 mod document;
 mod format;
 mod hover;
+mod inlay_hints;
 mod modules;
 mod position;
 mod references;
@@ -29,9 +30,10 @@ use tower_lsp_server::ls_types::{
     DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, LSPAny, Location, MessageType, OneOf, ReferenceParams,
-    ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
+    InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny, Location, MessageType,
+    OneOf, ReferenceParams, ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -43,6 +45,7 @@ pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
 pub use format::format_document;
 pub use hover::hover as hover_at;
+pub use inlay_hints::inlay_hints as inlay_hints_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use references::find_references;
 pub use signature_help::signature_help as signature_help_at;
@@ -76,7 +79,7 @@ pub async fn run_stdio() -> Result<(), LspError> {
     run_stdio_with(LspConfig::default()).await
 }
 
-/// stdio server with process-level defaults (CLI `-L` / `--main` / `--no-format`).
+/// stdio server with process-level defaults (CLI `-L` / `--main` / `--no-format` / `--no-inlay`).
 pub async fn run_stdio_with(config: LspConfig) -> Result<(), LspError> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -240,7 +243,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        let format_enable = {
+        let (format_enable, inlay_hints_enable) = {
             let Ok(mut cfg) = self.state.config.lock() else {
                 return Ok(InitializeResult {
                     capabilities: ServerCapabilities::default(),
@@ -252,7 +255,7 @@ impl LanguageServer for Backend {
                 });
             };
             cfg.apply_initialize(init_opts.as_ref(), &folders);
-            cfg.format_enable
+            (cfg.format_enable, cfg.inlay_hints_enable)
         };
 
         Ok(InitializeResult {
@@ -289,6 +292,11 @@ impl LanguageServer for Backend {
                     retrigger_characters: Some(vec![" ".into()]),
                     ..Default::default()
                 }),
+                inlay_hint_provider: if inlay_hints_enable {
+                    Some(OneOf::Left(true))
+                } else {
+                    None
+                },
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -521,6 +529,37 @@ impl LanguageServer for Backend {
         Ok(signature_help::signature_help(
             &path, &text, encoding, position, &config,
         ))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri.clone();
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(Some(Vec::new()));
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(Some(Vec::new()));
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
+        if !config.inlay_hints_enable {
+            return Ok(Some(Vec::new()));
+        }
+        Ok(Some(inlay_hints::inlay_hints(
+            &path,
+            &text,
+            encoding,
+            params.range,
+            &config,
+        )))
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
