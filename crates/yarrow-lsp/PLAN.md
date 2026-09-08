@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 3: documentSymbol outline from AST           |
+| `yarrow-lsp` crate | ✅     | Stage 4: same-file go-to-definition                |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -171,13 +171,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 4 - Go to definition (same file)
+### Stage 4 - Go to definition (same file) ✅
 
 1. Resolve identifier / qualified name at position via AST walk + token fallback.
 2. Jump to local declaration span (params, locals, top-level, type members when spans exist).
 3. If unresolved, return empty (no fake locations).
 
 **Gate:** in a file with `foo function` and a `foo call`, definition on the call name lands on `foo`. Missing name returns empty.
+
+**Done:** `textDocument/definition` via identifier token at offset + scoped AST decls (functions nested/top-level, vars, types/members, implement methods, require aliases); innermost visible scope wins; unresolved returns null. Scripted gate on `04_functions.yar`: `demo call` → `demo` decl; unknown ident empty.
 
 ---
 
