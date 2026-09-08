@@ -3,8 +3,8 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 9: construct layout (including comment spacing), soft line-width wrap,
-//! then indent and blank-line passes.
+//! Stage 10: construct layout (comment spacing, optional require sort), soft
+//! line-width wrap, then indent and blank-line passes.
 
 mod blank;
 mod comment;
@@ -13,6 +13,7 @@ mod indent;
 mod ir;
 mod phrase;
 mod print;
+mod require;
 
 pub use blank::apply_blank_lines;
 pub use comment::{normalize_comment, trailing_suffix};
@@ -20,6 +21,7 @@ pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
 pub use print::apply_construct_layout;
+pub use require::{is_std_path, sort_toplevel_requires};
 
 use std::fmt;
 use std::io;
@@ -32,11 +34,18 @@ use yarrow_core::{ColorChoice, SessionDiagnostics, render_batch};
 pub struct FormatOptions {
     /// Soft wrap target in columns. Default: 100.
     pub max_width: usize,
+    /// When true, sort consecutive top-level `require` lines: `"std.…"` first,
+    /// then other paths, alphabetically within each group. Opt-in (default
+    /// false) to avoid noisy diffs. Function-local requires are never moved.
+    pub sort_requires: bool,
 }
 
 impl Default for FormatOptions {
     fn default() -> Self {
-        Self { max_width: 100 }
+        Self {
+            max_width: 100,
+            sort_requires: false,
+        }
     }
 }
 
@@ -97,9 +106,9 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 9: hygiene, construct layout reprint (width wrap + comment spacing),
-/// tab indent / `end` alignment, then blank-line rules. Parse failures surface
-/// as [`FormatError::Parse`].
+/// Stage 10: hygiene, construct layout reprint (width wrap, comment spacing,
+/// optional require sort), tab indent / `end` alignment, then blank-line rules.
+/// Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }
