@@ -1,11 +1,12 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 2 adds
-//! position mapping and `textDocument/publishDiagnostics` from `check_source`.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 3 adds
+//! hierarchical `textDocument/documentSymbol` outlines from the AST.
 
 mod analysis;
 mod document;
 mod position;
+mod symbols;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -15,14 +16,16 @@ use std::time::Duration;
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    DocumentSymbolParams, DocumentSymbolResponse, InitializeParams, InitializeResult,
+    InitializedParams, MessageType, OneOf, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 pub use analysis::{check_document, uri_to_source_path};
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
 pub use position::{PositionEncoding, PositionMap};
+pub use symbols::document_symbols;
 
 /// Debounce window for rapid `didChange` before re-checking.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -191,6 +194,7 @@ impl LanguageServer for Backend {
                         ..Default::default()
                     },
                 )),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -319,5 +323,29 @@ impl LanguageServer for Backend {
                 )
                 .await;
         }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> LspResult<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        Ok(document_symbols(&path, &text, encoding).map(DocumentSymbolResponse::Nested))
     }
 }

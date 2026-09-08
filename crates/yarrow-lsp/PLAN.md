@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 2: position map + publishDiagnostics         |
+| `yarrow-lsp` crate | ✅     | Stage 3: documentSymbol outline from AST           |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -159,13 +159,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 3 - Document symbols and folding-friendly outline
+### Stage 3 - Document symbols and folding-friendly outline ✅
 
 1. Walk top-level `Program` items: functions, types, `implement`, etc.
 2. `textDocument/documentSymbol` (hierarchical if easy; flat SymbolInformation OK first).
 3. Use item `span` from the AST; name from declaration identifiers.
 
 **Gate:** outline for a multi-item valid example lists `main` and at least one type or helper function with non-empty ranges.
+
+**Done:** hierarchical `DocumentSymbol` via `parse_source` (functions, nested helpers, struct/enum/union/error, implement methods, require); item spans + name selection ranges. Scripted outline on `06_structs_and_enums.yar` lists `Point`, `Color`, and `main` with non-empty ranges.
 
 ---
 
