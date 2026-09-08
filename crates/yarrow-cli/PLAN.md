@@ -44,7 +44,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–11 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–12 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -61,7 +61,8 @@ Stages 1–11 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Driver polish and optional tools.
+No further CLI stages. Optional polish lives in Later.
+
 ### Stage 9 - Executable emit from `compile` ✅
 
 `--emit object|exe` on `compile` (default `object` when `--target object`). `exe` calls `Session::compile_executable_source` and sets execute permission. `run --target object` still compile-link-execs without keeping the binary.
@@ -80,15 +81,15 @@ Interactive loop on `EvalContext`. Line-oriented: snippets without top-level `fu
 
 **Gate:** `yarrow repl` starts; `42` / `"hi"` print; clean exit on EOF / `exit` / `quit`.
 
-### Stage 12 - Tooling subcommands (thin wrappers)
+### Stage 12 - Tooling subcommands (thin wrappers) ✅
 
-Only when the other crate can run.
+Evaluated readiness; wired nothing that is not ready.
 
-1. `yarrow fmt -- …` delegates to `yarrow_fmt::format_*` in-process when [`yarrow-fmt/PLAN.md`](../yarrow-fmt/PLAN.md) Stage 11+ has landed (see that plan for style-guide stages).
-2. Optional `yarrow lsp` similarly when [`yarrow-lsp/PLAN.md`](../yarrow-lsp/PLAN.md) Stage 10+ has landed (`yarrow_lsp::run_stdio`).
-3. `yarrow clean` removes default `*.o` / known `-o` artifacts in the cwd if we document a convention; skip if still pointless.
+1. `yarrow fmt` omitted: [`yarrow-fmt/PLAN.md`](../yarrow-fmt/PLAN.md) is still pre–Stage 11 (API stub identity-format only). Wire in-process when that stage lands (see that plan’s Stage 12).
+2. `yarrow lsp` omitted: [`yarrow-lsp/PLAN.md`](../yarrow-lsp/PLAN.md) is still pre–Stage 10. Wire `yarrow_lsp::run_stdio` when that stage lands.
+3. `yarrow clean` skipped: no documented build-dir / artifact manifest; default `stem.o` / bare `stem` in cwd is not enough to clean safely.
 
-**Gate:** each wired subcommand either works or is absent from `--help` (no stub that exits `2` pretending to be real). Prefer omitting until ready.
+**Gate:** `yarrow --help` lists no `fmt` / `lsp` / `clean` stubs. `cargo fmt && cargo check && cargo clippy` green.
 
 ---
 
@@ -96,6 +97,9 @@ Only when the other crate can run.
 
 | Item                      | Notes                                                    |
 | ------------------------- | -------------------------------------------------------- |
+| `yarrow fmt` wrapper      | After `yarrow-fmt` Stage 11+; in-process `format_*`      |
+| `yarrow lsp` wrapper      | After `yarrow-lsp` Stage 10+; `run_stdio`                |
+| `yarrow clean`            | Only if a build-artifact convention is documented        |
 | Default `--target object` | Product choice; keep `jit` default until AOT is the norm |
 | `test` subcommand         | Needs a language-level test story                        |
 | ICE exit `101`            | Optional once core distinguishes ICE                     |
