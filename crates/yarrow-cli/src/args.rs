@@ -184,6 +184,13 @@ pub enum Cmd {
         program_args: Vec<OsString>,
     },
 
+    /// Interactive interpret loop (line-oriented).
+    ///
+    /// Snippets without a top-level `function` / `require` are wrapped as a
+    /// `main` body. Expressions that leave a value print as the entry result.
+    /// Exit with `exit`, `quit`, or EOF.
+    Repl,
+
     /// Print the long form of a diagnostic code.
     Explain {
         /// Diagnostic code, for example `E308`.

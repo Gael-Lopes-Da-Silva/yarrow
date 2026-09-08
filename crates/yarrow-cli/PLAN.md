@@ -33,6 +33,7 @@ src/main.rs  →  yarrow_cli::run
 | `compile`   | Codegen only; `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
 | `check`     | Semantic check only                                          |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
+| `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit` |
 | `dump`      | `--emit tokens\|ast\|ir`                                     |
 | `explain`   | Long form for a diagnostic code                              |
 | `version`   | Crate version (`-V` too)                                     |
@@ -43,7 +44,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–10 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–11 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -60,8 +61,7 @@ Stages 1–10 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Driver polish and optional tools. Prefer core Stages 20–23 before a heavy `repl`.
-
+Driver polish and optional tools.
 ### Stage 9 - Executable emit from `compile` ✅
 
 `--emit object|exe` on `compile` (default `object` when `--target object`). `exe` calls `Session::compile_executable_source` and sets execute permission. `run --target object` still compile-link-execs without keeping the binary.
@@ -74,15 +74,11 @@ Driver polish and optional tools. Prefer core Stages 20–23 before a heavy `rep
 
 **Gate:** `yarrow run --target object docs/examples/valid/01_hello.yar --` still works with no program args. With args, the child receives them (`strace`/`/proc`). Missing core argv support does not break no-arg runs.
 
-### Stage 11 - `repl` (blocked on core interpret depth)
+### Stage 11 - `repl` ✅
 
-Interactive loop on `EvalContext`.
+Interactive loop on `EvalContext`. Line-oriented: snippets without top-level `function` / `require` wrap as `main`; leftover stack values (W403) promote to `end with <type>` so expressions print as `RunResult`. No package manager / multi-file UI.
 
-1. Depends on useful Stage 21 interpret coverage.
-2. Line-oriented: eval statements / expressions as the language allows; print `RunResult`.
-3. No package manager, no multi-file project UI.
-
-**Gate:** `yarrow repl` starts, evaluates a trivial snippet equivalent to printing a string or int, exits cleanly on EOF/`exit`.
+**Gate:** `yarrow repl` starts; `42` / `"hi"` print; clean exit on EOF / `exit` / `quit`.
 
 ### Stage 12 - Tooling subcommands (thin wrappers)
 
