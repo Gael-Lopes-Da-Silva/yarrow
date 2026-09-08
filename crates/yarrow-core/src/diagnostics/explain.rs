@@ -77,6 +77,23 @@ integer `^` or an explicit conversion if you need exponentiation on integers \
 first.",
     },
     ExplainEntry {
+        code: "E382",
+        title: "module dependency cycle",
+        body: "\
+A `require` closed a cycle in the module graph (A loads B which loads A again \
+while A is still loading). Break the cycle by removing or restructuring one \
+`require`. Shared helpers should be required from leaves toward shared modules, \
+not mutually.",
+    },
+    ExplainEntry {
+        code: "E383",
+        title: "missing or empty project root",
+        body: "\
+`check_project` needs at least one root `.yar` file. \
+`ProjectOptions::from_root_paths` fails with this code when a path is missing \
+or unreadable. Supply existing paths or in-memory `ProjectRoot` sources.",
+    },
+    ExplainEntry {
         code: "E394",
         title: "system linker or CRT missing",
         body: "\

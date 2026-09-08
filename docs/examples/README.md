@@ -4,7 +4,7 @@ Language illustrations for Yarrow. They follow [`GRAMMAR.md`](../GRAMMAR.md) and
 [`SYNTAX.md`](../SYNTAX.md), not the current compiler snapshot. The implementation
 is still catching up; treat these as the intended language shape.
 
-Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, and [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 warnings.
+Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
 
 ## How to read them
 
@@ -53,6 +53,13 @@ Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`
 | [`invalid/13_multi_parse.yar`](invalid/13_multi_parse.yar)                               | ≥2 parse diagnostics in one run    |
 | [`invalid/14_stack_underflow.yar`](invalid/14_stack_underflow.yar)                       | Stack underflow (binary op)        |
 | [`invalid/15_if_branch_mismatch.yar`](invalid/15_if_branch_mismatch.yar)                 | if/else stack join mismatch        |
+| [`invalid/16_require_cycle.yar`](invalid/16_require_cycle.yar)                           | `E382` require cycle               |
+
+## Multi-root project (Stage 28)
+
+| Path | Topic |
+| ---- | ----- |
+| [`project/`](project/) | Two roots + shared helper; `check_project` / `ProjectOptions` (see [`project/README.md`](project/README.md)) |
 
 ## Warnings (check succeeds)
 

@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects).
 
 ## Execution model
 
@@ -357,7 +357,32 @@ A complete runnable unit is:
 2. Every module reached by `require` (transitively)
 3. Linked host imports declared by the runtime registry
 
----
+A require cycle (A loads B which loads A again while A is still loading) is rejected with `E382` at the `require` site that closes the cycle.
+
+## Projects
+
+Stage 28 product shape: an **explicit set of root sources** that share module search paths. There is no project manifest or package-manager syntax in the language.
+
+| Piece | Role |
+| ----- | ---- |
+| Roots | One or more `.yar` files, each a compilation unit with its own `require` closure and optional entry |
+| Search paths | Shared `module_search_paths` plus each root’s directory (same rule as single-file sessions) |
+| Graph | Union of require edges across roots; shared modules appear once in graph metadata |
+
+Library API (`yarrow_core`):
+
+- `ProjectOptions` / `ProjectRoot` / `ProjectOptions::from_root_paths`
+- `check_project` / `Session::check_project` → `CheckedProject` (`roots` + `ModuleGraph`)
+
+Diagnostics:
+
+| Code | Meaning |
+| ---- | ------- |
+| `E380` | Unknown module (`require` path) |
+| `E382` | Module dependency cycle |
+| `E383` | Missing / empty project root |
+
+Single-file `Session::check_source` and nested `require` are unchanged. CLI / LSP project drivers come later; see [`docs/examples/project/`](examples/project/).
 
 ## Interaction with memory and types
 
