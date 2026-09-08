@@ -4,6 +4,7 @@ pub mod entry;
 pub mod interpreter;
 pub mod link;
 pub mod parser;
+pub mod project;
 pub mod runtime;
 pub mod session;
 pub mod target;
@@ -21,6 +22,9 @@ pub use parser::ParseError;
 pub use parser::Parser;
 pub use parser::ast::Program;
 pub use parser::ast::Stmt;
+pub use project::{
+    CheckedProject, ModuleGraph, ModuleGraphEdge, ProjectOptions, ProjectRoot, check_project,
+};
 pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive, linkable_archive_for};
 pub use session::{
     CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, OptLevel,

@@ -44,7 +44,7 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 | AOT         | Cross link needs matching archive + CRT / linker emulation; broader matrix (musl, Mach-O, Windows) later |
 | Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity           |
 | Warnings    | Only unused / dead-stack; more lints later                                                                    |
-| Projects    | Single-file + `require` only; no multi-root project graph (Stage 28)                                          |
+| Projects    | Multi-root check via `check_project` (Stage 28); no CLI project driver yet                                   |
 | Default     | Session / CLI still default to JIT; product switch to `object` is Stage 29                                    |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
 | LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`)             |
@@ -94,7 +94,7 @@ Only if Stage 25–26 show system `ld`/`lld` discovery is too fragile for everyd
 
 **Deferred:** Stages 25–26 keep host/cross AOT linking on PATH `ld`/`lld` with clear `E394`/`E395` diagnostics; no everyday fragility that justifies vendoring a linker.
 
-### Stage 28 - Multi-file project graph beyond `require`
+### Stage 28 - Multi-file project graph beyond `require` ✅
 
 Today: one root file + `"path" [scope] require` relative to that file / search paths. No multi-root project model.
 
@@ -104,6 +104,8 @@ Today: one root file + `"path" [scope] require` relative to that file / search p
 4. Coordinate with CLI / LSP later; this stage only lands the library graph + diagnostics.
 
 **Gate:** a documented multi-file fixture (beyond nested `require` from one root) type-checks via the new API; cycles or missing roots fail with stable codes. Existing single-file + `require` corpus still passes. No CLI subcommand required in this stage.
+
+**Done:** Product shape = explicit root set + shared search paths (RUNTIME Projects; `docs/examples/project/`). `ProjectOptions` / `check_project` / `Session::check_project` → `CheckedProject` + `ModuleGraph`. `E382` require cycles (spans); `E383` missing/empty roots; `E380` still unknown module.
 
 ### Stage 29 - Default backend `object` instead of `jit`
 

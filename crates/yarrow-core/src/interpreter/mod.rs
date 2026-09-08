@@ -27,7 +27,7 @@
 //! regions / defer, unsafe / pointers, fallible `unwrap` / `handle`, lists /
 //! maps, method calls on structs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::compiler::CompileError;
@@ -242,7 +242,8 @@ impl Interpreter {
         self.modules.clear();
 
         let mut loaded = Vec::new();
-        self.load_requires(program, &mut loaded)?;
+        let mut loading = HashSet::new();
+        self.load_requires(program, &mut loaded, &mut loading)?;
         self.modules = loaded;
 
         self.register_unit(None, program)?;
@@ -375,40 +376,48 @@ impl Interpreter {
         Ok(())
     }
 
-    fn load_requires(&mut self, program: &Program, out: &mut Vec<RequiredModule>) -> IResult<()> {
-        self.load_requires_stmts(&program.items, out)
+    fn load_requires(
+        &mut self,
+        program: &Program,
+        out: &mut Vec<RequiredModule>,
+        loading: &mut HashSet<String>,
+    ) -> IResult<()> {
+        self.load_requires_stmts(&program.items, out, loading)
     }
 
     fn load_requires_stmts(
         &mut self,
         stmts: &[Stmt],
         out: &mut Vec<RequiredModule>,
+        loading: &mut HashSet<String>,
     ) -> IResult<()> {
         for s in stmts {
             match &s.kind {
-                StmtKind::Require { path, alias } => self.load_one(path, alias, out)?,
-                StmtKind::Function(f) => self.load_requires_stmts(&f.body, out)?,
+                StmtKind::Require { path, alias } => {
+                    self.load_one(path, alias, s.span, out, loading)?
+                }
+                StmtKind::Function(f) => self.load_requires_stmts(&f.body, out, loading)?,
                 StmtKind::If {
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    self.load_requires_stmts(then_branch, out)?;
-                    self.load_requires_stmts(else_branch, out)?;
+                    self.load_requires_stmts(then_branch, out, loading)?;
+                    self.load_requires_stmts(else_branch, out, loading)?;
                 }
-                StmtKind::For { body, .. } => self.load_requires_stmts(body, out)?,
+                StmtKind::For { body, .. } => self.load_requires_stmts(body, out, loading)?,
                 StmtKind::Match {
                     cases, else_branch, ..
                 } => {
                     for c in cases {
-                        self.load_requires_stmts(&c.body, out)?;
+                        self.load_requires_stmts(&c.body, out, loading)?;
                     }
-                    self.load_requires_stmts(else_branch, out)?;
+                    self.load_requires_stmts(else_branch, out, loading)?;
                 }
                 StmtKind::Defer { body } | StmtKind::Unsafe { body } => {
-                    self.load_requires_stmts(body, out)?;
+                    self.load_requires_stmts(body, out, loading)?;
                 }
-                StmtKind::Handle { body, .. } => self.load_requires_stmts(body, out)?,
+                StmtKind::Handle { body, .. } => self.load_requires_stmts(body, out, loading)?,
                 _ => {}
             }
         }
@@ -419,7 +428,9 @@ impl Interpreter {
         &mut self,
         path: &str,
         alias: &Option<String>,
+        span: Span,
         out: &mut Vec<RequiredModule>,
+        loading: &mut HashSet<String>,
     ) -> IResult<()> {
         let (module_path, item) = self.resolve_require(path)?;
         if out.iter().any(|m| m.path == module_path) {
@@ -432,7 +443,14 @@ impl Interpreter {
             }
             return Ok(());
         }
-        let source = self.loader.load(&module_path).map_err(|e| {
+        if !loading.insert(module_path.clone()) {
+            return Err(InterpretError::new(
+                format!("module dependency cycle involving '{module_path}'"),
+                span,
+                "E382",
+            ));
+        }
+        let source = self.loader.load_at(&module_path, span).map_err(|e| {
             InterpretError::new(e.message().to_string(), e.span(), e.code().to_string())
         })?;
         let tokens = Tokenizer::new(source)
@@ -447,7 +465,8 @@ impl Interpreter {
                 d.map(|x| x.code.clone()).unwrap_or_else(|| "E200".into()),
             )
         })?;
-        self.load_requires(&sub, out)?;
+        self.load_requires(&sub, out, loading)?;
+        loading.remove(&module_path);
         out.push(RequiredModule {
             path: module_path,
             alias: alias.clone(),

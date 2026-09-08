@@ -11,7 +11,7 @@ mod errors;
 pub(crate) mod modules;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use backend::CodeModule;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -264,6 +264,8 @@ pub struct Compiler {
     /// a `require` is processed once. `None` means the whole module was
     /// imported.
     loaded: HashMap<String, Option<String>>,
+    /// Module paths currently being loaded (DFS stack). Re-entering yields `E382`.
+    loading: HashSet<String>,
     /// Module alias -> the single item it exposes, for item imports under a
     /// scope (`"std.math.sqrt" s require` -> only `s.sqrt` resolves).
     item_aliases: HashMap<String, String>,
@@ -396,6 +398,7 @@ impl Compiler {
             aliases: HashMap::new(),
             plain_funcs: HashMap::new(),
             loaded: HashMap::new(),
+            loading: HashSet::new(),
             item_aliases: HashMap::new(),
             extra_plain_items: Vec::new(),
             error_ids: HashMap::new(),
@@ -643,6 +646,7 @@ impl Compiler {
         self.aliases.clear();
         self.plain_funcs.clear();
         self.loaded.clear();
+        self.loading.clear();
         self.item_aliases.clear();
         self.extra_plain_items.clear();
         self.enum_ids.clear();
@@ -660,7 +664,7 @@ impl Compiler {
         self.defined_funcs.clear();
         self.require_warns.clear();
         let mut loaded = Vec::new();
-        self.load_requires(program, &mut loaded)?;
+        self.load_requires(program, None, &mut loaded)?;
         self.modules = loaded;
         self.collect_root_require_warns(program);
 
@@ -935,14 +939,24 @@ impl Compiler {
 
     /// Depth-first load of every module referenced by `program.items`,
     /// including `require` statements nested inside function bodies.
-    fn load_requires(&mut self, program: &Program, out: &mut Vec<RequiredModule>) -> CResult<()> {
+    ///
+    /// `from_module` is the dotted path of the file being scanned (`None` for
+    /// the session root); used so cycle / load diagnostics point at that file.
+    fn load_requires(
+        &mut self,
+        program: &Program,
+        from_module: Option<&str>,
+        out: &mut Vec<RequiredModule>,
+    ) -> CResult<()> {
         for item in &program.items {
             match &item.kind {
-                StmtKind::Require { path, alias } => self.load_one(path, alias, out)?,
-                StmtKind::Function(f) => self.load_requires_stmts(&f.body, out)?,
+                StmtKind::Require { path, alias } => {
+                    self.load_one(path, alias, item.span, from_module, out)?
+                }
+                StmtKind::Function(f) => self.load_requires_stmts(&f.body, from_module, out)?,
                 StmtKind::Implement(imp) => {
                     for f in &imp.functions {
-                        self.load_requires_stmts(&f.body, out)?;
+                        self.load_requires_stmts(&f.body, from_module, out)?;
                     }
                 }
                 _ => {}
@@ -1020,31 +1034,34 @@ impl Compiler {
     fn load_requires_stmts(
         &mut self,
         stmts: &[Stmt],
+        from_module: Option<&str>,
         out: &mut Vec<RequiredModule>,
     ) -> CResult<()> {
         for s in stmts {
             match &s.kind {
-                StmtKind::Require { path, alias } => self.load_one(path, alias, out)?,
+                StmtKind::Require { path, alias } => {
+                    self.load_one(path, alias, s.span, from_module, out)?
+                }
                 StmtKind::If {
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    self.load_requires_stmts(then_branch, out)?;
-                    self.load_requires_stmts(else_branch, out)?;
+                    self.load_requires_stmts(then_branch, from_module, out)?;
+                    self.load_requires_stmts(else_branch, from_module, out)?;
                 }
                 StmtKind::Defer { body } | StmtKind::Handle { body, .. } => {
-                    self.load_requires_stmts(body, out)?
+                    self.load_requires_stmts(body, from_module, out)?
                 }
-                StmtKind::Unsafe { body } => self.load_requires_stmts(body, out)?,
-                StmtKind::For { body, .. } => self.load_requires_stmts(body, out)?,
+                StmtKind::Unsafe { body } => self.load_requires_stmts(body, from_module, out)?,
+                StmtKind::For { body, .. } => self.load_requires_stmts(body, from_module, out)?,
                 StmtKind::Match {
                     cases, else_branch, ..
                 } => {
                     for c in cases {
-                        self.load_requires_stmts(&c.body, out)?;
+                        self.load_requires_stmts(&c.body, from_module, out)?;
                     }
-                    self.load_requires_stmts(else_branch, out)?;
+                    self.load_requires_stmts(else_branch, from_module, out)?;
                 }
                 _ => {}
             }
@@ -1062,6 +1079,8 @@ impl Compiler {
         &mut self,
         path: &str,
         alias: &Option<String>,
+        span: Span,
+        from_module: Option<&str>,
         out: &mut Vec<RequiredModule>,
     ) -> CResult<()> {
         let (module_path, item) = self.resolve_require(path)?;
@@ -1083,11 +1102,40 @@ impl Compiler {
             }
             return Ok(());
         }
+        if !self.loading.insert(module_path.clone()) {
+            let mut err = CompileError::new(
+                format!("module dependency cycle involving '{module_path}'"),
+                span,
+                "E382",
+            )
+            .with_help("break the cycle by removing or restructuring one `require`");
+            if let Some(from) = from_module {
+                err = err.with_path(from);
+            } else if !self.source_path.is_empty() {
+                err = err.with_path(self.source_path.clone());
+            }
+            return Err(err);
+        }
+        let source = self.loader.load_at(&module_path, span).map_err(|e| {
+            if let Some(from) = from_module {
+                e.with_path(from)
+            } else if !self.source_path.is_empty() {
+                e.with_path(self.source_path.clone())
+            } else {
+                e
+            }
+        })?;
+        let tokens = Tokenizer::new(source)
+            .tokenize()
+            .map_err(|e| CompileError::from(e).with_path(module_path.clone()))?;
+        let sub = parse(tokens).map_err(|batch| {
+            let mut err = CompileError::from(batch);
+            err = err.with_path(module_path.clone());
+            err
+        })?;
+        self.load_requires(&sub, Some(&module_path), out)?;
+        self.loading.remove(&module_path);
         self.loaded.insert(module_path.clone(), item.clone());
-        let source = self.loader.load(&module_path)?;
-        let tokens = Tokenizer::new(source).tokenize()?;
-        let sub = parse(tokens)?;
-        self.load_requires(&sub, out)?;
         out.push(RequiredModule {
             path: module_path,
             alias: alias.clone(),

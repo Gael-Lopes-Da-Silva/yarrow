@@ -221,6 +221,16 @@ impl Session {
         })
     }
 
+    /// Type-check a multi-root project (Stage 28).
+    ///
+    /// See [`crate::project::check_project`]. Single-file [`Self::check_source`]
+    /// remains the API for one root.
+    pub fn check_project(
+        options: &crate::project::ProjectOptions,
+    ) -> Result<crate::project::CheckedProject, SessionDiagnostics> {
+        crate::project::check_project(options)
+    }
+
     /// Compile source according to [`CompileOptions::mode`].
     ///
     /// - [`ExecutionMode::Jit`]: full check + JIT install (does not run `main`).

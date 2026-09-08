@@ -28,7 +28,7 @@ pub struct RequiredModule {
 }
 
 /// Resolves module paths to Yarrow source.
-pub struct ModuleLoader {
+pub(crate) struct ModuleLoader {
     search_paths: Vec<PathBuf>,
 }
 
@@ -45,10 +45,18 @@ impl ModuleLoader {
         self.search_paths.push(path.into());
     }
 
-    /// Load the source of a module by its dotted path.
+    /// Load the source of a module by its dotted path (`Span::default` on miss).
+    #[allow(dead_code)]
     pub fn load(&self, path: &str) -> CResult<String> {
+        self.load_at(path, Span::default())
+    }
+
+    /// Load module source, attaching `span` to `E380` when missing.
+    pub fn load_at(&self, path: &str, span: Span) -> CResult<String> {
         self.try_load(path).ok_or_else(|| {
-            CompileError::new(format!("unknown module '{path}'"), Span::default(), "E380")
+            CompileError::new(format!("unknown module '{path}'"), span, "E380").with_help(
+                "check the dotted path and module search paths (`-L` / `module_search_paths`)",
+            )
         })
     }
 
