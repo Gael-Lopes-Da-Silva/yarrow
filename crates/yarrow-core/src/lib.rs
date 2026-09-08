@@ -22,8 +22,8 @@ pub use parser::ast::Program;
 pub use parser::ast::Stmt;
 pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive};
 pub use session::{
-    CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, Session,
-    SessionArtifact, SessionDiagnostics, render_batch,
+    CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, OptLevel,
+    Session, SessionArtifact, SessionDiagnostics, render_batch,
 };
 pub use tokenizer::Token;
 pub use tokenizer::TokenKind;

@@ -29,10 +29,7 @@ impl Default for FormatOptions {
 #[derive(Debug)]
 pub enum FormatError {
     /// Filesystem read/write failure.
-    Io {
-        path: PathBuf,
-        source: io::Error,
-    },
+    Io { path: PathBuf, source: io::Error },
     // Later stages: parse diagnostics from `yarrow_core`.
 }
 

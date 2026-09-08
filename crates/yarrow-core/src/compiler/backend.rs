@@ -13,8 +13,10 @@ use cranelift_module::{
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::compiler::CompileError;
+use crate::compiler::dwarf::{self, DebugFnInfo};
 use crate::diagnostics::Span;
 use crate::runtime;
+use crate::session::OptLevel;
 
 use super::types::CResult;
 
@@ -25,26 +27,29 @@ pub(crate) enum CodeModule {
 }
 
 impl CodeModule {
-    pub(crate) fn new_jit() -> CResult<Self> {
-        let mut jb = JITBuilder::new(default_libcall_names())
-            .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
+    pub(crate) fn new_jit(opt_level: OptLevel) -> CResult<Self> {
+        let mut jb = JITBuilder::with_flags(
+            &[("opt_level", opt_level.as_cranelift())],
+            default_libcall_names(),
+        )
+        .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
         runtime::install_runtime(&mut jb);
         Ok(Self::Jit(Box::new(JITModule::new(jb))))
     }
 
-    pub(crate) fn new_object(module_name: &str) -> CResult<Self> {
-        Self::new_object_module(module_name).map(Self::Object)
+    pub(crate) fn new_object(module_name: &str, opt_level: OptLevel) -> CResult<Self> {
+        Self::new_object_module(module_name, opt_level).map(Self::Object)
     }
 
     /// Cranelift module used only as a semantic-analysis vehicle (Stage 24).
     ///
     /// Same ISA / declare surface as object emit, but never finished into bytes
     /// and never backed by a JIT linker (`install_runtime` is skipped).
-    pub(crate) fn new_check() -> CResult<Self> {
-        Self::new_object_module("yarrow.check").map(Self::Object)
+    pub(crate) fn new_check(opt_level: OptLevel) -> CResult<Self> {
+        Self::new_object_module("yarrow.check", opt_level).map(Self::Object)
     }
 
-    fn new_object_module(module_name: &str) -> CResult<Box<ObjectModule>> {
+    fn new_object_module(module_name: &str, opt_level: OptLevel) -> CResult<Box<ObjectModule>> {
         let mut flag_builder = settings::builder();
         // Match JITBuilder defaults except PIC: object files need position-independent code.
         flag_builder
@@ -52,6 +57,9 @@ impl CodeModule {
             .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
         flag_builder
             .set("is_pic", "true")
+            .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
+        flag_builder
+            .set("opt_level", opt_level.as_cranelift())
             .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
         let isa_builder = cranelift_native::builder().map_err(|msg| {
             CompileError::new(
@@ -89,10 +97,14 @@ impl CodeModule {
     /// Consume an object backend and emit relocatable bytes (ELF / Mach-O / COFF).
     ///
     /// Host runtime symbols stay as `Linkage::Import` for a later link step.
-    pub(crate) fn finish_object(self) -> CResult<Vec<u8>> {
+    /// When `debug` is set, attach DWARF for the listed functions.
+    pub(crate) fn finish_object(self, debug: Option<(&str, &[DebugFnInfo])>) -> CResult<Vec<u8>> {
         match self {
             Self::Object(m) => {
-                let product = m.finish();
+                let mut product = m.finish();
+                if let Some((source_path, funcs)) = debug {
+                    dwarf::emit_dwarf(&mut product, source_path, funcs)?;
+                }
                 product.emit().map_err(|e| {
                     CompileError::new(
                         format!("failed to emit object bytes: {e}"),

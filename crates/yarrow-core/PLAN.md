@@ -27,7 +27,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
 | Session API | `check` / `compile` (JIT) / `compile_object` / `compile_executable` / `interpret`                          |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu; no `cc` compile step)             |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel` (Stage 25) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 21 subset of `docs/examples/valid/**` (stdout matches JIT); structs / errors / regions still E393    |
 
@@ -41,7 +41,7 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile (Phase F Stages 25–26)                            |
+| AOT         | linux-gnu host only; no cross-compile yet (Phase F Stage 26); DWARF + `-O` tiers landed (Stage 25) |
 | Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity           |
 | Warnings    | Only unused / dead-stack; more lints later                                                                    |
 | Projects    | Single-file + `require` only; no multi-root project graph (Stage 28)                                          |
@@ -56,7 +56,7 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 
 Focus: AOT polish on linux-gnu first (debug + opts), then target / linker story, then project shape and default backend. Keep interpreter corpus growth opportunistic when it unblocks a gate; do not invent language features.
 
-### Stage 25 - AOT DWARF and `-O` tiers
+### Stage 25 - AOT DWARF and `-O` tiers ✅
 
 Everyday AOT on linux-gnu is stable; add debug info and controllable optimization.
 
@@ -66,6 +66,8 @@ Everyday AOT on linux-gnu is stable; add debug info and controllable optimizatio
 4. Document the flags / options in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) (AOT section); CLI wiring stays in `yarrow-cli` once core exposes the options.
 
 **Gate:** `compile_executable_source` (or `compile_object_source` + link) of a small valid example produces a binary with inspectable debug info (e.g. `llvm-dwarfdump` / `readelf` shows compilation units or function names). At least two opt tiers produce distinct Cranelift flags or measurable IR/object differences. `cargo clippy` green; JIT corpus gates unchanged.
+
+**Done:** `CompileOptions::{opt_level, debug_info}`; DWARF via gimli on object finish; JIT honors `opt_level`; RUNTIME documents both.
 
 ### Stage 26 - Cross-compile triples
 

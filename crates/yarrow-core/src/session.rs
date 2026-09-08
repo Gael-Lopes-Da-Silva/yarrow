@@ -23,6 +23,32 @@ pub enum ExecutionMode {
     Interpret,
 }
 
+/// Cranelift optimization tier for JIT / object / executable backends (Stage 25).
+///
+/// Maps onto Cranelift `opt_level` settings. Default is [`OptLevel::None`]
+/// (debug-friendly).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptLevel {
+    /// No Cranelift mid-end opts (`opt_level=none`).
+    #[default]
+    None,
+    /// Optimize for speed (`opt_level=speed`).
+    Speed,
+    /// Optimize for speed and size (`opt_level=speed_and_size`).
+    Size,
+}
+
+impl OptLevel {
+    /// Cranelift settings string for `opt_level`.
+    pub fn as_cranelift(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Speed => "speed",
+            Self::Size => "speed_and_size",
+        }
+    }
+}
+
 /// Options for one compile/check session.
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
@@ -42,6 +68,13 @@ pub struct CompileOptions {
     pub error_limit: usize,
     /// Backend / check mode for this session.
     pub mode: ExecutionMode,
+    /// Cranelift optimization tier (JIT, object, and executable).
+    pub opt_level: OptLevel,
+    /// Emit DWARF into object / executable products (ignored for JIT / check).
+    ///
+    /// Default `true`: AOT artifacts include compilation units and function
+    /// names / line mappings when spans exist.
+    pub debug_info: bool,
 }
 
 impl CompileOptions {
@@ -53,6 +86,8 @@ impl CompileOptions {
             entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
             error_limit: crate::diagnostics::DEFAULT_ERROR_LIMIT,
             mode: ExecutionMode::Jit,
+            opt_level: OptLevel::None,
+            debug_info: true,
         }
     }
 }
@@ -386,15 +421,19 @@ impl Session {
         kind: LowerKind,
     ) -> Result<Compiler, SessionDiagnostics> {
         let path = self.options.source_path.clone();
-        let mut compiler = match &kind {
-            LowerKind::Jit => Compiler::new(),
-            LowerKind::Check => Compiler::new_check(),
-            LowerKind::Object { module_name } => Compiler::new_object(module_name),
-        }
-        .map_err(|e| SessionDiagnostics {
-            file: file.clone(),
-            batch: one_compile_error(e, self.options.error_limit),
-        })?;
+        let backend = match &kind {
+            LowerKind::Jit => crate::compiler::CompilerBackend::Jit,
+            LowerKind::Check => crate::compiler::CompilerBackend::Check,
+            LowerKind::Object { module_name } => crate::compiler::CompilerBackend::Object {
+                module_name: module_name.clone(),
+            },
+        };
+        let mut compiler =
+            Compiler::with_options(backend, self.options.opt_level, self.options.debug_info)
+                .map_err(|e| SessionDiagnostics {
+                    file: file.clone(),
+                    batch: one_compile_error(e, self.options.error_limit),
+                })?;
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
         compiler.set_entry_name(self.options.entry_name.clone());

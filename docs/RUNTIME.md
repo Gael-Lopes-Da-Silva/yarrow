@@ -84,6 +84,19 @@ Exit mapping (process `main` trampoline):
 
 **Link:** `Session::compile_executable_source` links program `.o` + `libyarrow_runtime_aot.a` with `ld`/`lld` (not `cc`). Diagnostics: `E394` linker/CRT missing, `E395` link failed, `E396` runtime archive unavailable. Host support is linux-gnu for now.
 
+### AOT debug info and optimization (Stage 25)
+
+Object and executable products honor two [`CompileOptions`](../../crates/yarrow-core/src/session.rs) knobs (CLI wiring comes later):
+
+| Option | Default | Effect |
+| ------ | ------- | ------ |
+| `opt_level` | `OptLevel::None` | Cranelift `opt_level`: `none` / `speed` / `speed_and_size` (`OptLevel::Size`) |
+| `debug_info` | `true` | Emit DWARF (`.debug_info` / `.debug_line` / …) into the program object |
+
+DWARF includes a compilation unit for the source path, `DW_TAG_subprogram` entries for defined functions (Yarrow names plus process `main`), and coarse line mappings at function entries when spans exist. Inspect with `llvm-dwarfdump` or `readelf --debug-dump=info`.
+
+JIT uses the same `opt_level` (default stays debug-friendly `None`). JIT does not emit DWARF.
+
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 
 Entry: every runnable program has a top-level entry (default `main`; override via `CompileOptions::entry_name` / CLI `--main`). The driver runs it after JIT or interpret (object emit does not execute). Optional numeric return from the entry is the process exit code for native binaries; the current CLI also prints supported single return values (`void`, integer, float, bool, string).
