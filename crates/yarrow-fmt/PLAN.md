@@ -62,7 +62,7 @@ Public surface (target):
 ```rust
 pub struct FormatOptions {
     pub max_width: usize,      // default 100
-    // later: require_sort: bool, etc.
+    pub sort_requires: bool,   // default false (opt-in)
 }
 
 pub struct FormatError { /* path, diagnostics from parse, or I/O */ }
@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 9: comment spacing / trailing preserve |
+| `yarrow-fmt` crate | ✅     | Stage 10: opt-in top-level require sorting |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -244,7 +244,7 @@ Requires Stage 1.
 
 ---
 
-### Stage 10 - Require sorting (optional flag)
+### Stage 10 - Require sorting (optional flag) ✅
 
 Style-guide: std requires first, then local; alphabetical within groups.
 
@@ -252,6 +252,8 @@ Style-guide: std requires first, then local; alphabetical within groups.
 2. Only reorder top-level requires; do not move function-local requires to file top.
 
 **Gate:** fixture with shuffled `"std.…"` / local requires sorts as documented when the option is enabled; disabled path preserves order.
+
+**Notes:** `FormatOptions::sort_requires` defaults false. `require` module + construct-layout require runs: std then local (alpha within each), blank between groups when sorting; own-line comments above a require move with it; file comments above a blank stay at block top. Fixture `fixtures/stage10_requires.yar`. CLI flag still Stage 11.
 
 ---
 
