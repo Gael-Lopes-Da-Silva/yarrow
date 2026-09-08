@@ -60,3 +60,7 @@ After a successful check, `textDocument/inlayHint` places type annotations after
 ## Rename
 
 `textDocument/prepareRename` and `textDocument/rename` rename local functions, variables, types, properties, and explicit require aliases in the current file (binding-accurate identifier edits only). Keywords, scope collisions, unresolved names, and implicit / cross-module require renames are rejected with a clear error; module path strings are not rewritten.
+
+## Workspace symbols
+
+`workspace/symbol` searches top-level functions, types, and `implement` methods in open `.yar` buffers and one-hop resolved `require` files (no full project crawl). Matching is case-insensitive substring (prefix matches sort first); results are capped at 100. Empty query returns a bounded list. Closed / unchecked trees stay invisible.
