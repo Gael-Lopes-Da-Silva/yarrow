@@ -1,12 +1,13 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 7 adds
-//! same-file references and `require` cross-file go-to-definition.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 8 adds
+//! full-document formatting via `yarrow_fmt`.
 
 mod analysis;
 mod completion;
 mod definition;
 mod document;
+mod format;
 mod hover;
 mod modules;
 mod position;
@@ -21,11 +22,12 @@ use std::time::Duration;
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, ReferenceParams, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -33,6 +35,7 @@ pub use analysis::{check_document, uri_to_source_path};
 pub use completion::completions;
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
+pub use format::format_document;
 pub use hover::hover as hover_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use references::find_references;
@@ -213,6 +216,7 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec!["\"".into()]),
                     ..Default::default()
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -466,5 +470,30 @@ impl LanguageServer for Backend {
             position,
             include_declaration,
         ))
+    }
+
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        // Client FormattingOptions are ignored; style comes from yarrow-fmt defaults.
+        let _ = params.options;
+        Ok(format::format_document(&text, encoding))
     }
 }

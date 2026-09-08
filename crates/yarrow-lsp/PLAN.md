@@ -107,12 +107,12 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 7: refs + require cross-file def             |
+| `yarrow-lsp` crate | ✅     | Stage 8: full-doc format via yarrow-fmt           |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
 | Cross-file resolve | ⚠      | Works inside compile via `require`; no index API  |
-| `yarrow-fmt`       | ⬜     | Format feature blocked on fmt Stage 11            |
+| `yarrow-fmt`       | ✅     | `format_source` used for `textDocument/formatting` |
 | CLI `yarrow lsp`   | ⬜     | Thin wrapper after Stage 10                       |
 
 ---
@@ -220,9 +220,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 8 - Formatting (depends on `yarrow-fmt`)
-
-Blocked on [`yarrow-fmt` Stage 11+](../yarrow-fmt/PLAN.md).
+### Stage 8 - Formatting (depends on `yarrow-fmt`) ✅
 
 1. `textDocument/formatting` (and optional range formatting later).
 2. Call `yarrow_fmt::format_source` with default options.
@@ -230,6 +228,8 @@ Blocked on [`yarrow-fmt` Stage 11+](../yarrow-fmt/PLAN.md).
 4. On format / parse failure: show diagnostic or return error; do not partially corrupt the buffer.
 
 **Gate:** format request on a deliberately messy but parseable buffer returns edits that match `format_source`. Idempotent format yields empty edits.
+
+**Done:** `textDocument/formatting` via `yarrow_fmt::format_source` (default `FormatOptions`); full-buffer replace `TextEdit` when changed, empty edits when already formatted; parse failure returns null (no partial rewrite). Client `FormattingOptions` ignored (style from fmt). Scripted gate: messy buffer → edits matching `format_source`; second format on result → empty.
 
 ---
 
