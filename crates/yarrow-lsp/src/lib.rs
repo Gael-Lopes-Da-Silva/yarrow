@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 16 adds
-//! `workspace/symbol` over open buffers and resolved `require`s.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 17 adds
+//! `textDocument/rangeFormatting` via `yarrow_fmt::format_range`.
 
 mod analysis;
 mod code_action;
@@ -29,14 +29,14 @@ use tower_lsp_server::jsonrpc::{Error as LspErrorRpc, Result as LspResult};
 use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny, Location, MessageType,
-    OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny,
+    Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions,
+    RenameParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
     WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -48,7 +48,7 @@ pub use completion::completions;
 pub use config::{InitializationOptions, LspConfig};
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
-pub use format::format_document;
+pub use format::{format_document, format_document_range};
 pub use hover::hover as hover_at;
 pub use inlay_hints::inlay_hints as inlay_hints_at;
 pub use position::{PositionEncoding, PositionMap};
@@ -289,6 +289,14 @@ impl LanguageServer for Backend {
                 } else {
                     None
                 },
+                document_range_formatting_provider: if format_enable {
+                    Some(OneOf::Left(true))
+                } else {
+                    None
+                },
+                // On-type formatting deferred: mid-edit buffers often fail to parse,
+                // and format_range expands to whole top-level items (too aggressive
+                // for a keystroke). Prefer explicit range / full-document format.
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![code_action::EXPLAIN_COMMAND.into()],
@@ -712,6 +720,33 @@ impl LanguageServer for Backend {
         // Client FormattingOptions are ignored; style comes from yarrow-fmt defaults.
         let _ = params.options;
         Ok(format::format_document(&text, encoding))
+    }
+
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        if !self.config_snapshot().format_enable {
+            return Ok(None);
+        }
+        let uri = params.text_document.uri;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let _ = params.options;
+        Ok(format::format_document_range(&text, params.range, encoding))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
