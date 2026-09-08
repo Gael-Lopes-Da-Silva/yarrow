@@ -2,7 +2,7 @@
 
 How Yarrow source (`.yar`) should look. Language rules live in [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md); this document is about layout, naming, and idiomatic form.
 
-The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters should target this guide.
+The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide.
 
 ---
 

@@ -191,6 +191,33 @@ pub enum Cmd {
     /// Exit with `exit`, `quit`, or EOF.
     Repl,
 
+    /// Format Yarrow source to match the style guide.
+    ///
+    /// Delegates in-process to `yarrow_fmt` (same as the `yarrow-fmt` binary).
+    /// Exit: 0 ok / already formatted; 1 would change (`--check`) or format
+    /// failure; 2 usage / I/O.
+    Fmt {
+        /// Exit 1 if any file would change; do not write.
+        #[arg(long)]
+        check: bool,
+
+        /// Read source from stdin and write formatted text to stdout.
+        #[arg(long)]
+        stdin: bool,
+
+        /// Soft wrap width in columns (default 100).
+        #[arg(long, value_name = "N", default_value_t = 100)]
+        max_width: usize,
+
+        /// Sort top-level requires (std first, then local; alphabetical within groups).
+        #[arg(long)]
+        sort_requires: bool,
+
+        /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
+        #[arg(value_name = "PATH")]
+        paths: Vec<std::path::PathBuf>,
+    },
+
     /// Start the Yarrow language server (LSP over stdio).
     ///
     /// Delegates in-process to `yarrow_lsp`. Point editors at `yarrow lsp`.

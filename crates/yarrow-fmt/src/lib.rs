@@ -3,11 +3,13 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 11: construct layout through blank lines, plus a `yarrow-fmt` binary
-//! (`--check`, in-place write, `--stdin`, directory recurse, `--sort-requires`).
+//! Stage 12: shared [`run_fmt`] driver for the `yarrow-fmt` binary and
+//! `yarrow fmt` CLI subcommand (`--check`, in-place, `--stdin`, directory
+//! recurse, `--sort-requires`).
 
 mod blank;
 mod comment;
+mod driver;
 mod hygiene;
 mod indent;
 mod ir;
@@ -18,6 +20,7 @@ mod require;
 
 pub use blank::apply_blank_lines;
 pub use comment::{normalize_comment, trailing_suffix};
+pub use driver::{FmtInput, run_fmt};
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};

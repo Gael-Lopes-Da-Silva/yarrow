@@ -1124,6 +1124,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "yarrow_core",
+ "yarrow_fmt",
  "yarrow_lsp",
 ]
 

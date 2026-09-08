@@ -1,5 +1,4 @@
 # Struct literal, implement block, borrow + method call, and enum match.
-
 "std.io" io require
 
 Point struct
@@ -12,8 +11,7 @@ Point implement
 		reference<Point>
 	do
 		self const reference<Point>
-		self.x self.x * self.y self.y * +
-		return
+		self.x self.x * self.y self.y * + return
 	end with i32
 end
 

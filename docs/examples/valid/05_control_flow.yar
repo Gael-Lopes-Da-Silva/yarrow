@@ -1,5 +1,4 @@
 # if/else, value match, while-style for, and iterable for.
-
 "std.io" io require
 "std.loop" loop require
 
@@ -27,13 +26,13 @@ main function do
 
 	0 i mutable i32
 	i 3 < for
-		i dup 1 + set
+		i 1 + i set
 	end
 
 	[10 20 30] numbers static array<i32 3>
 	0 sum mutable i32
 	numbers for
-		sum dup loop.value + set
+		sum loop.value + sum set
 	end
 
 	"control ok" io.write_line call

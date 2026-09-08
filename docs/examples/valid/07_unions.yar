@@ -1,5 +1,4 @@
 # Named union: store either member, match with Type case, autoderef in arms.
-
 "std.io" io require
 
 Value union
@@ -21,9 +20,6 @@ main function do
 			msg const reference<string>
 			msg "!" ~
 			io.write_line call
-		end
-
-		else
 		end
 	end
 end

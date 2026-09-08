@@ -76,6 +76,16 @@ where
         ) => commands::interpret_file(&file, &main, &program_args, &cli.global),
         (Some(Cmd::Repl), None) => commands::run_repl(&cli.global),
         (
+            Some(Cmd::Fmt {
+                check,
+                stdin,
+                max_width,
+                sort_requires,
+                paths,
+            }),
+            None,
+        ) => commands::run_fmt_command(paths, check, stdin, max_width, sort_requires),
+        (
             Some(Cmd::Lsp {
                 stdio,
                 search_paths,
@@ -110,7 +120,7 @@ where
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow lsp"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp"
             );
             ExitCode::from(2)
         }

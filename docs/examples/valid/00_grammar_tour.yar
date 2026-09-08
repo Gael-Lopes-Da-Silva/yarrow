@@ -1,5 +1,4 @@
 # Runnable twin of the illustrative program in docs/GRAMMAR.md.
-
 # =============================================================================
 # Yarrow at a glance
 # =============================================================================
@@ -9,40 +8,32 @@
 #
 # Related docs: SYNTAX.md (EBNF), AST.md, TYPE_SYSTEM.md, MEMORY_MODEL.md,
 # RUNTIME.md, STYLE_GUIDE.md.
-
 # =============================================================================
 # Modules
 # =============================================================================
 # Form: "path" [alias] require
-#   - With alias: bindings go under that scope (io.write_line).
-#   - Without alias: bindings enter the current scope.
-#   - Item path ("std.math.sqrt"): import only that function into the current scope.
+# - With alias: bindings go under that scope (io.write_line).
+# - Without alias: bindings enter the current scope.
+# - Item path ("std.math.sqrt"): import only that function into the current scope.
 # Private top-level entities stay file-local and are not exported.
+"std.io" io require # Whole std.io module → scope named io
+"std.error" error require # Whole std.error module → scope named error
 
-"std.io" io require           # Whole std.io module → scope named io
-"std.error" error require     # Whole std.error module → scope named error
 # "std.math.sqrt" require     # Item import: only sqrt into the current scope
 # "std.math" require          # Whole module into the current scope
-
 # =============================================================================
 # Functions (basics): operators, literals, stack, variables
 # =============================================================================
 # Visibility defaults to private. Marking `private` here is therefore optional
 # but documents intent. Omit `with Type` to return void.
-
 my_function private function do
-	# -------------------------------------------------------------------------
-	# Arithmetic
-	# -------------------------------------------------------------------------
-	# Binary ops pop two values (rightmost / top first as the right operand) and
-	# push one result. Order on the stack before the op: [left, right].
-	1 2 +    # 1 + 2 → 3
-	5 3 -    # 5 - 3 → 2
-	4 2 *    # 4 * 2 → 8
-	10 4 /   # 10 / 4 → 2.5 (true division)
-	10 3 //  # 10 // 3 → 3 (floor division)
-	10 3 %   # 10 % 3 → 1
-	2 3 ^    # 2 ^ 3 → 8
+	1 2 + # 1 + 2 → 3
+	5 3 - # 5 - 3 → 2
+	4 2 * # 4 * 2 → 8
+	10 4 / # 10 / 4 → 2.5 (true division)
+	10 3 // # 10 // 3 → 3 (floor division)
+	10 3 % # 10 % 3 → 1
+	2 3 ^ # 2 ^ 3 → 8
 	# Stack: [3, 2, 8, 2.5, 3, 1, 8]
 	drop
 
@@ -51,7 +42,7 @@ my_function private function do
 	# -------------------------------------------------------------------------
 	# `~` joins strings (autoderef through reference<string>). `+` is arithmetic
 	# (and pointer byte-offset) only; it is not overloaded for strings.
-	"hello" " world" ~    # "hello world"
+	"hello" " world" ~ # "hello world"
 	# Stack: ["hello world"]
 	drop
 
@@ -60,9 +51,9 @@ my_function private function do
 	# -------------------------------------------------------------------------
 	# `and` / `or` / `not` on bools are logical. The same words on integers are
 	# bitwise (see below).
-	true false and  # false
-	true false or   # true
-	true not        # false
+	true false and # false
+	true false or # true
+	true not # false
 	# Stack: [false, true, false]
 	drop
 
@@ -70,24 +61,24 @@ my_function private function do
 	# Comparison
 	# -------------------------------------------------------------------------
 	# Always push a bool.
-	1 2 ==    # false
-	1 2 !=    # true
-	5 3 >     # true
-	3 5 <     # true
-	5 3 >=    # true
-	3 5 <=    # true
+	1 2 == # false
+	1 2 != # true
+	5 3 > # true
+	3 5 < # true
+	5 3 >= # true
+	3 5 <= # true
 	# Stack: [false, true, true, true, true, true]
 	drop
 
 	# -------------------------------------------------------------------------
 	# Bitwise (integers)
 	# -------------------------------------------------------------------------
-	1 2 and      # 0
-	1 5 or       # 5
-	4 5 xor      # 1
-	5 2 lshift   # 20
-	5 2 rshift   # 1
-	5 not        # -6 (two's complement style bitwise not)
+	1 2 and # 0
+	1 5 or # 5
+	4 5 xor # 1
+	5 2 lshift # 20
+	5 2 rshift # 1
+	5 not # -6 (two's complement style bitwise not)
 	# Stack: [0, 5, 1, 20, 1, -6]
 	drop
 
@@ -95,43 +86,42 @@ my_function private function do
 	# Literals and typeof
 	# -------------------------------------------------------------------------
 	# Integer literals take the smallest fitting type:
-	#   positive → smallest unsigned; negative → smallest signed.
+	# positive → smallest unsigned; negative → smallest signed.
 	# Floats take the smallest fitting float. Underscores are digit separators.
-	42        # u8
-	-900      # i16
-	1_000     # u16
-	0b100110  # u8 (38)
-	0xAB12    # u16 (43890)
-	3.14      # f16
-	6_329.5   # f16
-	"hello"   # string
-	'\n'      # rune (character)
-	true      # bool
+	42 # u8
+	-900 # i16
+	1_000 # u16
+	0b100110 # u8 (38)
+	0xAB12 # u16 (43890)
+	3.14 # f16
+	6_329.5 # f16
+	"hello" # string
+	'\n' # rune (character)
+	true # bool
+
 	# Stack: [42, -900, 1_000, 0b100110, 0xAB12, 3.14, 6_329.5, "hello", '\n', true]
-
 	# typeof: pop a value, push its static type (usable with == / !=).
-	#   - Simple / copy values are consumed.
-	#   - Heap values usually arrive as borrows (variable read or dup); typeof
-	#     releases that borrow and leaves the data owned by its owner.
-	#   - For reference<T>, reports the pointee type T.
+	# - Simple / copy values are consumed.
+	# - Heap values usually arrive as borrows (variable read or dup); typeof
+	# releases that borrow and leaves the data owned by its owner.
+	# - For reference<T>, reports the pointee type T.
 	42 typeof
-	# Stack: [..., true, u8]
 
+	# Stack: [..., true, u8]
 	# Copy types (dup and variable read push a real copy):
-	#   integers, floats, bool, rune, enum, array<T N>, pointer<T>
+	# integers, floats, bool, rune, enum, array<T N>, pointer<T>
 	#
 	# Non-copy types (variable read pushes a borrow; use borrow / move):
-	#   string, list<T>, hashmap<K V>, unions, structs
-
+	# string, list<T>, hashmap<K V>, unions, structs
 	# -------------------------------------------------------------------------
 	# Stack manipulation
 	# -------------------------------------------------------------------------
-	drop         # Clear the whole stack; release every borrow on it
-	42 dup       # [42] → [42, 42]  (copy types only; non-copy → use borrow)
-	1 2 swap     # [1, 2] → [2, 1]
-	1 2 3 rot    # [1, 2, 3] → [2, 3, 1]
-	1 2 3 unrot  # [1, 2, 3] → [3, 1, 2]
-	42 pop       # Remove top; if it is a reference, release the borrow
+	drop # Clear the whole stack; release every borrow on it
+	42 42 # [42] → [42, 42]  (copy types only; non-copy → use borrow)
+	2 1 # [1, 2] → [2, 1]
+	2 3 1 # [1, 2, 3] → [2, 3, 1]
+	3 1 2 # [1, 2, 3] → [3, 1, 2]
+	42 pop # Remove top; if it is a reference, release the borrow
 
 	# -------------------------------------------------------------------------
 	# Container literals
@@ -151,20 +141,17 @@ my_function private function do
 	# Form: <value> <name> (mutable|const|static) <Type>
 	# Declaration pops the value (implicit coercion to Type allowed) and binds
 	# it. The variable owns non-copy storage. Names: camelCase (see STYLE_GUIDE).
-	#   mutable  - reassign with `name set` (old value dropped)
-	#   const    - set once at runtime
-	#   static   - compile-time constant; initializer must be known statically
+	# mutable  - reassign with `name set` (old value dropped)
+	# const    - set once at runtime
+	# static   - compile-time constant; initializer must be known statically
 	# Reading the name pushes a copy (copy types) or a borrow (non-copy types).
-	42 myVar mutable i32       # coerce u8 → i32; myVar owns 42
-	23 myVar set               # drop old value; now 23
+	42 myVar mutable i32 # coerce u8 → i32; myVar owns 42
+	23 myVar set # drop old value; now 23
 	100 myConst const i32
 	50 myStatic static i32
-	myVar
-	# Stack: [23]
-	myVar typeof
-	# Stack: [23, i32]
-	drop
 
+	# Stack: [23]
+	# Stack: [23, i32]
 	# -------------------------------------------------------------------------
 	# Nested function + call
 	# -------------------------------------------------------------------------
@@ -174,27 +161,13 @@ my_function private function do
 	# the top, so the last parameter is bound first.
 	# Call form: <args...> <fn> call
 	add function
-		i32          # first param: moved in; implicit coercion allowed
-		i32 copy     # second param: deep-copied into the local stack
+		i32
+		i32 copy
 	do
-		# Stack on entry: [<i32>, <i32>]  (deep → shallow)
-		+
-		# Stack: [<i32>]
-		return       # return top; drop any leftovers
+		+ return
 	end with i32
 
-	3 4
-	# Stack: [3, 4]
-	add call
-	# Stack: [7]  (both arguments consumed; sum pushed)
-	drop
-
-	# -------------------------------------------------------------------------
-	# Control flow: if / else
-	# -------------------------------------------------------------------------
-	# Condition must already be a bool on the stack. No else-if; use match for
-	# multi-way branches. Then/else must leave compatible stacks at join.
-	5 10 < if
+	myVar myVar typeof drop 3 4 add call drop 5 10 < if
 		"less" io.write_line call
 	else
 		"not less" io.write_line call
@@ -215,7 +188,6 @@ my_function private function do
 	# First true case runs; otherwise `else`.
 	85 score const i32
 	score match
-		# Stack during match: [85] (borrowed subject)
 		dup 85 == case
 			"exact match" io.write_line call
 		end
@@ -238,9 +210,8 @@ my_function private function do
 
 	0 counter mutable i32
 	counter 5 < for
-		counter dup 1 + set
+		counter 1 + counter set
 		loop.break
-		# loop.continue
 	end
 
 	# -------------------------------------------------------------------------
@@ -253,8 +224,7 @@ my_function private function do
 	0 sum mutable i32
 
 	numbers for
-		sum dup loop.value + set
-		# loop.index
+		sum loop.value + sum set
 	end
 
 	(43 54 65) myList static list<i32>
@@ -269,7 +239,6 @@ end
 # Methods are declared in `Type implement` ... `end`. Receivers are usually
 # reference<T> (add `mutable` when the method must mutate the pointee).
 # Field and method access autoderefs through reference<T>.
-
 Point private struct
 	i32 x public
 	i32 y private
@@ -280,8 +249,7 @@ Point implement
 		reference<Point>
 	do
 		self const reference<Point>
-		self.x self.x * self.y self.y * +
-		return
+		self.x self.x * self.y self.y * + return
 	end with i32
 end
 
@@ -292,7 +260,6 @@ struct_function function do
 	# read that already yields a borrow).
 	point borrow
 	point.distance call
-	# Stack: [500]
 end
 
 # =============================================================================
@@ -301,13 +268,10 @@ end
 # Default underlying type is i32. Write `Name <type> enum` for another carrier
 # (e.g. string). Members get sequential discriminants from 0 unless given an
 # explicit value; the next implicit member continues after that value.
-
 Color enum
-	RED      # 0
-	GREEN    # 1
-	BLUE     # 2
-	# PURPLE 32      # next would be 33
-	# YELLOW 0b101101
+	RED
+	GREEN
+	BLUE
 end
 
 enum_function function do
@@ -337,7 +301,6 @@ end
 # Union match: `Type case` (not a bool). The arm receives reference<Member>,
 # which autoderefs on read. Borrow ends when the match ends; the union is
 # unchanged. `else` is optional when every member type has a case.
-
 MyUnion union
 	i32
 	string
@@ -348,27 +311,17 @@ union_function function do
 	"Myself" val set
 
 	val typeof
-	# Stack: [MyUnion]
-	drop
-
-	val match
+		drop
+		val match
 		i32 case
-			# Stack: [reference<i32>]
 			dup *
-			# Stack: [1764]
-			# `pop` (not `drop`): keep the match subject stack intact.
 			pop
 		end
 
 		string case
-			# Stack: [reference<string>]
 			greeting const reference<string>
 			greeting " says hello!" ~
-			# Stack: ["Myself says hello!"]
 			pop
-		end
-
-		else
 		end
 	end
 end
@@ -379,7 +332,6 @@ end
 # defer ... end runs at scope exit. Multiple defers run in reverse registration
 # order. Useful for closing files, freeing regions, etc.
 # require inside a function only affects that function's scope.
-
 defer_function function do
 	"std.fs" fs require
 
@@ -394,16 +346,10 @@ defer_function function do
 	end
 	file const reference<File>
 	# file.read_line call
-	defer
-		file fs.close_file call
-	end
-
+	defer file fs.close_file call end
 	# Inner statements of one defer still run top-to-bottom; multiple defer
 	# blocks run last-registered first.
-	defer
-		"A" io.write_line call
-		"B" io.write_line call
-	end
+	defer "A" io.write_line call "B" io.write_line call end
 end
 
 # =============================================================================
@@ -412,7 +358,6 @@ end
 # Safe model: stack ownership, variable ownership, single-borrow references,
 # optional regions, and compile-time checks. No lifetime parameters on types.
 # Details: MEMORY_MODEL.md
-
 memory_function function do
 	"std.list" list require
 	"std.region" region require
@@ -424,8 +369,8 @@ memory_function function do
 	# Variables own values until set, move, or scope exit.
 	"hello" myStr mutable string
 	"world" myStr set
-	# myStr dropped at scope exit
 
+	# myStr dropped at scope exit
 	# borrow pushes reference<T>. Only one active borrow per value; it may move
 	# on the stack. pop (or consuming the reference in a call) releases it.
 	(1 2 3) myList mutable list<i32>
@@ -442,7 +387,6 @@ memory_function function do
 	# Cannot drop / pop an owner while a borrow is live:
 	# myList2 borrow
 	# myList2 pop                      # error: release the reference first
-
 	# Regions: attach heap values, free them as a unit (often via defer).
 	region.create call myRegion const i64
 	(1 2 3) myListRegion mutable list<i32>
@@ -458,7 +402,6 @@ end
 # at use (`unsafe ... end`). Unsafe does not disable borrow or ownership checks.
 # pointer<T> is a typed raw address at compile time; at runtime it is an address.
 # Validity of raw pointers is the programmer's responsibility.
-
 Cell struct
 	i32 value public
 end
@@ -468,8 +411,6 @@ pointer_function private unsafe function do
 
 	# Even inside an unsafe function, mark the ops with an unsafe block.
 	unsafe
-		# mem.allocate n → raw address (integer); coerce into pointer<T> by
-		# storing into a typed variable.
 		16 mem.allocate call p mutable pointer<i32>
 
 		# Typed store / load through pointer<T>
@@ -490,10 +431,9 @@ pointer_function private unsafe function do
 
 		# Field access autoderefs through pointer<Struct>
 		32 mem.allocate call cp mutable pointer<Cell>
-		cp.value 7 set
+		7 cp.value set
 		cp.value
 		drop
-
 		cp mem.free call
 		p mem.free call
 	end
@@ -504,30 +444,27 @@ end
 # =============================================================================
 # error declarations behave like enums specialized for failure. Optional
 # qualified name injects members from another error type:
-#   MyCustomErrors error.Error error ... end
+# MyCustomErrors error.Error error ... end
 #
 # Fallible functions return a union literal: |Success Err|.
 # unwrap: success → push Success; failure → propagate if caller can error,
 # otherwise rejected / trap.
 # handle: on failure run handler then push fallback; on success keep payload.
-
 MyCustomErrors error
 	MY_CUSTOM_ERROR
 end
 
 error_function function do
 	risky_operation function do
-		5 6 +
-		MyCustomErrors.MY_CUSTOM_ERROR return
+		5 6 + MyCustomErrors.MY_CUSTOM_ERROR return
 	end with |i32 MyCustomErrors|
 
 	# risky_operation call unwrap
-	#   success → i32 on stack
-	#   failure → propagate MyCustomErrors (this function's with allows it)
-	#   if the caller could not error, unwrap would be a compile error
+	# success → i32 on stack
+	# failure → propagate MyCustomErrors (this function's with allows it)
+	# if the caller could not error, unwrap would be a compile error
 
 	risky_operation call handle
-		# On error, match discriminates error members (similar to union match).
 		match
 			error.MY_CUSTOM_ERROR case
 				"Caught Custom Error" io.write_line call
@@ -537,7 +474,6 @@ error_function function do
 				"Unknown error" io.write_line call
 			end
 		end
-
 		0 fallback
 	end
 
@@ -548,7 +484,6 @@ end with |void MyCustomErrors|
 # =============================================================================
 # Example: structs, regions, methods, errors together
 # =============================================================================
-
 Person struct
 	string name public
 	list<i32> scores public
@@ -565,8 +500,7 @@ Person implement
 		score const i32
 		self const reference<Person>
 
-		self.scores score list.push_last call unwrap
-		return
+		self.scores score list.push_last call unwrap return
 	end with |void error.Error|
 
 	greet public function
@@ -574,8 +508,7 @@ Person implement
 	do
 		self const reference<Person>
 
-		self.name " says hello!" ~
-		return
+		self.name " says hello!" ~ return
 	end with |string error.Error|
 end
 
@@ -585,12 +518,10 @@ example_function function do
 
 	region.create call myRegion const i64
 	defer myRegion region.free call end
-
 	# Identifier keys → struct literal (not a hashmap).
 	{name "Alice" scores (10 20)} person mutable Person
 	person myRegion region.put call
 	drop
-
 	person borrow
 	person.greet call handle
 		match
@@ -601,7 +532,6 @@ example_function function do
 		"?" fallback
 	end
 	io.write_line call
-
 	person borrow
 	30 person.add_score call handle
 		match
@@ -620,7 +550,6 @@ example_function function do
 			"Younger" io.write_line call
 		end
 	end
-	# defer runs: region.free drops person with the region
 end
 
 # =============================================================================
@@ -629,7 +558,6 @@ end
 # Every program needs main. It is the only entity public by default.
 # Call ordinary functions with `name call`. Call unsafe functions only inside
 # unsafe ... end. Optional numeric return from main sets the process exit code.
-
 main function do
 	my_function call
 	struct_function call
@@ -639,7 +567,6 @@ main function do
 	memory_function call
 	error_function call
 	example_function call
-
 	unsafe
 		pointer_function call
 	end
