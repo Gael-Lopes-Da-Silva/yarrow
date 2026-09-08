@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 10: opt-in top-level require sorting |
+| `yarrow-fmt` crate | ✅     | Stage 11: library API + `yarrow-fmt` binary (`--check` / in-place / `--stdin`) |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -257,7 +257,7 @@ Style-guide: std requires first, then local; alphabetical within groups.
 
 ---
 
-### Stage 11 - Library finish + check mode + binary
+### Stage 11 - Library finish + check mode + binary ✅
 
 1. Stabilize `format_source` / `format_file`.
 2. `--check`: compare formatted vs input; exit `1` if different (or CLI-aligned code).
@@ -265,6 +265,8 @@ Style-guide: std requires first, then local; alphabetical within groups.
 4. Recurse directories for `*.yar` when given a directory.
 
 **Gate:** `cargo run -p yarrow_fmt -- --check docs/examples/valid/01_hello.yar` exits `0` after a bootstrap format (or documents that corpus is not yet fully styled). Formatting twice does not change bytes.
+
+**Notes:** Binary `yarrow-fmt` with `--check`, `--stdin`, `--max-width`, `--sort-requires`; directories recurse for `*.yar`. Exit `0` ok / already formatted, `1` would reformat or parse failure, `2` usage / I/O. Helpers: `collect_yar_paths`, `load_and_format`, `write_formatted`, `would_reformat`. Bootstrapped `docs/examples/valid/01_hello.yar` for the gate; full corpus still Stage 12.
 
 ---
 

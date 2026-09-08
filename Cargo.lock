@@ -1149,6 +1149,7 @@ dependencies = [
 name = "yarrow_fmt"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "yarrow_core",
 ]
 
