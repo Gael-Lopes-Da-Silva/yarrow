@@ -11,7 +11,7 @@ Library and binary that rewrite `.yar` source to match [`docs/STYLE_GUIDE.md`](.
 | **Layout / idiomatic form** | [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md)                              |
 | Language syntax             | [`docs/GRAMMAR.md`](../../docs/GRAMMAR.md), [`SYNTAX.md`](../../docs/SYNTAX.md) |
 | Intended AST                | [`docs/AST.md`](../../docs/AST.md)                                              |
-| Corpus (format gates)       | [`docs/examples/`](../../docs/examples/README.md), style-guide snippets         |
+| Corpus (format gates)       | `docs/examples/valid/**`, `crates/yarrow-core/lib/std/**` ([`scripts/fmt-check.sh`](../../scripts/fmt-check.sh)) |
 | Compiler API                | [`crates/yarrow-core/PLAN.md`](../yarrow-core/PLAN.md)                          |
 | Agent rules                 | [`AGENTS.md`](../../AGENTS.md)                                                  |
 
@@ -117,19 +117,20 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 | Library + binary              | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`   |
 | Shared driver                 | `run_fmt` / `FmtInput` for binary and CLI                             |
 | `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
-| Corpus gate                   | `docs/examples/valid/**` bootstrapped; `--check` exits `0`            |
+| Corpus gate                   | `docs/examples/valid/**` + `lib/std/**`; CI `fmt-check` (Stage 16)    |
 | LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
 | File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
 | Defaults polish               | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent       |
 | Range / span format API       | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)           |
+| Stdlib + CI `--check`         | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`  |
 
-**Gates:** `yarrow fmt --check docs/examples/valid` exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
+**Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
 ---
 
 ## Next
 
-Focus: widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
+Focus: best-effort format on partial parse (needs core recovery). Do not invent layout rules absent from the style guide.
 
 ### Stage 13 - File layout reorder (opt-in) ✅
 
@@ -192,7 +193,7 @@ Unblocks [`yarrow-lsp` Stage 17](../yarrow-lsp/PLAN.md) (`rangeFormatting` / opt
 
 ---
 
-### Stage 16 - Stdlib corpus + CI `--check`
+### Stage 16 - Stdlib corpus + CI `--check` ✅
 
 Stage 12 gated `docs/examples/valid`. Widen the always-green surface and make CI enforce it.
 
@@ -202,6 +203,8 @@ Stage 12 gated `docs/examples/valid`. Widen the always-green surface and make CI
 4. Do not silently format `docs/examples/invalid/**` (parse failures are expected).
 
 **Gate:** `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std` exits `0`. CI job fails if a `.yar` in that set drifts. `cargo fmt && cargo check && cargo clippy` green.
+
+**Notes:** Gate set is `docs/examples/valid` and `crates/yarrow-core/lib/std` only (`invalid/**` excluded). `lib/std` bootstrap-formatted. Shared script [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh); CI workflow [`.github/workflows/fmt-check.yml`](../../.github/workflows/fmt-check.yml) runs it on push/PR to `main`.
 
 ---
 

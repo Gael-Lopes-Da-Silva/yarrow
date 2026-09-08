@@ -1,7 +1,6 @@
 # Baseline error type. Members are program-unique tags; inject them into
 # custom error types with `MyErr error.Error error … end` after
 # `"std.error" error require`.
-
 Error error
 	OUT_OF_MEMORY
 	IO_ERROR
