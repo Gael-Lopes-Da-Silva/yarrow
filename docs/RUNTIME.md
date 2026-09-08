@@ -8,6 +8,8 @@ Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#fun
 
 Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emitted via one of `check`, `jit`, `object`, `executable`, or `interpret`.
 
+**Trivia:** The tokenizer emits `Comment` tokens for `#` … end of line (lexeme includes `#` and comment text; the terminating newline is not part of the lexeme). Whitespace and newlines are not tokens. The parser skips `Comment` tokens the same way it ignores whitespace; comments are not AST nodes. Tools that need comment text (formatters) should read the token stream before parse.
+
 | Backend      | Role                                                                |
 | ------------ | ------------------------------------------------------------------- |
 | `check`      | Type / ownership / stack / region analysis; CLIF lower without JIT/object product |

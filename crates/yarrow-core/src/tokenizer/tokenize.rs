@@ -99,7 +99,7 @@ impl Tokenizer {
                 self.line += 1;
                 self.line_start = self.current;
             }
-            '#' => self.skip_comment(),
+            '#' => self.scan_comment(),
             '(' => self.add_token(TokenKind::LeftParen),
             ')' => self.add_token(TokenKind::RightParen),
             '{' => self.add_token(TokenKind::LeftCurly),
@@ -365,10 +365,13 @@ impl Tokenizer {
         self.add_token(kind);
     }
 
-    fn skip_comment(&mut self) {
+    /// Emit a `Comment` token for `#` … end of line (newline left for the
+    /// next scan; whitespace / newlines are not emitted as trivia).
+    fn scan_comment(&mut self) {
         while !self.is_at_end() && self.peek() != '\n' {
             self.advance();
         }
+        self.add_token(TokenKind::Comment);
     }
 
     fn add_token(&mut self, kind: TokenKind) {

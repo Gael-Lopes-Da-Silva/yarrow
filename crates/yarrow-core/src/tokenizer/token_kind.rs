@@ -99,5 +99,9 @@ pub enum TokenKind {
     True,
     False,
 
+    /// Line comment `#` … through end of line (newline not included in lexeme).
+    /// Parser skips these; formatters preserve the lexeme text.
+    Comment,
+
     Eof,
 }

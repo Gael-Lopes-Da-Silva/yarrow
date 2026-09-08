@@ -90,7 +90,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 | ------------------ | ------ | --------------------------------------------------------------------- |
 | `yarrow-fmt` crate | ✅     | Stage 0: `FormatOptions` / `FormatError` / `format_source` / `format_file` stubs; path dep on `yarrow_core`; `format_source` returns input unchanged |
 | Style guide        | ✅     | Authoritative layout doc                                              |
-| Core tokenize      | ⚠      | Comments are **skipped** (`#` not tokens)                             |
+| Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
 
 ---
@@ -108,7 +108,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 ---
 
-### Stage 1 - Comment / trivia tokens in `yarrow-core`
+### Stage 1 - Comment / trivia tokens in `yarrow-core` ✅
 
 Today the tokenizer drops `# …` comments. A formatter cannot preserve them without trivia.
 
@@ -119,7 +119,7 @@ Today the tokenizer drops `# …` comments. A formatter cannot preserve them wit
 
 **Gate:** round-trip test at the token level: source with `#` comments yields tokens that still carry comment text; `Session::parse_source` / valid corpus still parses. `cargo clippy` green for core + fmt.
 
-**Blocked:** Stages 5+ that claim comment preservation. Stages 2–4 may proceed on comment-free inputs.
+**Notes:** Chose comment tokens only (no whitespace/newline trivia). Lexeme is `#` + text through EOL exclusive of `\n`. Parser peeks/advances skip `Comment`. Whitespace rebuilt later in the printer.
 
 ---
 
