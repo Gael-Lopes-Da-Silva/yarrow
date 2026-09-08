@@ -6,6 +6,7 @@
 //! popping operands off that same stack.
 
 mod backend;
+mod dwarf;
 mod errors;
 pub(crate) mod modules;
 mod types;
@@ -20,6 +21,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
+use dwarf::DebugFnInfo;
 
 use crate::diagnostics::{DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, Span};
 use crate::parser::ast::{
@@ -31,6 +33,7 @@ use crate::parser::literals::{
     decode_string_literal, float_literal_kind,
 };
 use crate::parser::parse;
+use crate::session::OptLevel;
 use crate::tokenizer::Tokenizer;
 use modules::{ModuleLoader, RequiredModule};
 
@@ -41,6 +44,14 @@ use types::{
     StructLayout, coerce, coercible, common_type, elem_code, elem_ty, error_return, kind_code,
     layout, primitive_ty, resolve, scalar_ty,
 };
+
+/// Backend kind for [`Compiler::with_options`] (Stage 25).
+#[derive(Debug, Clone)]
+pub enum CompilerBackend {
+    Jit,
+    Check,
+    Object { module_name: String },
+}
 
 /// A variable binding that a `for` loop clobbered, so it can be restored at
 /// loop end: the name plus the previous binding (if any).
@@ -293,30 +304,54 @@ pub struct Compiler {
     check_only: bool,
     /// Top-level entry function name (default `main`). See session `CompileOptions::entry_name`.
     entry_name: String,
+    /// Emit DWARF for object products (Stage 25).
+    debug_info: bool,
+    /// Functions defined in this object compile, for DWARF subprograms / lines.
+    debug_fns: Vec<DebugFnInfo>,
 }
 
 impl Compiler {
     /// In-process Cranelift JIT (default for `run` / `compile --target jit`).
     pub fn new() -> CResult<Self> {
-        Self::with_module(CodeModule::new_jit()?)
+        Self::with_module(CodeModule::new_jit(OptLevel::None)?, true)
     }
 
     /// Relocatable native object backend (`compile --target object`, Stage 13c).
     ///
     /// Host runtime symbols are declared as imports; linking them is CLI-side.
     pub fn new_object(module_name: &str) -> CResult<Self> {
-        Self::with_module(CodeModule::new_object(module_name)?)
+        Self::with_module(CodeModule::new_object(module_name, OptLevel::None)?, true)
     }
 
     /// Check-only backend: Cranelift object ISA as an analysis vehicle, with no
     /// JIT linker and no object/JIT product (Stage 24).
     pub fn new_check() -> CResult<Self> {
-        let mut c = Self::with_module(CodeModule::new_check()?)?;
+        let mut c = Self::with_module(CodeModule::new_check(OptLevel::None)?, false)?;
         c.check_only = true;
         Ok(c)
     }
 
-    fn with_module(module: CodeModule) -> CResult<Self> {
+    /// Build a compiler for the given backend options (Stage 25).
+    pub fn with_options(
+        kind: CompilerBackend,
+        opt_level: OptLevel,
+        debug_info: bool,
+    ) -> CResult<Self> {
+        let module = match &kind {
+            CompilerBackend::Jit => CodeModule::new_jit(opt_level)?,
+            CompilerBackend::Check => CodeModule::new_check(opt_level)?,
+            CompilerBackend::Object { module_name } => {
+                CodeModule::new_object(module_name, opt_level)?
+            }
+        };
+        let mut c = Self::with_module(module, debug_info)?;
+        if matches!(kind, CompilerBackend::Check) {
+            c.check_only = true;
+        }
+        Ok(c)
+    }
+
+    fn with_module(module: CodeModule, debug_info: bool) -> CResult<Self> {
         let ptr_type = module.isa().pointer_type();
         Ok(Self {
             module,
@@ -361,12 +396,14 @@ impl Compiler {
             ir_dump: String::new(),
             check_only: false,
             entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
+            debug_info,
+            debug_fns: Vec::new(),
         })
     }
 
     /// Emit relocatable object bytes after a successful [`Self::compile`] on an
     /// object backend. Consumes the compiler (object product takes ownership).
-    pub fn emit_object(self) -> CResult<Vec<u8>> {
+    pub fn emit_object(mut self) -> CResult<Vec<u8>> {
         if !self.module.is_object() {
             return Err(CompileError::new(
                 "cannot emit object: this compiler was built for JIT",
@@ -382,7 +419,14 @@ impl Compiler {
                 "E390",
             ));
         }
-        self.module.finish_object()
+        let source_path = std::mem::take(&mut self.source_path);
+        let debug_fns = std::mem::take(&mut self.debug_fns);
+        let debug = if self.debug_info {
+            Some((source_path.as_str(), debug_fns.as_slice()))
+        } else {
+            None
+        };
+        self.module.finish_object(debug)
     }
 
     /// Cranelift IR for every function lowered in the last successful compile.
@@ -832,7 +876,9 @@ impl Compiler {
                 match &item.kind {
                     StmtKind::Function(f) => {
                         let name = self.item_name(path.as_deref(), &f.name);
-                        if let Err(e) = self.compile_function(f, &name, path.as_deref(), false) {
+                        if let Err(e) =
+                            self.compile_function(f, &name, path.as_deref(), false, item.span)
+                        {
                             self.report(e);
                         }
                     }
@@ -843,7 +889,9 @@ impl Compiler {
                             }
                             let name = self
                                 .item_name(path.as_deref(), &format!("{}::{}", imp.target, f.name));
-                            if let Err(e) = self.compile_function(f, &name, path.as_deref(), true) {
+                            if let Err(e) =
+                                self.compile_function(f, &name, path.as_deref(), true, item.span)
+                            {
                                 self.report(e);
                             }
                         }
@@ -2034,6 +2082,7 @@ impl Compiler {
         if let Err(e) = self.module.define_function(main_id, &mut ctx) {
             return Err(e.into());
         }
+        self.record_debug_fn(crate::PROCESS_MAIN_SYMBOL, main_id, self.program_span);
         self.module.clear_context(&mut ctx);
         Ok(())
     }
@@ -2060,18 +2109,19 @@ impl Compiler {
         name: &str,
         module: Option<&str>,
         is_method: bool,
+        span: Span,
     ) -> CResult<()> {
         // Nested functions are only callable from this body. Declare and
         // compile them first so calls in the parent resolve.
-        let nested: Vec<Function> = f
+        let nested: Vec<(Function, Span)> = f
             .body
             .iter()
             .filter_map(|s| match &s.kind {
-                StmtKind::Function(nf) => Some(nf.clone()),
+                StmtKind::Function(nf) => Some((nf.clone(), s.span)),
                 _ => None,
             })
             .collect();
-        for nf in &nested {
+        for (nf, _) in &nested {
             let nname = format!("{name}::{}", nf.name);
             if !self.func_ids.contains_key(&nname) {
                 if nf.is_unsafe {
@@ -2083,13 +2133,13 @@ impl Compiler {
                 self.declare_function(nf, &nname)?;
             }
         }
-        for nf in &nested {
+        for (nf, nspan) in &nested {
             let nname = format!("{name}::{}", nf.name);
             // Compile each nested body once (parent is the only caller of this
             // path; top-level Pass D never sees nested decls).
             if self.sigs.contains_key(&nname) && !self.defined_funcs.contains(&nname) {
                 self.defined_funcs.insert(nname.clone());
-                self.compile_function(nf, &nname, module, false)?;
+                self.compile_function(nf, &nname, module, false, *nspan)?;
             }
         }
 
@@ -2107,7 +2157,7 @@ impl Compiler {
         // An unsafe function's whole body is an unsafe context.
         let unsafe_depth = u32::from(f.is_unsafe);
         let mut local_funcs = HashMap::new();
-        for nf in &nested {
+        for (nf, _) in &nested {
             local_funcs.insert(nf.name.clone(), format!("{name}::{}", nf.name));
         }
         let mut st = FnState {
@@ -2285,7 +2335,20 @@ impl Compiler {
         if let Err(e) = self.module.define_function(id, &mut ctx) {
             return Err(e.into());
         }
+        self.record_debug_fn(name, id, span);
         Ok(())
+    }
+
+    fn record_debug_fn(&mut self, name: &str, func_id: FuncId, span: Span) {
+        if !self.debug_info || self.check_only || !self.module.is_object() {
+            return;
+        }
+        self.debug_fns.push(DebugFnInfo {
+            name: name.to_string(),
+            func_id,
+            line: span.line.max(1) as u64,
+            column: span.column.max(1) as u64,
+        });
     }
 
     // ------------------------------------------------------------------

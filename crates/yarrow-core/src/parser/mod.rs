@@ -1460,10 +1460,7 @@ impl Parser {
             }
             i = self.next_significant_index(i + 1);
         }
-        self.tokens
-            .get(i)
-            .map(|t| t.kind)
-            .unwrap_or(TokenKind::Eof)
+        self.tokens.get(i).map(|t| t.kind).unwrap_or(TokenKind::Eof)
     }
 
     /// True if tokens starting at significant `offset` from current form a
@@ -1500,18 +1497,12 @@ impl Parser {
 
     fn peek_location(&self) -> Location {
         let i = self.next_significant_index(self.current);
-        self.tokens
-            .get(i)
-            .map(|t| t.location)
-            .unwrap_or_default()
+        self.tokens.get(i).map(|t| t.location).unwrap_or_default()
     }
 
     fn peek_span(&self) -> Span {
         let i = self.next_significant_index(self.current);
-        self.tokens
-            .get(i)
-            .map(|t| t.span())
-            .unwrap_or_default()
+        self.tokens.get(i).map(|t| t.span()).unwrap_or_default()
     }
 
     fn prev_span(&self) -> Span {
