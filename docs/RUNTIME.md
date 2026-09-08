@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stage-30).
 
 ## Execution model
 
@@ -393,6 +393,18 @@ Diagnostics:
 | `E383` | Missing / empty project root |
 
 Single-file `Session::check_source` and nested `require` are unchanged. CLI / LSP project drivers come later; see [`docs/examples/project/`](examples/project/).
+
+## Session probes (Stage 30)
+
+After a successful `Session::check_source`, [`CheckedProgram`](../crates/yarrow-core/src/session.rs) retains a [`TypeIndex`](../crates/yarrow-core/src/analysis.rs) of root-file sites collected during check-only lowering (no JIT / object product).
+
+| API | Role |
+| --- | ---- |
+| `CheckedProgram::type_at(offset)` | Innermost site whose span contains the byte offset |
+| `TypeProbe::ty` | Resolved binding type string (`i32`, `list<i32>`, …) |
+| `TypeProbe::signature` | Function summary plus `stack: […] → […]` when on a function name |
+
+Misses (whitespace, comments, unindexed code) return `None`. Required modules are not indexed into the root probe; leave cross-file navigation to the LSP AST walk. Example: on `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` on `answer` yields `ty = Some("i32")`.
 
 ## Interaction with memory and types
 

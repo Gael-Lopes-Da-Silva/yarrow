@@ -107,10 +107,10 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 8: full-doc format via yarrow-fmt           |
+| `yarrow-lsp` crate | ✅     | Stage 9: typed hover via `type_at`                |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
-| Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
+| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)         |
 | Cross-file resolve | ⚠      | Works inside compile via `require`; no index API  |
 | `yarrow-fmt`       | ✅     | `format_source` used for `textDocument/formatting` |
 | CLI `yarrow lsp`   | ⬜     | Thin wrapper after Stage 10                       |
@@ -233,15 +233,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 9 - Typed hover / richer analysis (core-assisted)
-
-Blocked on a small core API if AST-only hover is insufficient.
+### Stage 9 - Typed hover / richer analysis (core-assisted) ✅
 
 1. Prefer a Session or check artifact that can answer `type_at(span)` / `signature_at` without full JIT.
 2. If core Stage 24 (check without codegen) helps latency, use it.
 3. Hover shows type / stack effect notes when available; fall back to Stage 5 AST hover.
 
 **Gate:** documented probe where hover on a typed binding shows the type string from core. If core API is not ready, keep this stage ⬜ and do not fake types in the LSP.
+
+**Done:** uses `CheckedProgram::type_at` (core Stage 30) after `check_source`; appends `**type:** \`…\`` for bindings and a second fence with signature / stack effect for functions; falls back to Stage 5 AST hover when check fails. Scripted gate on `03_variables_and_typeof.yar`: hover on `answer` includes core type `i32`.
 
 ---
 

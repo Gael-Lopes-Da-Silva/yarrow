@@ -26,7 +26,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                      |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
-| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object` |
+| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30) |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel`; cross triple object emit (`x86_64` / `aarch64` linux-gnu) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
@@ -47,14 +47,14 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 | Warnings    | Only unused / dead-stack; more lints later (Stage 31)                                                         |
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
-| LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (Stage 30; see `yarrow-lsp`)   |
+| LSP assist  | Typed-at-span via `type_at`; no require-path index API yet (navigation stays LSP AST)                      |
 | Formatter   | Whitespace still rebuilt by printer (`yarrow-fmt`)                                                            |
 
 ---
 
 ## Next (Phase G)
 
-Focus: library APIs that unblock LSP hover, then lints and interpreter corpus growth, then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
+Focus: library APIs that unblock LSP hover (Stage 30 done), then lints and interpreter corpus growth, then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
@@ -68,7 +68,7 @@ Only if everyday AOT shows system `ld`/`lld` discovery is too fragile. Skip (kee
 
 **Deferred:** Host/cross AOT linking stays on PATH `ld`/`lld` with clear `E394`/`E395` diagnostics; no everyday fragility that justifies vendoring a linker.
 
-### Stage 30 - Typed-at-span / signature probe API
+### Stage 30 - Typed-at-span / signature probe API ✅
 
 Unblocks [`yarrow-lsp` Stage 9](../yarrow-lsp/PLAN.md) typed hover / inlay. Today `CheckedProgram` is AST-only; the LSP must not invent types.
 
@@ -79,6 +79,10 @@ Unblocks [`yarrow-lsp` Stage 9](../yarrow-lsp/PLAN.md) typed hover / inlay. Toda
 5. Document the probe in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) or a short Session API note; coordinate names with `yarrow-lsp` Stage 9.
 
 **Gate:** documented Session/`CheckedProgram` probe on a typed `const` / `mutable` in `docs/examples/valid/03_variables_and_typeof.yar` (or equivalent) returns a non-empty type string matching the checker. Probe on empty / non-code span returns none / clear miss. `check_source` latency and corpus gates unchanged; `cargo clippy` green. No fake types in the LSP.
+
+**Done:** `TypeIndex` / `TypeProbe` + `CheckedProgram::type_at(offset)` filled during check-only lower (root-file bindings and function signatures with stack-effect lines); miss on non-code offsets. Documented under RUNTIME Session probes. LSP Stage 9 consumes it for typed hover.
+
+---
 
 ### Stage 31 - Richer warning / lint catalog
 
