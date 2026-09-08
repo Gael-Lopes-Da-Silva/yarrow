@@ -54,12 +54,24 @@ pub fn goto_definition(
     )))
 }
 
+/// Binding kind for semantic highlighting / navigation helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclKind {
+    Function,
+    Variable,
+    Type,
+    Property,
+    /// Module / require alias (highlighted as variable).
+    Module,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Decl {
     pub name: String,
     pub name_span: Span,
     /// Region where this declaration is visible.
     pub scope: Span,
+    pub kind: DeclKind,
     /// When set, this decl is a `require` binding (`path` string from the AST).
     pub require_path: Option<String>,
 }
@@ -96,34 +108,90 @@ pub(crate) fn collect_decls(file: &SourceFile, program: &Program) -> Vec<Decl> {
 fn collect_stmt(source: &str, stmt: &Stmt, scope: Span, out: &mut Vec<Decl>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            push_named(source, stmt.span, scope, &f.name, None, out);
+            push_named(
+                source,
+                stmt.span,
+                scope,
+                &f.name,
+                DeclKind::Function,
+                None,
+                out,
+            );
             collect_function_body(source, f, stmt.span, out);
         }
         StmtKind::Struct(s) => {
-            push_named(source, stmt.span, scope, &s.name, None, out);
+            push_named(source, stmt.span, scope, &s.name, DeclKind::Type, None, out);
             for field in &s.fields {
-                push_named(source, stmt.span, stmt.span, &field.name, None, out);
+                push_named(
+                    source,
+                    stmt.span,
+                    stmt.span,
+                    &field.name,
+                    DeclKind::Property,
+                    None,
+                    out,
+                );
             }
         }
         StmtKind::Enum(e) => {
-            push_named(source, stmt.span, scope, &e.name, None, out);
+            push_named(source, stmt.span, scope, &e.name, DeclKind::Type, None, out);
             for member in &e.members {
-                push_named(source, stmt.span, stmt.span, &member.name, None, out);
+                push_named(
+                    source,
+                    stmt.span,
+                    stmt.span,
+                    &member.name,
+                    DeclKind::Property,
+                    None,
+                    out,
+                );
             }
         }
         StmtKind::Union(u) => {
-            push_named(source, stmt.span, scope, &u.name, None, out);
+            push_named(source, stmt.span, scope, &u.name, DeclKind::Type, None, out);
         }
         StmtKind::Error(err) => {
-            push_named(source, stmt.span, scope, &err.name, None, out);
+            push_named(
+                source,
+                stmt.span,
+                scope,
+                &err.name,
+                DeclKind::Type,
+                None,
+                out,
+            );
             for member in &err.members {
-                push_named(source, stmt.span, stmt.span, member, None, out);
+                push_named(
+                    source,
+                    stmt.span,
+                    stmt.span,
+                    member,
+                    DeclKind::Property,
+                    None,
+                    out,
+                );
             }
         }
         StmtKind::Implement(imp) => {
-            push_named(source, stmt.span, scope, &imp.target, None, out);
+            push_named(
+                source,
+                stmt.span,
+                scope,
+                &imp.target,
+                DeclKind::Type,
+                None,
+                out,
+            );
             for f in &imp.functions {
-                push_named(source, stmt.span, scope, &f.name, None, out);
+                push_named(
+                    source,
+                    stmt.span,
+                    scope,
+                    &f.name,
+                    DeclKind::Function,
+                    None,
+                    out,
+                );
                 collect_function_body(source, f, stmt.span, out);
             }
         }
@@ -131,10 +199,26 @@ fn collect_stmt(source: &str, stmt: &Stmt, scope: Span, out: &mut Vec<Decl>) {
             let name = alias
                 .as_deref()
                 .unwrap_or_else(|| path.rsplit('.').next().unwrap_or(path));
-            push_named(source, stmt.span, scope, name, Some(path.clone()), out);
+            push_named(
+                source,
+                stmt.span,
+                scope,
+                name,
+                DeclKind::Module,
+                Some(path.clone()),
+                out,
+            );
         }
         StmtKind::VarDecl { name, .. } => {
-            push_named(source, stmt.span, scope, name, None, out);
+            push_named(
+                source,
+                stmt.span,
+                scope,
+                name,
+                DeclKind::Variable,
+                None,
+                out,
+            );
         }
         StmtKind::If {
             then_branch,
@@ -195,6 +279,7 @@ fn push_named(
     item_span: Span,
     scope: Span,
     name: &str,
+    kind: DeclKind,
     require_path: Option<String>,
     out: &mut Vec<Decl>,
 ) {
@@ -203,6 +288,7 @@ fn push_named(
             name: name.to_string(),
             name_span,
             scope,
+            kind,
             require_path,
         });
     }

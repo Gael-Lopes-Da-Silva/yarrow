@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 13 adds
-//! `textDocument/inlayHint` from core type probes.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 14 adds
+//! `textDocument/semanticTokens/full` from core tokens + AST decls.
 
 mod analysis;
 mod code_action;
@@ -15,6 +15,7 @@ mod inlay_hints;
 mod modules;
 mod position;
 mod references;
+mod semantic_tokens;
 mod signature_help;
 mod symbols;
 
@@ -31,9 +32,10 @@ use tower_lsp_server::ls_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny, Location, MessageType,
-    OneOf, ReferenceParams, ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions,
-    SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextEdit, Uri,
+    OneOf, ReferenceParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -48,6 +50,7 @@ pub use hover::hover as hover_at;
 pub use inlay_hints::inlay_hints as inlay_hints_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use references::find_references;
+pub use semantic_tokens::{legend as semantic_tokens_legend, semantic_tokens_full};
 pub use signature_help::signature_help as signature_help_at;
 pub use symbols::document_symbols;
 
@@ -297,6 +300,14 @@ impl LanguageServer for Backend {
                 } else {
                     None
                 },
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
+                    SemanticTokensOptions {
+                        legend: semantic_tokens::legend(),
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: Some(false),
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -560,6 +571,32 @@ impl LanguageServer for Backend {
             params.range,
             &config,
         )))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> LspResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
+        let tokens = semantic_tokens::semantic_tokens_full(&path, &text, encoding, &config);
+        Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {

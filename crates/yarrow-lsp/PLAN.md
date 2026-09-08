@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–13)
+### Landed (v1, Stages 0–14)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
@@ -36,10 +36,10 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - `LspConfig`, init options, `yarrow lsp` CLI wrapper
 - Signature help at postfix `name call` sites
 - Inlay hints from core type probes (`--no-inlay` / init `inlayHints`)
+- Semantic tokens (full document) from tokenizer + AST decls
 
-### In scope (next, Stages 14+)
+### In scope (next, Stages 15+)
 
-- Semantic tokens for theme highlighting
 - File-local rename (cautious cross-file only when resolve is solid)
 - Workspace symbols over open buffers + resolved `require`s
 - Range / on-type formatting
@@ -120,7 +120,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 13: inlay hints                          |
+| `yarrow-lsp` crate | ✅     | Stage 14: semantic tokens                      |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -130,9 +130,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–12)
+## Landed (Stages 0–13)
 
-Stages 0–12 are complete. Historical stage write-ups for 0–11 were removed; git history keeps them. Stage 12 remains below for context until the next plan collapse.
+Stages 0–13 are complete. Historical stage write-ups for 0–12 were removed; git history keeps them. Stage 13 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -149,26 +149,11 @@ Stages 0–12 are complete. Historical stage write-ups for 0–11 were removed; 
 | 10 | `LspConfig` / init options + `yarrow lsp` wrapper |
 | 11 | `codeAction` Explain Exxx + `yarrow.explain` command |
 | 12 | `signatureHelp` for postfix `name call` |
+| 13 | Inlay hints from `TypeIndex` probes |
 
 ---
 
 ## Stages
-
-### Stage 12 - Signature help ✅
-
-Call-site parameter / stack-effect hints so editors can show a signature popup while typing arguments.
-
-1. Advertise `signatureHelpProvider` (trigger characters: `(`, space after call opener, and optionally `,` if useful for multi-arg hosts).
-2. Resolve the innermost call (or function name) at the cursor via AST walk + token fallback; reuse declaration lookup from definition / hover.
-3. Build `SignatureInformation` from the callee: name, params when known, and stack-effect / `with` notes when `type_at` or AST signature data exists.
-4. Set `activeParameter` when argument position is cheap to compute; otherwise omit rather than guess.
-5. Return null on non-call positions or unresolved callees.
-
-**Gate:** in `docs/examples/valid/04_functions.yar` (or equivalent), signature help inside a known `demo call` (or similar) returns a non-empty label matching the callee. Outside a call returns null. `cargo fmt && cargo check && cargo clippy` green for `yarrow_lsp`.
-
-**Done:** `textDocument/signatureHelp` for postfix `name call` / `a.b call` (token path through `call`); resolve local / nested / implement functions; AST label + params, prefer `type_at` signature when present; no `activeParameter` guess. Trigger/retrigger: space. Scripted gate on `04_functions.yar`: help on `demo call` includes `demo`; whitespace null.
-
----
 
 ### Stage 13 - Inlay hints (types / stack) ✅
 
@@ -187,7 +172,7 @@ Non-editing type / stack annotations after bindings and optionally after call re
 
 ---
 
-### Stage 14 - Semantic tokens
+### Stage 14 - Semantic tokens ✅
 
 Theme-friendly token classification without a second highlighter that disagrees with the grammar.
 
@@ -199,6 +184,8 @@ Theme-friendly token classification without a second highlighter that disagrees 
 6. If a token class cannot be proven, leave it to the client TextMate/tree-sitter grammar rather than mis-tagging.
 
 **Gate:** scripted `textDocument/semanticTokens/full` on `01_hello.yar` returns a non-empty token array; at least `function` / `keyword` (or documented legend entries) appear for `main` / `function`. `cargo clippy` green.
+
+**Done:** `textDocument/semanticTokens/full` from core `Tokenizer` + `DeclKind` resolve; legend includes keyword/function/variable/type/parameter/property/string/number/comment/operator (+ `declaration` modifier); unresolved idents and brackets omitted. Scripted gate on `01_hello.yar`: non-empty data; keyword for `function`, function for `main`.
 
 ---
 
@@ -302,7 +289,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | codeAction / explain                   | 11 ✅    | `explain_code`                     |
 | signatureHelp                          | 12 ✅    | AST + `type_at`                    |
 | inlayHint                              | 13 ✅    | `TypeIndex` probes                 |
-| semanticTokens                         | 14       | tokens + AST                       |
+| semanticTokens                         | 14 ✅    | tokens + AST                       |
 | rename                                 | 15       | references / resolve               |
 | workspaceSymbol                        | 16       | open buffers + require ASTs         |
 | rangeFormatting / onTypeFormatting     | 17       | `yarrow-fmt`                       |
