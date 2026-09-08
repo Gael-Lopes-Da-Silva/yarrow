@@ -1,21 +1,23 @@
-//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–7).
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–8).
 //!
 //! Reprints the AST into preferred forms for requires, types, functions,
-//! variables, containers, short calls, control flow, defer, unsafe, and
-//! handle/unwrap. Own-line comments between constructs are preserved from
-//! the original source by line gap; trailing comment spacing is left to Stage 9.
+//! variables, containers, calls, control flow, defer, unsafe, and
+//! handle/unwrap, with soft wrap at `max_width`. Own-line comments between
+//! constructs are preserved from the original source by line gap; trailing
+//! comment spacing is left to Stage 9.
 
 use yarrow_core::parser::ast::{
-    BinOp, EnumDecl, ErrorDecl, Expr, Field, Function, Implement, MatchCase, MatchCaseKind,
-    Mutability, ParamModifier, Parameter, Primitive, StackOp, Stmt, StmtKind, StructDecl, Type,
-    TypeKind, UnOp, UnionDecl, Visibility,
+    EnumDecl, ErrorDecl, Expr, Field, Function, Implement, MatchCase, MatchCaseKind, Mutability,
+    ParamModifier, Parameter, Primitive, Stmt, StmtKind, StructDecl, Type, TypeKind, UnionDecl,
+    Visibility,
 };
 use yarrow_core::{SourceFile, Span};
 
 use crate::FormatOptions;
 use crate::ir::FormatIr;
+use crate::phrase::{expr_tokens, layout_expr_stmts, wrap_tokens};
 
-/// Reprint the program with Stage 6–7 construct layout.
+/// Reprint the program with Stage 6–8 construct layout.
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
@@ -119,13 +121,28 @@ impl<'a> Printer<'a> {
     }
 
     fn write_tokens_line(&mut self, tokens: &[String]) {
+        self.write_tokens_line_at(self.depth, tokens);
+    }
+
+    fn write_tokens_line_at(&mut self, depth: usize, tokens: &[String]) {
         if tokens.is_empty() {
             return;
         }
         self.flush_pending_blank();
+        let saved = self.depth;
+        self.depth = depth;
         self.write_indent();
         self.out.push_str(&tokens.join(" "));
         self.finish_line();
+        self.depth = saved;
+    }
+
+    fn write_phrase_lines(&mut self, lines: &[(usize, Vec<String>)]) {
+        for (depth, tokens) in lines {
+            if !tokens.is_empty() {
+                self.write_tokens_line_at(*depth, tokens);
+            }
+        }
     }
 
     fn print_stmt(&mut self, stmt: &Stmt) {
@@ -440,47 +457,56 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Stage 6 calls: keep `name call` with prior args on one line when under
-    /// `max_width`. Otherwise preserve original line grouping.
+    /// Stage 6–8: merge short calls; wrap over-width phrases before consumers.
     fn print_expr_phrase(&mut self, stmts: &[Stmt]) {
-        let lines = Self::merge_call_phrase_lines(stmts, self.depth, self.max_width);
-        for (line_no, tokens) in lines {
+        let lines = layout_expr_stmts(stmts, self.depth, self.max_width);
+        // Preserve blank/comment gaps from the first source line in the run.
+        if let Some(first) = stmts.first() {
+            let line_no = first.span.line.max(1);
             if had_blank_between(self.file, self.last_emitted_line, line_no) {
                 self.pending_blank = true;
             }
             self.emit_gap_comments(line_no);
-            if !tokens.is_empty() {
-                self.write_tokens_line(&tokens);
-                self.last_emitted_line = line_no.max(self.last_emitted_line);
-            }
+        }
+        self.write_phrase_lines(&lines);
+        if let Some(last) = stmts.last() {
+            self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
     }
 
     /// Same as [`print_expr_phrase`], then append bare `return` on the last line.
     fn print_expr_phrase_with_return(&mut self, stmts: &[Stmt]) {
-        let mut lines = Self::merge_call_phrase_lines(stmts, self.depth, self.max_width);
+        let mut lines = layout_expr_stmts(stmts, self.depth, self.max_width);
         if let Some((_, last)) = lines.last_mut() {
             last.push("return".into());
         } else {
-            lines.push((1, vec!["return".into()]));
+            lines.push((self.depth, vec!["return".into()]));
         }
-        for (line_no, tokens) in lines {
+        // Re-wrap if appending `return` overflowed the soft width.
+        if let Some((d, toks)) = lines.last()
+            && *d + toks.join(" ").len() > self.max_width
+        {
+            let flat: Vec<String> = lines.iter().flat_map(|(_, t)| t.iter().cloned()).collect();
+            lines = wrap_tokens(&flat, self.depth, self.max_width);
+        }
+        if let Some(first) = stmts.first() {
+            let line_no = first.span.line.max(1);
             if had_blank_between(self.file, self.last_emitted_line, line_no) {
                 self.pending_blank = true;
             }
             self.emit_gap_comments(line_no);
-            if !tokens.is_empty() {
-                self.write_tokens_line(&tokens);
-                self.last_emitted_line = line_no.max(self.last_emitted_line);
-            }
+        }
+        self.write_phrase_lines(&lines);
+        if let Some(last) = stmts.last() {
+            self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
     }
 
     /// `call handle` / short `call handle <fb> fallback end` (Stage 7).
     fn print_call_handle(&mut self, call_stmts: &[Stmt], body: &[Stmt], fallback: Option<&Expr>) {
-        let mut lines = Self::merge_call_phrase_lines(call_stmts, self.depth, self.max_width);
+        let mut lines = layout_expr_stmts(call_stmts, self.depth, self.max_width);
         if lines.is_empty() {
-            lines.push((1, Vec::new()));
+            lines.push((self.depth, Vec::new()));
         }
         if let Some((_, last)) = lines.last_mut() {
             last.push("handle".into());
@@ -494,35 +520,38 @@ impl<'a> Printer<'a> {
             fb_tokens.retain(|t| !t.is_empty());
             fb_tokens.push("fallback".into());
             fb_tokens.push("end".into());
-            if let Some((_, last)) = lines.last_mut() {
+            if let Some((d, last)) = lines.last_mut() {
                 let mut probe = last.clone();
                 probe.extend(fb_tokens.iter().cloned());
-                if self.depth + probe.join(" ").len() <= self.max_width {
+                if *d + probe.join(" ").len() <= self.max_width {
                     last.extend(fb_tokens);
-                    for (line_no, tokens) in lines {
+                    if let Some(first) = call_stmts.first() {
+                        let line_no = first.span.line.max(1);
                         if had_blank_between(self.file, self.last_emitted_line, line_no) {
                             self.pending_blank = true;
                         }
                         self.emit_gap_comments(line_no);
-                        if !tokens.is_empty() {
-                            self.write_tokens_line(&tokens);
-                            self.last_emitted_line = line_no.max(self.last_emitted_line);
-                        }
+                    }
+                    self.write_phrase_lines(&lines);
+                    if let Some(last) = call_stmts.last() {
+                        self.last_emitted_line =
+                            end_line(self.file, last.span).max(self.last_emitted_line);
                     }
                     return;
                 }
             }
         }
 
-        for (line_no, tokens) in &lines {
-            if had_blank_between(self.file, self.last_emitted_line, *line_no) {
+        if let Some(first) = call_stmts.first() {
+            let line_no = first.span.line.max(1);
+            if had_blank_between(self.file, self.last_emitted_line, line_no) {
                 self.pending_blank = true;
             }
-            self.emit_gap_comments(*line_no);
-            if !tokens.is_empty() {
-                self.write_tokens_line(tokens);
-                self.last_emitted_line = (*line_no).max(self.last_emitted_line);
-            }
+            self.emit_gap_comments(line_no);
+        }
+        self.write_phrase_lines(&lines);
+        if let Some(last) = call_stmts.last() {
+            self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
 
         self.depth += 1;
@@ -537,71 +566,6 @@ impl<'a> Printer<'a> {
         self.write_indent();
         self.out.push_str("end");
         self.finish_line();
-    }
-
-    fn merge_call_phrase_lines(
-        stmts: &[Stmt],
-        depth: usize,
-        max_width: usize,
-    ) -> Vec<(usize, Vec<String>)> {
-        if stmts.is_empty() {
-            return Vec::new();
-        }
-
-        let words: Vec<(usize, Vec<String>)> = stmts
-            .iter()
-            .map(|s| {
-                let expr = match &s.kind {
-                    StmtKind::Expr(e) => e,
-                    _ => unreachable!(),
-                };
-                let mut tokens = expr_tokens(expr);
-                tokens.retain(|t| !t.is_empty());
-                (s.span.line.max(1), tokens)
-            })
-            .collect();
-
-        let mut lines: Vec<(usize, Vec<String>)> = Vec::new();
-        let mut cur_line = 0usize;
-        for (line, tokens) in &words {
-            if lines.is_empty() || *line != cur_line {
-                lines.push((*line, Vec::new()));
-                cur_line = *line;
-            }
-            if let Some((_, last)) = lines.last_mut() {
-                last.extend(tokens.iter().cloned());
-            }
-        }
-
-        let indent_cols = depth;
-        let mut i = 0;
-        while i < lines.len() {
-            if is_call_tail(&lines[i].1) {
-                let mut start = i;
-                while start > 0 && !is_phrase_end(&lines[start - 1].1) {
-                    let mut merged = lines[start - 1].1.clone();
-                    for (_, line) in &lines[start..=i] {
-                        merged.extend(line.iter().cloned());
-                    }
-                    if indent_cols + merged.join(" ").len() > max_width {
-                        break;
-                    }
-                    start -= 1;
-                }
-                if start < i {
-                    let line_no = lines[start].0;
-                    let mut merged = Vec::new();
-                    for (_, line) in &lines[start..=i] {
-                        merged.extend(line.iter().cloned());
-                    }
-                    lines[start] = (line_no, merged);
-                    lines.drain(start + 1..=i);
-                    i = start;
-                }
-            }
-            i += 1;
-        }
-        lines
     }
 
     fn print_var_decl(
@@ -630,7 +594,7 @@ impl<'a> Printer<'a> {
         let mut tokens = value_tokens;
         tokens.extend(expr_tokens(target));
         tokens.push("set".into());
-        self.write_tokens_line(&tokens);
+        self.write_phrase_lines(&wrap_tokens(&tokens, self.depth, self.max_width));
     }
 
     /// Emit stack phrases the parser folded into a consuming construct, and
@@ -673,21 +637,39 @@ impl<'a> Printer<'a> {
             tokens.extend(phrase_tokens(v));
         }
         tokens.push("return".into());
-        self.write_tokens_line(&tokens);
+        self.write_phrase_lines(&wrap_tokens(&tokens, self.depth, self.max_width));
     }
 
     fn print_if(&mut self, condition: &Expr, then_branch: &[Stmt], else_branch: &[Stmt]) {
-        // Condition may absorb prior stack lines via Seq; emit by original line.
+        // Condition may absorb prior stack lines via Seq; emit by original line,
+        // then wrap if the `… if` head exceeds max_width.
         let cond_lines = phrase_lines(condition);
         if cond_lines.is_empty() {
             self.write_tokens_line(&["if".into()]);
         } else {
+            let mut flat: Vec<String> = Vec::new();
             for (i, line) in cond_lines.iter().enumerate() {
-                let mut tokens = line.clone();
+                flat.extend(line.iter().cloned());
                 if i + 1 == cond_lines.len() {
-                    tokens.push("if".into());
+                    flat.push("if".into());
                 }
-                self.write_tokens_line(&tokens);
+            }
+            // Prefer keeping original multi-line condition grouping when each
+            // line fits; otherwise re-wrap the flat phrase before `if`.
+            let joined_fits = self.depth + flat.join(" ").len() <= self.max_width;
+            if joined_fits {
+                self.write_tokens_line(&flat);
+            } else if cond_lines.len() > 1 {
+                for (i, line) in cond_lines.iter().enumerate() {
+                    let mut tokens = line.clone();
+                    if i + 1 == cond_lines.len() {
+                        tokens.push("if".into());
+                    }
+                    let depth = if i == 0 { self.depth } else { self.depth + 1 };
+                    self.write_phrase_lines(&wrap_tokens(&tokens, depth, self.max_width));
+                }
+            } else {
+                self.write_phrase_lines(&wrap_tokens(&flat, self.depth, self.max_width));
             }
         }
 
@@ -711,19 +693,22 @@ impl<'a> Printer<'a> {
     }
 
     fn print_for(&mut self, source: &Expr, body: &[Stmt]) {
-        let mut tokens = phrase_tokens(source);
-        // If source was multi-line Seq, print prior lines first.
         let lines = phrase_lines(source);
-        if lines.len() > 1 {
-            for line in &lines[..lines.len() - 1] {
-                self.write_tokens_line(line);
+        let mut flat = phrase_tokens(source);
+        flat.push("for".into());
+        if self.depth + flat.join(" ").len() <= self.max_width {
+            self.write_tokens_line(&flat);
+        } else if lines.len() > 1 {
+            for (i, line) in lines.iter().enumerate() {
+                let mut tokens = line.clone();
+                if i + 1 == lines.len() {
+                    tokens.push("for".into());
+                }
+                let depth = if i == 0 { self.depth } else { self.depth + 1 };
+                self.write_phrase_lines(&wrap_tokens(&tokens, depth, self.max_width));
             }
-            let mut last = lines.last().cloned().unwrap_or_default();
-            last.push("for".into());
-            self.write_tokens_line(&last);
         } else {
-            tokens.push("for".into());
-            self.write_tokens_line(&tokens);
+            self.write_phrase_lines(&wrap_tokens(&flat, self.depth, self.max_width));
         }
 
         self.depth += 1;
@@ -973,46 +958,6 @@ fn nonzero_return(returns: &[Type]) -> Option<&Type> {
     }
 }
 
-fn is_call_tail(tokens: &[String]) -> bool {
-    matches!(tokens.last().map(String::as_str), Some("call" | "unwrap"))
-}
-
-/// A line that already ends a stack phrase (do not merge into a following call).
-fn is_phrase_end(tokens: &[String]) -> bool {
-    match tokens.last().map(String::as_str) {
-        Some(
-            "call" | "unwrap" | "drop" | "pop" | "dup" | "swap" | "rot" | "unrot" | "borrow"
-            | "typeof" | "load" | "store" | "return" | "set" | "move" | "fallback",
-        ) => true,
-        Some(w) if binop_word_set(w) || w == "not" => true,
-        _ => false,
-    }
-}
-
-fn binop_word_set(w: &str) -> bool {
-    matches!(
-        w,
-        "+" | "-"
-            | "*"
-            | "/"
-            | "//"
-            | "%"
-            | "^"
-            | "~"
-            | "=="
-            | "!="
-            | ">"
-            | ">="
-            | "<"
-            | "<="
-            | "and"
-            | "or"
-            | "xor"
-            | "lshift"
-            | "rshift"
-    )
-}
-
 pub(crate) fn format_type(ty: &Type) -> String {
     match &ty.kind {
         TypeKind::Named(name) => name.clone(),
@@ -1100,157 +1045,5 @@ fn phrase_lines_spanned(expr: &Expr) -> Vec<(Vec<Span>, Vec<String>)> {
             }
         }
         other => vec![(Vec::new(), expr_tokens(other))],
-    }
-}
-
-fn expr_tokens(expr: &Expr) -> Vec<String> {
-    match expr {
-        Expr::Integer { value }
-        | Expr::Float { value }
-        | Expr::String { value }
-        | Expr::Rune { value } => {
-            vec![value.clone()]
-        }
-        Expr::Bool { value } => vec![if *value { "true" } else { "false" }.into()],
-        Expr::Variable { name } | Expr::TypeValue { name } => vec![name.clone()],
-        Expr::Member { base, member } => {
-            let mut tokens = expr_tokens(base);
-            if let Some(last) = tokens.last_mut() {
-                last.push('.');
-                last.push_str(member);
-            } else {
-                tokens.push(format!(".{member}"));
-            }
-            tokens
-        }
-        Expr::Binary { op, left, right } => {
-            let mut tokens = expr_tokens(left);
-            tokens.extend(expr_tokens(right));
-            tokens.push(binop_word(*op).into());
-            tokens
-        }
-        Expr::Unary { op, operand } => {
-            let mut tokens = expr_tokens(operand);
-            tokens.push(unop_word(*op).into());
-            tokens
-        }
-        Expr::Call { target } => {
-            let mut tokens = expr_tokens(target);
-            tokens.push("call".into());
-            tokens
-        }
-        Expr::Unwrap { inner } => {
-            let mut tokens = expr_tokens(inner);
-            tokens.push("unwrap".into());
-            tokens
-        }
-        Expr::Typeof { inner } => {
-            let mut tokens = expr_tokens(inner);
-            tokens.push("typeof".into());
-            tokens
-        }
-        Expr::Borrow { inner } => {
-            let mut tokens = expr_tokens(inner);
-            tokens.push("borrow".into());
-            tokens
-        }
-        Expr::Load { inner } => {
-            let mut tokens = expr_tokens(inner);
-            tokens.push("load".into());
-            tokens
-        }
-        Expr::Store { addr, value } => {
-            let mut tokens = expr_tokens(addr);
-            tokens.extend(expr_tokens(value));
-            tokens.push("store".into());
-            tokens
-        }
-        Expr::ApplyBin(op) => vec![binop_word(*op).into()],
-        Expr::ApplyUn(op) => vec![unop_word(*op).into()],
-        Expr::ApplyTypeof => vec!["typeof".into()],
-        Expr::ApplyBorrow => vec!["borrow".into()],
-        Expr::ApplyLoad => vec!["load".into()],
-        Expr::Builtin { name } => vec![format!("@{name}")],
-        Expr::StackOp(op) => vec![stack_op_word(*op).into()],
-        Expr::Array(elems) => vec![format_container('[', ']', elems)],
-        Expr::List(elems) => vec![format_container('(', ')', elems)],
-        Expr::Map(pairs) => {
-            let mut inner = String::new();
-            for (i, (k, v)) in pairs.iter().enumerate() {
-                if i > 0 {
-                    inner.push(' ');
-                }
-                inner.push_str(&expr_tokens(k).join(" "));
-                inner.push(' ');
-                inner.push_str(&expr_tokens(v).join(" "));
-            }
-            vec![format!("{{{inner}}}")]
-        }
-        Expr::StructLit(fields) => {
-            let mut inner = String::new();
-            for (i, (name, value)) in fields.iter().enumerate() {
-                if i > 0 {
-                    inner.push(' ');
-                }
-                inner.push_str(name);
-                inner.push(' ');
-                inner.push_str(&expr_tokens(value).join(" "));
-            }
-            vec![format!("{{{inner}}}")]
-        }
-        Expr::EmptyMapOrStruct => vec!["{}".into()],
-        Expr::Seq(elems) => elems.iter().flat_map(|(e, _)| expr_tokens(e)).collect(),
-    }
-}
-
-fn format_container(open: char, close: char, elems: &[Expr]) -> String {
-    let mut inner = String::new();
-    for (i, e) in elems.iter().enumerate() {
-        if i > 0 {
-            inner.push(' ');
-        }
-        inner.push_str(&expr_tokens(e).join(" "));
-    }
-    format!("{open}{inner}{close}")
-}
-
-fn binop_word(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Plus => "+",
-        BinOp::Minus => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Fdiv => "//",
-        BinOp::Mod => "%",
-        BinOp::Pow => "^",
-        BinOp::Concat => "~",
-        BinOp::Eq => "==",
-        BinOp::Ne => "!=",
-        BinOp::Gt => ">",
-        BinOp::Gte => ">=",
-        BinOp::Lt => "<",
-        BinOp::Lte => "<=",
-        BinOp::And => "and",
-        BinOp::Or => "or",
-        BinOp::Xor => "xor",
-        BinOp::Lshift => "lshift",
-        BinOp::Rshift => "rshift",
-    }
-}
-
-fn unop_word(op: UnOp) -> &'static str {
-    match op {
-        UnOp::Not => "not",
-    }
-}
-
-fn stack_op_word(op: StackOp) -> &'static str {
-    match op {
-        StackOp::Dup => "dup",
-        StackOp::Swap => "swap",
-        StackOp::Rot => "rot",
-        StackOp::Unrot => "unrot",
-        StackOp::Pop => "pop",
-        StackOp::Drop => "drop",
     }
 }
