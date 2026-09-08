@@ -75,6 +75,11 @@ pub struct CompileOptions {
     /// Default `true`: AOT artifacts include compilation units and function
     /// names / line mappings when spans exist.
     pub debug_info: bool,
+    /// Object / executable target triple (Stage 26).
+    ///
+    /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu` for a
+    /// non-host object. JIT rejects non-host triples (`E397`).
+    pub target: Option<crate::target::TargetTriple>,
 }
 
 impl CompileOptions {
@@ -88,7 +93,15 @@ impl CompileOptions {
             mode: ExecutionMode::Jit,
             opt_level: OptLevel::None,
             debug_info: true,
+            target: None,
         }
+    }
+
+    /// Effective AOT / check triple (`target` or host).
+    pub fn effective_target(&self) -> crate::target::TargetTriple {
+        self.target
+            .clone()
+            .unwrap_or_else(crate::target::TargetTriple::host)
     }
 }
 
@@ -117,9 +130,10 @@ pub struct SessionArtifact {
 
 /// Relocatable native object produced by [`Session::compile_object_source`].
 ///
-/// Bytes are host ELF / Mach-O / COFF. Host runtime symbols (`print_str`, …)
-/// remain unresolved imports until linked with [`crate::linkable_archive`].
-/// Process entry is exported as [`crate::PROCESS_MAIN_SYMBOL`] (`main`).
+/// Bytes are ELF / Mach-O / COFF for [`ObjectArtifact::target`]. Host runtime
+/// symbols (`print_str`, …) remain unresolved imports until linked with
+/// [`crate::linkable_archive_for`]. Process entry is exported as
+/// [`crate::PROCESS_MAIN_SYMBOL`] (`main`).
 pub struct ObjectArtifact {
     pub file: SourceFile,
     /// Object file bytes (non-empty on success).
@@ -128,12 +142,14 @@ pub struct ObjectArtifact {
     pub ir: String,
     /// Yarrow entry name that process `main` calls in this object.
     pub entry_name: String,
+    /// Triple this object was lowered for.
+    pub target: crate::target::TargetTriple,
 }
 
 /// Host executable produced by [`Session::compile_executable_source`].
 ///
 /// Linked from the program object (with process `main`) and
-/// [`crate::linkable_archive`] via a system linker (`ld` / `lld`), not `cc`.
+/// [`crate::linkable_archive_for`] via a system linker (`ld` / `lld`), not `cc`.
 pub struct ExecutableArtifact {
     pub file: SourceFile,
     /// Executable file bytes (non-empty on success).
@@ -142,6 +158,8 @@ pub struct ExecutableArtifact {
     pub ir: String,
     /// Yarrow entry name that process `main` calls.
     pub entry_name: String,
+    /// Triple this executable was linked for.
+    pub target: crate::target::TargetTriple,
 }
 
 /// Diagnostics emitted while tokenizing/parsing/compiling one source file.
@@ -282,11 +300,13 @@ impl Session {
             bytes,
             ir,
             entry_name: self.options.entry_name.clone(),
+            target: self.options.effective_target(),
         })
     }
 
     /// Check, emit a program object (with process `main`), and link with the
-    /// host runtime archive into a runnable executable (Stage 19).
+    /// runtime archive for [`CompileOptions::target`] into a runnable
+    /// executable (Stage 19 / 26).
     ///
     /// Uses a system linker (`ld` / `lld`). Does not invoke `cc` / `gcc` /
     /// `clang` as a compile or link driver, and never falls back to JIT.
@@ -295,23 +315,24 @@ impl Session {
         source: String,
     ) -> Result<ExecutableArtifact, SessionDiagnostics> {
         let object = self.compile_object_source(source)?;
-        let archive = match crate::linkable_archive() {
+        let target = object.target.clone();
+        let archive = match crate::linkable_archive_for(&target) {
             Ok(archive) => archive,
             Err(msg) => {
                 return Err(SessionDiagnostics {
                     file: object.file,
                     batch: crate::link::LinkError::new(
                         "E396",
-                        format!("runtime archive unavailable: {msg}"),
+                        format!("runtime archive unavailable for '{}': {msg}", target.as_str()),
                     )
                     .with_help(
-                        "rebuild yarrow-core so `YARROW_RUNTIME_AOT_ARCHIVE` points at libyarrow_runtime_aot",
+                        "rebuild yarrow-core with the target installed, or set YARROW_RUNTIME_AOT_ARCHIVE_<triple> to libyarrow_runtime_aot.a (see docs/RUNTIME.md)",
                     )
                     .into_batch(self.options.error_limit),
                 });
             }
         };
-        let bytes = match crate::link::link_executable(&object.bytes, &archive.bytes) {
+        let bytes = match crate::link::link_executable(&object.bytes, &archive.bytes, &target) {
             Ok(bytes) => bytes,
             Err(err) => {
                 return Err(SessionDiagnostics {
@@ -325,6 +346,7 @@ impl Session {
             bytes,
             ir: object.ir,
             entry_name: object.entry_name,
+            target,
         })
     }
 
@@ -428,12 +450,16 @@ impl Session {
                 module_name: module_name.clone(),
             },
         };
-        let mut compiler =
-            Compiler::with_options(backend, self.options.opt_level, self.options.debug_info)
-                .map_err(|e| SessionDiagnostics {
-                    file: file.clone(),
-                    batch: one_compile_error(e, self.options.error_limit),
-                })?;
+        let mut compiler = Compiler::with_options(
+            backend,
+            self.options.opt_level,
+            self.options.debug_info,
+            &self.options.effective_target(),
+        )
+        .map_err(|e| SessionDiagnostics {
+            file: file.clone(),
+            batch: one_compile_error(e, self.options.error_limit),
+        })?;
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
         compiler.set_entry_name(self.options.entry_name.clone());

@@ -6,6 +6,7 @@ pub mod link;
 pub mod parser;
 pub mod runtime;
 pub mod session;
+pub mod target;
 pub mod tokenizer;
 
 pub use compiler::{CompileError, Compiler, RunResult};
@@ -20,11 +21,12 @@ pub use parser::ParseError;
 pub use parser::Parser;
 pub use parser::ast::Program;
 pub use parser::ast::Stmt;
-pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive};
+pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive, linkable_archive_for};
 pub use session::{
     CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, OptLevel,
     Session, SessionArtifact, SessionDiagnostics, render_batch,
 };
+pub use target::{TargetError, TargetTriple, supported_triples};
 pub use tokenizer::Token;
 pub use tokenizer::TokenKind;
 pub use tokenizer::Tokenizer;

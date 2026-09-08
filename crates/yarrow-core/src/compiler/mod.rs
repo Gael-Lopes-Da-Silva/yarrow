@@ -34,6 +34,7 @@ use crate::parser::literals::{
 };
 use crate::parser::parse;
 use crate::session::OptLevel;
+use crate::target::TargetTriple;
 use crate::tokenizer::Tokenizer;
 use modules::{ModuleLoader, RequiredModule};
 
@@ -320,28 +321,45 @@ impl Compiler {
     ///
     /// Host runtime symbols are declared as imports; linking them is CLI-side.
     pub fn new_object(module_name: &str) -> CResult<Self> {
-        Self::with_module(CodeModule::new_object(module_name, OptLevel::None)?, true)
+        Self::with_module(
+            CodeModule::new_object(module_name, OptLevel::None, &TargetTriple::host())?,
+            true,
+        )
     }
 
     /// Check-only backend: Cranelift object ISA as an analysis vehicle, with no
     /// JIT linker and no object/JIT product (Stage 24).
     pub fn new_check() -> CResult<Self> {
-        let mut c = Self::with_module(CodeModule::new_check(OptLevel::None)?, false)?;
+        let mut c = Self::with_module(
+            CodeModule::new_check(OptLevel::None, &TargetTriple::host())?,
+            false,
+        )?;
         c.check_only = true;
         Ok(c)
     }
 
-    /// Build a compiler for the given backend options (Stage 25).
+    /// Build a compiler for the given backend options (Stage 25 / 26).
     pub fn with_options(
         kind: CompilerBackend,
         opt_level: OptLevel,
         debug_info: bool,
+        target: &TargetTriple,
     ) -> CResult<Self> {
+        if matches!(kind, CompilerBackend::Jit) && !target.is_host() {
+            return Err(CompileError::new(
+                format!("JIT requires the host triple (got '{}')", target.as_str()),
+                Span::default(),
+                "E397",
+            )
+            .with_help(
+                "omit CompileOptions::target or set it to the host for ExecutionMode::Jit",
+            ));
+        }
         let module = match &kind {
             CompilerBackend::Jit => CodeModule::new_jit(opt_level)?,
-            CompilerBackend::Check => CodeModule::new_check(opt_level)?,
+            CompilerBackend::Check => CodeModule::new_check(opt_level, target)?,
             CompilerBackend::Object { module_name } => {
-                CodeModule::new_object(module_name, opt_level)?
+                CodeModule::new_object(module_name, opt_level, target)?
             }
         };
         let mut c = Self::with_module(module, debug_info)?;

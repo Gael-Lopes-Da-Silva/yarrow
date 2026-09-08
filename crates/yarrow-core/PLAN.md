@@ -27,7 +27,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
 | Session API | `check` / `compile` (JIT) / `compile_object` / `compile_executable` / `interpret`                          |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel` (Stage 25) |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel` (Stage 25); cross triple object emit (Stage 26) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 21 subset of `docs/examples/valid/**` (stdout matches JIT); structs / errors / regions still E393    |
 
@@ -41,7 +41,7 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | linux-gnu host only; no cross-compile yet (Phase F Stage 26); DWARF + `-O` tiers landed (Stage 25) |
+| AOT         | Cross link needs matching archive + CRT / linker emulation; broader matrix (musl, Mach-O, Windows) later |
 | Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity           |
 | Warnings    | Only unused / dead-stack; more lints later                                                                    |
 | Projects    | Single-file + `require` only; no multi-root project graph (Stage 28)                                          |
@@ -69,9 +69,9 @@ Everyday AOT on linux-gnu is stable; add debug info and controllable optimizatio
 
 **Done:** `CompileOptions::{opt_level, debug_info}`; DWARF via gimli on object finish; JIT honors `opt_level`; RUNTIME documents both.
 
-### Stage 26 - Cross-compile triples
+### Stage 26 - Cross-compile triples ✅
 
-Host is linux-gnu only today (`link.rs` + runtime archive). Add a real target triple story.
+Host is linux-gnu; add a real target triple story.
 
 1. Accept a target triple (or Cranelift `Isa` selection) on compile/object/executable options; reject unsupported triples with a clear diagnostic (not a panic).
 2. Build or select a matching `yarrow_runtime_aot` archive and CRT objects for that triple; document the layout and how agents/CI obtain archives (no inventing a second runtime ABI).
@@ -79,6 +79,8 @@ Host is linux-gnu only today (`link.rs` + runtime archive). Add a real target tr
 4. Prefer one additional triple first (e.g. another linux-gnu arch, or linux-musl) before a broad matrix. Mach-O / Windows stay later unless already cheap.
 
 **Gate:** documented command or Session options produce a non-host object (and, if link is in scope, an executable) for one non-host triple; missing archive/CRT fails with `E394`-family diagnostics. Host linux-gnu path still passes existing AOT examples. Update Known gaps when the first triple lands.
+
+**Done:** `CompileOptions::target` / `TargetTriple`; object ISA via Cranelift lookup; host + other of `x86_64`/`aarch64` linux-gnu; `linkable_archive_for` + `YARROW_RUNTIME_AOT_ARCHIVE_*` / `YARROW_BUILD_CROSS_AOT`; link CRT via `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR`; `E397`; RUNTIME documents layout.
 
 ### Stage 27 - Bundled linker (optional)
 

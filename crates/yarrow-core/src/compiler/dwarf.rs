@@ -73,7 +73,7 @@ pub(crate) fn emit_dwarf(
         .address_size()
         .map(|s| s.bytes())
         .unwrap_or(8);
-    // write::Object does not expose endianness; linux-gnu AOT (Stage 25) is LE.
+    // write::Object does not expose endianness; linux-gnu AOT targets (Stage 25/26) are LE.
     let endian = RunTimeEndian::Little;
 
     let encoding = Encoding {
