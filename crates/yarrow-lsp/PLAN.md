@@ -1,8 +1,8 @@
 # Yarrow LSP Implementation Plan
 
-Language server for `.yar` editors. Talks to **`yarrow-core`** for tokenize / parse / check / diagnostics, and optionally **`yarrow-fmt`** for document formatting. Owns LSP protocol, document sync, and editor UX. Does **not** reimplement the compiler.
+Language server for `.yar` editors. Talks to **`yarrow-core`** for tokenize / parse / check / diagnostics, and **`yarrow-fmt`** for document formatting. Owns LSP protocol, document sync, and editor UX. Does **not** reimplement the compiler.
 
-CLI wiring (`yarrow lsp`) lives in [`crates/yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md) Stage 12 once this crate has a runnable stdio server.
+CLI wiring: `yarrow lsp` delegates in-process via [`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md).
 
 ## Source of truth
 
@@ -23,29 +23,42 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### In scope (v1 through Stage 11)
+### Landed (v1, Stages 0–11)
 
-- stdio Language Server Protocol (LSP 3.17-shaped; no need for every optional method)
+- stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
 - Publish diagnostics from `Session::check_source` (and parse failures)
-- Navigation: go-to-definition, find references (same file first; `require` cross-file next)
-- Hover and document symbols from AST (typed hover when core exposes enough)
-- Completions: keywords + in-scope / imported names (best-effort)
-- Document formatting when `yarrow-fmt` is ready
-- `textDocument/codeAction` / hover help that surfaces `explain_code` for diagnostic codes
+- Navigation: go-to-definition, find references (same file + `require` cross-file)
+- Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
+- Completions: keywords + in-scope / imported names + `std.*` require paths
+- Document formatting via `yarrow-fmt`
+- Code actions / hover that surface `explain_code` for diagnostic codes
+- `LspConfig`, init options, `yarrow lsp` CLI wrapper
 
-### Out of scope (v1)
+### In scope (next, Stages 12+)
+
+- Signature help at call sites
+- Inlay hints from core type probes
+- Semantic tokens for theme highlighting
+- File-local rename (cautious cross-file only when resolve is solid)
+- Workspace symbols over open buffers + resolved `require`s
+- Range / on-type formatting
+- Pull diagnostics (LSP 3.17) alongside push
+- TCP transport and a reusable protocol test harness
+- Thin VS Code / Zed extension packaging (server stays editor-agnostic)
+
+### Out of scope
 
 | Concern                        | Why                                                              |
 | ------------------------------ | ---------------------------------------------------------------- |
 | Full project / workspace index | Core is single-file + `require`; no multi-root project graph yet |
-| Incremental / salsa analysis   | Premature; re-check open docs on change is enough at first       |
+| Incremental / salsa analysis   | Premature; re-check open docs on change is enough for now        |
 | Debug Adapter Protocol         | Separate product; AOT/JIT debug story is Phase F                 |
-| Semantic rename across crates  | Needs stable name resolution API; start file-local only          |
+| Silent semantic rename across crates | Needs stable name resolution API; never guess               |
 | Snippet / AI rewrite actions   | Not mechanical language support                                  |
 | Non-`.yar` / markdown embedded | Skip until requested                                             |
 
-**Transport:** stdio only for v1. TCP / socket later if useful for testing.
+**Transport:** stdio is the default. TCP is Stage 19 for tests / remote clients only.
 
 ---
 
@@ -56,28 +69,29 @@ editor  ←stdio JSON-RPC→  yarrow-lsp
                             ├── DocumentStore (uri → text + version)
                             ├── Analysis (Session::parse_source / check_source)
                             ├── PositionMap (LSP ↔ core Span / SourceFile)
-                            ├── Features (diag, hover, def, refs, symbols, complete, format)
+                            ├── Features (diag, hover, def, refs, symbols, complete,
+                            │             format, codeAction, signature, inlay, …)
                             ├── yarrow_core::Session
-                            └── yarrow_fmt::format_source   (when Stage 8+)
+                            └── yarrow_fmt::format_source
 ```
 
-Public / binary surface (target):
+Public / binary surface:
 
 ```rust
-/// Library entry used by the binary and by `yarrow lsp`.
 pub async fn run_stdio() -> Result<(), LspError>;
-
-/// Optional: run with explicit stdin/stdout for tests / embedding.
-pub async fn run_with_transport(/* … */) -> Result<(), LspError>;
+pub async fn run_stdio_with(config: LspConfig) -> Result<(), LspError>;
+pub fn run_stdio_blocking() -> Result<(), LspError>;
+/// Optional: explicit streams (tests) or TCP (Stage 19).
+pub async fn run_with_streams(/* … */) -> Result<(), LspError>;
 ```
 
-Protocol stack (pick one; prefer maintained crates):
+Protocol stack:
 
-| Piece     | Choice (default)                                       |
-| --------- | ------------------------------------------------------ |
-| LSP types | via `tower-lsp-server` (community fork of `tower-lsp`) |
-| Runtime   | `tokio`                                                |
-| Binary    | `crates/yarrow-lsp` `[[bin]]` or `src/main.rs`         |
+| Piece     | Choice                                                     |
+| --------- | ---------------------------------------------------------- |
+| LSP types | via `tower-lsp-server` (community fork of `tower-lsp`)     |
+| Runtime   | `tokio`                                                    |
+| Binary    | `crates/yarrow-lsp` + `yarrow lsp`                         |
 
 Do **not** shell out to `yarrow check`; call `Session` in-process.
 
@@ -85,233 +99,235 @@ Do **not** shell out to `yarrow check`; call `Session` in-process.
 
 LSP positions are UTF-16 code units by default (or UTF-8 if negotiated). Core `Span` / `SourceFile::location` use **byte offsets** and Unicode scalar columns.
 
-1. Own a small `PositionMap` in this crate (or a tiny helper in core if reused by fmt).
-2. Convert `Span` → `lsp::Range` and reverse for requests.
-3. Prefer negotiating `positionEncoding = utf-8` when the client supports it; still support UTF-16 for VS Code-class clients.
+1. `PositionMap` converts `Span` ↔ `lsp::Range`.
+2. Prefer negotiating `positionEncoding = utf-8` when the client supports it; still support UTF-16 for VS Code-class clients.
 
-### Analysis model (v1)
+### Analysis model
 
 On `didOpen` / `didChange` (debounced):
 
 1. Update buffer text.
 2. Build `CompileOptions` with `source_path` from URI, search paths from init options / workspace folders.
 3. Call `check_source` (or parse-only on failure path).
-4. Map `DiagnosticBatch` → `PublishDiagnosticsParams`.
-5. Cache last successful `Program` (and later typed info) for hover / navigation.
+4. Map `DiagnosticBatch` → `PublishDiagnosticsParams` (and answer pull requests in Stage 18).
+5. Cache last successful parse / check artifact for hover, navigation, inlays, tokens.
 
-No background whole-workspace crawl in v1. Open documents + transitive `require` resolution already performed by core during check are enough.
+No background whole-workspace crawl. Open documents + transitive `require` resolution during check are enough until a real project index exists.
 
 ---
 
 ## Current state
 
-| Piece              | Status | Notes                                             |
-| ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 11: explain code actions                    |
-| Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
-| Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
-| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)         |
-| Cross-file resolve | ⚠      | Works inside compile via `require`; no index API  |
-| `yarrow-fmt`       | ✅     | `format_source` used for `textDocument/formatting` |
-| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                   |
+| Piece              | Status | Notes                                              |
+| ------------------ | ------ | -------------------------------------------------- |
+| `yarrow-lsp` crate | ✅     | v1 complete (Stages 0–11); next is Stage 12        |
+| Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
+| Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
+| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
+| Cross-file resolve | ⚠      | Works via `require` paths; no project index API    |
+| `yarrow-fmt`       | ✅     | Full-doc `format_source`; range format is Stage 17 |
+| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                    |
+
+---
+
+## Landed (Stages 0–11)
+
+Stages 0–11 are complete. Historical stage write-ups were removed; git history keeps them.
+
+| Stage | Capability |
+| ----- | ---------- |
+| 0 | Crate + stdio hello (`initialize` / `shutdown`) |
+| 1 | Document sync (`DocumentStore`, full sync) |
+| 2 | Position map + publish diagnostics (debounce) |
+| 3 | Hierarchical `documentSymbol` |
+| 4 | Same-file `definition` |
+| 5 | AST hover + explain blurb on diagnostic spans |
+| 6 | Completions (keywords, scoped names, `std.*` require) |
+| 7 | Same-file `references` + cross-file def via `require` |
+| 8 | Full-document `formatting` via `yarrow-fmt` |
+| 9 | Typed hover via `CheckedProgram::type_at` |
+| 10 | `LspConfig` / init options + `yarrow lsp` wrapper |
+| 11 | `codeAction` Explain Exxx + `yarrow.explain` command |
 
 ---
 
 ## Stages
 
-### Stage 0 - Crate skeleton and stdio hello ✅
+### Stage 12 - Signature help
 
-1. Depend on `yarrow_core`, `tower-lsp-server`, `tokio`, `serde` / `serde_json` as needed.
-2. Binary that speaks LSP: `initialize` / `initialized` / `shutdown` / `exit`.
-3. Advertise minimal capabilities (empty or sync-only).
-4. `run_stdio` public API; `cargo run -p yarrow_lsp` starts the server.
+Call-site parameter / stack-effect hints so editors can show a signature popup while typing arguments.
 
-**Gate:** `cargo check -p yarrow_lsp` green. A client (or scripted JSON-RPC) completes initialize handshake and shuts down cleanly.
+1. Advertise `signatureHelpProvider` (trigger characters: `(`, space after call opener, and optionally `,` if useful for multi-arg hosts).
+2. Resolve the innermost call (or function name) at the cursor via AST walk + token fallback; reuse declaration lookup from definition / hover.
+3. Build `SignatureInformation` from the callee: name, params when known, and stack-effect / `with` notes when `type_at` or AST signature data exists.
+4. Set `activeParameter` when argument position is cheap to compute; otherwise omit rather than guess.
+5. Return null on non-call positions or unresolved callees.
 
-**Done:** `run_stdio` / `run_with_streams`, empty `ServerCapabilities`, `serverInfo` name `yarrow-lsp`. Scripted initialize → initialized → shutdown → exit succeeds.
-
----
-
-### Stage 1 - Document sync ✅
-
-1. `textDocument/didOpen`, `didChange` (full or incremental; full is fine first), `didClose`.
-2. In-memory `DocumentStore`: URI → `{ version, text }`.
-3. Language id `yarrow`; file association `.yar`.
-4. Ignore non-`.yar` unless opened with that language id.
-
-**Gate:** open a buffer, apply a change, close it; store reflects text. No diagnostics required yet.
-
-**Done:** `TextDocumentSyncKind::FULL` + `open_close`; `DocumentStore` in `document.rs`; track language id `yarrow` or `.yar` path. Scripted open → change → close (and ignore non-yarrow) succeeds.
+**Gate:** in `docs/examples/valid/04_functions.yar` (or equivalent), signature help inside a known `demo call` (or similar) returns a non-empty label matching the callee. Outside a call returns null. `cargo fmt && cargo check && cargo clippy` green for `yarrow_lsp`.
 
 ---
 
-### Stage 2 - Position map + diagnostic publish ✅
+### Stage 13 - Inlay hints (types / stack)
 
-1. Implement LSP ↔ `Span` conversion against `SourceFile`.
-2. On open/change: `Session::check_source` (or parse on earlier failure).
-3. Map primary (+ secondary labels if cheap) to LSP diagnostics; include `code` and severity.
-4. Clear diagnostics on close / when check succeeds with empty batch.
-5. Debounce rapid `didChange` (e.g. 150–300 ms) so typing stays responsive.
+Non-editing type / stack annotations after bindings and optionally after call results, driven only by core probes.
 
-**Gate:** opening `docs/examples/invalid/**` (or a known-bad snippet) publishes at least one diagnostic with a sensible range. Valid `01_hello.yar` publishes empty diagnostics after check.
+1. Advertise `inlayHintProvider`.
+2. On `textDocument/inlayHint` for a range: run check (or use cached `CheckedProgram`) and place hints from `type_at` on declaration name spans (and optionally simple expression ends) inside the range.
+3. Hint label is the type string (and a short stack-effect note for functions if already available); kind `Type` (or `Parameter` only if truly parameter names).
+4. Do **not** invent types when `type_at` misses; skip the site.
+5. Respect a config / init option to disable inlays (`inlayHints` / `--no-inlay`) defaulting to on once shipped.
+6. Keep latency acceptable: reuse the same check cache as diagnostics / hover when possible; do not JIT.
 
-**Done:** `PositionMap` + UTF-8/UTF-16 negotiate; `check_document` via `Session::check_source`; publish on open (immediate) / change (200 ms debounce); clear on close. Scripted invalid open yields ≥1 diagnostic; `valid/01_hello.yar` yields empty.
-
----
-
-### Stage 3 - Document symbols and folding-friendly outline ✅
-
-1. Walk top-level `Program` items: functions, types, `implement`, etc.
-2. `textDocument/documentSymbol` (hierarchical if easy; flat SymbolInformation OK first).
-3. Use item `span` from the AST; name from declaration identifiers.
-
-**Gate:** outline for a multi-item valid example lists `main` and at least one type or helper function with non-empty ranges.
-
-**Done:** hierarchical `DocumentSymbol` via `parse_source` (functions, nested helpers, struct/enum/union/error, implement methods, require); item spans + name selection ranges. Scripted outline on `06_structs_and_enums.yar` lists `Point`, `Color`, and `main` with non-empty ranges.
+**Gate:** open `03_variables_and_typeof.yar`; inlay on `answer` (or the typed binding used in Stage 9) shows `i32` (or the same string as typed hover). Empty / unchecked buffer yields no fake hints. Scripted or editor probe documents the range.
 
 ---
 
-### Stage 4 - Go to definition (same file) ✅
+### Stage 14 - Semantic tokens
 
-1. Resolve identifier / qualified name at position via AST walk + token fallback.
-2. Jump to local declaration span (params, locals, top-level, type members when spans exist).
-3. If unresolved, return empty (no fake locations).
+Theme-friendly token classification without a second highlighter that disagrees with the grammar.
 
-**Gate:** in a file with `foo function` and a `foo call`, definition on the call name lands on `foo`. Missing name returns empty.
+1. Advertise `semanticTokensProvider` (full document first; range optional if cheap).
+2. Legend: at least `keyword`, `function`, `variable`, `type`, `parameter`, `property`, `string`, `number`, `comment`, `operator` (trim to what the tokenizer / AST can justify).
+3. Classify from core tokens + AST decls (declaration sites and references when the same-file resolve path already exists); do not invent a parallel lexer.
+4. Map spans through `PositionMap`; produce LSP delta-encoded tokens.
+5. Invalidate / recompute on document change the same way diagnostics do (debounce OK).
+6. If a token class cannot be proven, leave it to the client TextMate/tree-sitter grammar rather than mis-tagging.
 
-**Done:** `textDocument/definition` via identifier token at offset + scoped AST decls (functions nested/top-level, vars, types/members, implement methods, require aliases); innermost visible scope wins; unresolved returns null. Scripted gate on `04_functions.yar`: `demo call` → `demo` decl; unknown ident empty.
-
----
-
-### Stage 5 - Hover (AST signatures) ✅
-
-1. Hover on declarations and references shows a short markdown string: kind + name + parameter / return shape from the AST when available.
-2. On a diagnostic span, optionally append explain blurb via `explain_code` when the code is known.
-3. Typed / ownership detail is **out of scope** until core exposes it (see Stage 9 / core backlog).
-
-**Gate:** hover on `main` in `01_hello.yar` shows a non-empty signature-ish string. Hover on empty space returns none.
-
-**Done:** `textDocument/hover` via identifier-at-offset + scoped AST decls (functions/methods with params/`with`, types, fields, vars, require); markdown `yarrow` fence; known diagnostic codes append `explain_code` blurb. Scripted gate on `01_hello.yar`: `main` non-empty; whitespace null.
+**Gate:** scripted `textDocument/semanticTokens/full` on `01_hello.yar` returns a non-empty token array; at least `function` / `keyword` (or documented legend entries) appear for `main` / `function`. `cargo clippy` green.
 
 ---
 
-### Stage 6 - Completions (keywords + names) ✅
+### Stage 15 - Rename (file-local first)
 
-1. Keyword list from grammar (`function`, `do`, `end`, `if`, `match`, `require`, …).
-2. Completions from current file top-level names and, when parse succeeded, locals in the innermost span containing the cursor (best-effort).
-3. After `"…"` / require context, suggest known `std.*` module paths if cheap (embedded list or static table); do not invent modules absent from `lib/std`.
-4. No AI / fuzzy ranking beyond simple prefix filter.
+Safe rename for identifiers with a clear edit set; never silent cross-module breakage.
 
-**Gate:** in an empty-ish body, completing `fun` offers `function`. After defining `helper`, completing `hel` can offer `helper`.
+1. Advertise `renameProvider` (prepareRename optional but preferred: return the identifier range or error).
+2. File-local: reuse references binding (Stage 7); produce `WorkspaceEdit` text edits for every occurrence bound to the same decl in the current document.
+3. Reject rename when the name is unresolved, when it would collide with an existing binding in scope, or when the identifier is a keyword / not a renameable decl.
+4. Cross-file: only when the binding is a `require` alias or imported item **and** every edit target has a real `file://` path already used by definition; otherwise return an error explaining the limit. No speculative edits into unchecked files.
+5. Do not rename string module paths unless the user is clearly on the path literal and policy is documented; default is identifier rename only.
 
-**Done:** `textDocument/completion` with tokenizer keywords + scoped AST names (prefix filter); line-start open `"…` suggests static `std.*` from `lib/std`; `"` trigger character. Scripted gate: `fun` → `function`; `hel` with `helper` in file → `helper`.
-
----
-
-### Stage 7 - References and cross-file definition via `require` ✅
-
-1. Find references in the current document (all name occurrences bound to the same decl when cheap; textual fallback only if binding data is missing, and document the limitation).
-2. For `require`d modules: when core check already loaded them, use resolved module path + name to support go-to-definition into dependency files (open as `file://` path from search path / std embed materialization policy).
-3. If std modules are embedded and have no on-disk path, either skip jump or expose a read-only virtual URI scheme; pick one and document it (prefer real `lib/std/**` paths from the repo / install layout when available).
-
-**Gate:** definition on an imported `std` / local require name opens or returns a location for that module entity when a file path exists. Same-file find-all-references returns ≥1 location for a used function.
-
-**Done:** `textDocument/references` same-file via scoped AST decls (textual identifier fallback when unbound). `textDocument/definition` on `require` bindings jumps to on-disk module files (`lib/std/**` via adjacent crate / ancestor walk; local modules relative to the source file); item imports land on the function name when found. No virtual URI when the file is missing (skip / same-file fallback). Scripted gate: def on `io` → `lib/std/io.yar`; refs on `main` ≥1.
+**Gate:** rename a local function used twice in one file updates both sites; prepareRename on whitespace / unknown ident fails cleanly. Cross-file either edits the known module file correctly or returns a clear error (no partial silent skip). Scripted gate preferred.
 
 ---
 
-### Stage 8 - Formatting (depends on `yarrow-fmt`) ✅
+### Stage 16 - Workspace symbols
 
-1. `textDocument/formatting` (and optional range formatting later).
-2. Call `yarrow_fmt::format_source` with default options.
-3. Return a full-document `TextEdit` (or minimal diff if easy).
-4. On format / parse failure: show diagnostic or return error; do not partially corrupt the buffer.
+Quick-open style search without a full project indexer.
 
-**Gate:** format request on a deliberately messy but parseable buffer returns edits that match `format_source`. Idempotent format yields empty edits.
+1. Advertise `workspaceSymbolProvider`.
+2. Query open documents in `DocumentStore` (and optionally last-checked `require` dependency ASTs already loaded for those docs) for top-level functions, types, and `implement` methods.
+3. Filter by simple case-insensitive substring / prefix on the symbol name; return `SymbolInformation` or `WorkspaceSymbol` with correct `Location`.
+4. Cap result count (e.g. 100) so huge buffers stay responsive.
+5. Do not crawl the filesystem beyond what analysis already resolved; document that closed, unchecked trees are invisible.
 
-**Done:** `textDocument/formatting` via `yarrow_fmt::format_source` (default `FormatOptions`); full-buffer replace `TextEdit` when changed, empty edits when already formatted; parse failure returns null (no partial rewrite). Client `FormattingOptions` ignored (style from fmt). Scripted gate: messy buffer → edits matching `format_source`; second format on result → empty.
-
----
-
-### Stage 9 - Typed hover / richer analysis (core-assisted) ✅
-
-1. Prefer a Session or check artifact that can answer `type_at(span)` / `signature_at` without full JIT.
-2. If core Stage 24 (check without codegen) helps latency, use it.
-3. Hover shows type / stack effect notes when available; fall back to Stage 5 AST hover.
-
-**Gate:** documented probe where hover on a typed binding shows the type string from core. If core API is not ready, keep this stage ⬜ and do not fake types in the LSP.
-
-**Done:** uses `CheckedProgram::type_at` (core Stage 30) after `check_source`; appends `**type:** \`…\`` for bindings and a second fence with signature / stack effect for functions; falls back to Stage 5 AST hover when check fails. Scripted gate on `03_variables_and_typeof.yar`: hover on `answer` includes core type `i32`.
+**Gate:** with two `.yar` buffers open that define distinct top-level names, `workspace/symbol` query matching one name returns that symbol’s location. Empty query may return a bounded list or empty; either behavior is documented in the gate notes.
 
 ---
 
-### Stage 10 - Binary polish + `yarrow lsp` wrapper ✅
+### Stage 17 - Range format and on-type format
 
-1. Stable CLI flags if any (`--stdio` default; maybe log level to stderr).
-2. Init options: search paths (`-L` equivalent), entry name default, format enable.
-3. Wire [`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md): `yarrow lsp` delegates in-process to `yarrow_lsp::run_stdio`.
-4. Short editor setup note (command path) in this file’s notes or `docs/` only if the user asks for docs; otherwise README blurb in crate is enough.
+Narrow formatting after full-document format is solid (Stage 8).
 
-**Gate:** `yarrow lsp` (or `cargo run -p yarrow_lsp`) initializes against a real editor or scripted client. `cargo fmt && cargo check && cargo clippy` green.
+1. `textDocument/rangeFormatting`: format the selected range. Prefer formatting the whole file via `format_source` and intersecting edits with the range, **or** a fmt API that accepts a span if one is added; do not ship a second pretty-printer.
+2. If intersecting full-doc edits is lossy for indentation context, expand the range to enclosing top-level item boundaries and document that behavior.
+3. Optional `textDocument/onTypeFormatting` for trigger characters that the style guide makes mechanical (e.g. `\n` after `end` alignment only if fmt can express it safely). Skip triggers that would fight the user mid-token.
+4. On parse / format failure: return null / empty edits; never partially corrupt the buffer (same as Stage 8).
+5. Honor existing `format` enable flag from `LspConfig`; when format is disabled, omit these capabilities too.
 
-**Done:** `LspConfig` + `initializationOptions` (`searchPaths` / `entryName` / `format`) merged with workspace folders; binary and `yarrow lsp` share `--stdio`, `-L`, `--main`, `--no-format`, `--log-level`; `run_stdio_with` / `run_stdio_blocking`; crate README for editor command. Scripted gate: `yarrow lsp --help` lists flags; initialize handshake via `yarrow lsp` succeeds.
+**Gate:** range format on a messy contiguous region in a parseable buffer yields edits confined to (or documented expansion of) that region and matching `format_source` for the rewritten slice. Idempotent second request yields empty. On-type either lands with one safe trigger or is explicitly deferred in the Done notes with reason.
 
 ---
 
-### Stage 11 - Code actions and explain ✅
+### Stage 18 - Pull diagnostics (LSP 3.17)
 
-1. Code action or hover link: “Explain E3xx” using `format_explain` / `explain_code`.
-2. Optional: “Open style guide” is out of scope; keep actions diagnostic-centric.
-3. No auto-fix that changes semantics unless tied to a known safe rewrite (prefer none in v1).
+Support clients that prefer pull over (or in addition to) push.
 
-**Gate:** a published diagnostic with a known code offers an action or hover section that includes the explain text.
+1. Advertise `diagnosticProvider` (identifier e.g. `yarrow`) with inter-file support off unless cheap.
+2. Implement `textDocument/diagnostic` using the same `check_document` path as publish; return `FullDocumentDiagnosticReport` (or unchanged related if version matches).
+3. Keep existing push on open/change for editors that still expect it; avoid double-flicker when the client uses both (prefer answering pull from cache keyed by uri + version).
+4. Workspace pull (`workspace/diagnostic`) is optional: only open documents, or skip and document.
+5. Preserve diagnostic `code`, severity, and related information already mapped in Stage 2.
 
-**Done:** `textDocument/codeAction` offers `Explain Exxx` for catalog codes (`data.explain` = `format_explain`); `workspace/executeCommand` `yarrow.explain` shows the text; hover diagnostic blurb titled `Explain Exxx`. No semantic rewrites. Scripted gate on `01_use_after_move.yar`: code action for `E373` includes explain body.
+**Gate:** scripted client requests `textDocument/diagnostic` on `docs/examples/invalid/01_use_after_move.yar` and receives at least one diagnostic with code `E373` (or the file’s known code) without relying on a prior `publishDiagnostics` wait. Push path still works for open.
+
+---
+
+### Stage 19 - TCP transport and protocol test harness
+
+Make automated LSP gates reliable without ad-hoc one-off scripts each stage.
+
+1. Add a `--listen host:port` (or `--tcp`) mode alongside default `--stdio`; same `LspConfig` flags otherwise.
+2. Factor JSON-RPC framing so stdio and TCP share one server backend.
+3. Provide a small in-repo harness (Node, Rust, or shell + `nc`) under `crates/yarrow-lsp/` or `tools/` that: starts the server, runs initialize → open fixture → assert one capability → shutdown.
+4. Migrate at least one existing gate (diagnostics or explain code action) onto the harness so future stages reuse it.
+5. Document how to run the harness in the crate README (short). Do not require a real editor for CI-style checks.
+
+**Gate:** `yarrow lsp --listen 127.0.0.1:0` (or documented flag) accepts one harness run that passes initialize + one feature assert. Stdio path unchanged. README blurb exists. `cargo clippy` green.
+
+---
+
+### Stage 20 - Editor extension packaging (VS Code / Zed)
+
+Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains editor-agnostic.
+
+1. VS Code: minimal extension (`activationEvents` on `.yar`, language id `yarrow`) that starts the server via `yarrow lsp` on `PATH` or a config `yarrow.lsp.path`.
+2. Contribute language configuration (comments `#`, brackets) only; syntax highlighting may stay TextMate-basic or defer to semantic tokens (Stage 14).
+3. Zed: equivalent language + LSP entry if packaging cost is low; otherwise VS Code first and note Zed as follow-up in Done.
+4. Ship extension sources under something like `editors/vscode/` (or `crates/yarrow-lsp/editors/`); do not embed the Rust server inside the extension binary.
+5. Document install / “set command path” in the extension README; keep `crates/yarrow-lsp/README.md` as the server source of truth.
+
+**Gate:** documented steps open a `.yar` file in the packaged editor and see diagnostics from the language server (screenshot or scripted smoke optional). Extension does not vendor a second formatter or checker.
 
 ---
 
 ## Mapping: LSP features → stages
 
-| LSP capability                         | Stages       | Core / fmt dependency        |
-| -------------------------------------- | ------------ | ---------------------------- |
-| initialize / shutdown                  | 0            | -                            |
-| textDocument sync                      | 1            | -                            |
-| publishDiagnostics                     | 2            | `check_source`, spans        |
-| documentSymbol                         | 3            | AST spans                    |
-| definition                             | 4, 7         | AST + require resolution     |
-| hover                                  | 5, 9         | AST; later typed API         |
-| completion                             | 6            | grammar keywords + AST names |
-| references                             | 7            | binding / name index         |
-| formatting                             | 8            | `yarrow-fmt`                 |
-| codeAction / explain                   | 11           | `explain_code`               |
-| rename / workspaceSymbol / semanticTok | Later        | richer index                 |
-| DAP / debug                            | Out of scope | AOT/JIT debug                |
+| LSP capability                         | Stages   | Core / fmt dependency              |
+| -------------------------------------- | -------- | ---------------------------------- |
+| initialize / shutdown                  | 0 ✅     | -                                  |
+| textDocument sync                      | 1 ✅     | -                                  |
+| publishDiagnostics                     | 2 ✅     | `check_source`, spans              |
+| documentSymbol                         | 3 ✅     | AST spans                          |
+| definition                             | 4, 7 ✅  | AST + require resolution            |
+| hover                                  | 5, 9 ✅  | AST; `type_at`                     |
+| completion                             | 6 ✅     | grammar keywords + AST names       |
+| references                             | 7 ✅     | binding / name index               |
+| formatting                             | 8 ✅     | `yarrow-fmt`                       |
+| codeAction / explain                   | 11 ✅    | `explain_code`                     |
+| signatureHelp                          | 12       | AST + `type_at`                    |
+| inlayHint                              | 13       | `type_at`                          |
+| semanticTokens                         | 14       | tokens + AST                       |
+| rename                                 | 15       | references / resolve               |
+| workspaceSymbol                        | 16       | open buffers + require ASTs         |
+| rangeFormatting / onTypeFormatting     | 17       | `yarrow-fmt`                       |
+| textDocument/diagnostic (pull)         | 18       | same as publish                    |
+| TCP + test harness                     | 19       | transport only                     |
+| editor extensions                      | 20       | packaging                          |
+| DAP / debug                            | Out of scope | AOT/JIT debug                  |
 
 ---
 
 ## Later (backlog)
 
-| Item                              | Notes                                           |
-| --------------------------------- | ----------------------------------------------- |
-| Semantic tokens                   | Needs token classification API; nice for themes |
-| Rename (file then project)        | After stable resolve; never silent cross-module |
-| Workspace symbols                 | Needs project index beyond open buffers         |
-| Inlay hints (types / stack)       | After typed analysis API                        |
-| Signature help                    | Call-site param hints from AST / types          |
-| Range format / on-type format     | After full-doc format is solid                  |
-| TCP transport / test harness      | Scripted protocol tests                         |
-| VS Code / Zed extension packaging | Productizing; server stays editor-agnostic      |
-| Pull diagnostics (LSP 3.17)       | Optional once push diagnostics are stable       |
+| Item                              | Notes                                                      |
+| --------------------------------- | ---------------------------------------------------------- |
+| Full project / multi-root index   | Blocked on core project graph; do not fake in LSP          |
+| Cross-crate silent rename         | Explicitly refused; Stage 15 stays conservative            |
+| Incremental / salsa analysis      | Only if check latency becomes a real pain                  |
+| Virtual `yarrow-std:` URIs        | Only if embedded std has no on-disk `lib/std` path         |
+| DAP / debug adapter               | Separate product                                           |
+| Markdown / embedded `.yar`        | Skip until requested                                       |
 
 ---
 
 ## Working rules
 
 - Prefer minimal diffs that pass the **current** stage gate.
-- Do not add tests unless explicitly asked; use scripted LSP messages + `docs/examples/**` as gates.
-- Update this file when a stage gate lands (mark done, short notes; do not re-expand history).
+- Do not add tests unless explicitly asked; use scripted LSP messages + `docs/examples/**` as gates (prefer the Stage 19 harness once it exists).
+- Update this file when a stage gate lands (mark done, short notes; do not re-expand history). When a whole phase is done, collapse finished stages into **Landed** the same way Stages 0–11 were.
 - No tokenizer / parser / typechecker logic here beyond calling `yarrow-core`.
 - Format only through `yarrow-fmt`, never a second pretty-printer.
-- Never use `-` in comments or docs added by this work (ASCII hyphen only; no em dash).
-- If core needs position helpers, typed hover, or require-path APIs, land them in `yarrow-core` and note the dependency here and in the core plan Known gaps / Next.
-- Keep the safe vs unsafe boundary visible in hovers when relevant; do not imply `unsafe` turns off checking.
+- In comments and documentation, never use `—` (em dash); use ASCII hyphen or rephrase.
+- If core needs position helpers, richer probes, or require-path APIs, land them in `yarrow-core` and note the dependency here and in the core plan Known gaps / Next.
+- Keep the safe vs unsafe boundary visible in hovers / inlays when relevant; do not imply `unsafe` turns off checking.
