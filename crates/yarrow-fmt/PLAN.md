@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 0: `FormatOptions` / `FormatError` / `format_source` / `format_file` stubs; path dep on `yarrow_core`; `format_source` returns input unchanged |
+| `yarrow-fmt` crate | ✅     | Stage 2: `FormatIr` (AST + `TriviaMap`); `format_source` parses then returns input unchanged until printer stages |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -123,7 +123,7 @@ Today the tokenizer drops `# …` comments. A formatter cannot preserve them wit
 
 ---
 
-### Stage 2 - Parse + format IR
+### Stage 2 - Parse + format IR ✅
 
 1. `format_source`: tokenize (with trivia when Stage 1 landed) → parse → build a format IR.
 2. Prefer **AST + trivia map** (span → comments) over a full CST unless CST becomes necessary.
@@ -131,6 +131,8 @@ Today the tokenizer drops `# …` comments. A formatter cannot preserve them wit
 4. No semantic analysis.
 
 **Gate:** IR can represent `01_hello.yar` (requires, function, body, string call). Unit-style probe or `cargo run` example optional; corpus gate comes later.
+
+**Notes:** `FormatIr` + `TriviaMap` (leading/trailing by token span, `file_trailing` for post-EOF comments). `FormatError::Parse(SessionDiagnostics)`. Reprint still identity until Stage 3+.
 
 ---
 

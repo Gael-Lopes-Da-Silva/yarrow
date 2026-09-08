@@ -163,6 +163,7 @@ pub struct ExecutableArtifact {
 }
 
 /// Diagnostics emitted while tokenizing/parsing/compiling one source file.
+#[derive(Debug)]
 pub struct SessionDiagnostics {
     pub file: SourceFile,
     pub batch: DiagnosticBatch,
