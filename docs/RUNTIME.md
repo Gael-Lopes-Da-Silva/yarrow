@@ -18,6 +18,17 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 | `executable` | Object emit + system `ld`/`lld` link with the runtime archive       |
 | `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)     |
 
+### Default backend (Stage 29)
+
+Product default is **object** (AOT), not JIT:
+
+| Surface | Default | Opt in to JIT |
+| ------- | ------- | ------------- |
+| [`CompileOptions::new`](../../crates/yarrow-core/src/session.rs) / [`ExecutionMode`](../../crates/yarrow-core/src/session.rs) | `ExecutionMode::Object` | Set `mode = ExecutionMode::Jit` |
+| CLI `run` / `compile` / bare `yarrow <file.yar>` | `--target object` | `--target jit` |
+
+`Session::compile_source` and `run_main` stay JIT-only: they require an explicit `ExecutionMode::Jit` (default `Object` yields `E391` pointing at `compile_object_source`). `check_source` / `interpret_source` are unchanged and do not follow the object default for their pipelines.
+
 - User modules resolve relative to the source file’s directory (`"a.b"` → `a/b.yar`).
 - The standard library is embedded and imported the same way as user code (`"std.io"`, …).
 - Compiled and interpreted code talks to a small **host runtime** for heap headers (strings, lists, maps, regions, free) and raw `alloc` / `free`. Object emit leaves those symbols as imports for a later link.
@@ -108,13 +119,12 @@ Object emit and executable link take an optional [`CompileOptions::target`](../.
 
 Unsupported triples (musl, Mach-O, Windows, …) fail with `E397` (no panic). JIT rejects a non-host `target` with `E397`. Object emit for aarch64 requires the `arm64` feature on `cranelift-codegen` (enabled by `yarrow_core`).
 
-**Session example** (non-host object; no CLI flag yet):
+**Session example** (non-host object; `CompileOptions::new` already defaults to `Object`):
 
 ```rust
-use yarrow_core::{CompileOptions, ExecutionMode, Session, TargetTriple};
+use yarrow_core::{CompileOptions, Session, TargetTriple};
 
 let mut opts = CompileOptions::new("hello.yar");
-opts.mode = ExecutionMode::Object;
 opts.target = Some(TargetTriple::parse("aarch64-unknown-linux-gnu").expect("supported"));
 let session = Session::new(opts);
 let artifact = session.compile_object_source(source)?;

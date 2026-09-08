@@ -314,7 +314,7 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    /// In-process Cranelift JIT (default for `run` / `compile --target jit`).
+    /// In-process Cranelift JIT (`run` / `compile --target jit`).
     pub fn new() -> CResult<Self> {
         Self::with_module(CodeModule::new_jit(OptLevel::None)?, true)
     }

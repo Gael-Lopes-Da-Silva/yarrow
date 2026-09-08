@@ -57,14 +57,15 @@ Useful commands:
 
 ```bash
 cargo run -- check docs/examples/valid/01_hello.yar
-cargo run -- compile --target object -o /tmp/hello.o docs/examples/valid/01_hello.yar
-cargo run -- run --target object docs/examples/valid/01_hello.yar
+cargo run -- compile -o /tmp/hello.o docs/examples/valid/01_hello.yar
+cargo run -- run docs/examples/valid/01_hello.yar
+cargo run -- run --target jit docs/examples/valid/01_hello.yar
 cargo run -- interpret docs/examples/valid/01_hello.yar
 cargo run -- dump --emit ast docs/examples/valid/01_hello.yar
 cargo run -- explain E360
 ```
 
-`cargo run -- <file.yar>` is the same as `run --target jit` with entry `main`. Use `--main` to pick another entry name.
+`cargo run -- <file.yar>` is the same as `run --target object` with entry `main` (link + exec). Use `--target jit` for in-process run, or `--main` to pick another entry name.
 
 ## Repository layout
 

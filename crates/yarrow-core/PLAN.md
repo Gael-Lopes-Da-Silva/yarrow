@@ -26,7 +26,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                      |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
-| Session API | `check` / `compile` (JIT) / `compile_object` / `compile_executable` / `interpret`                          |
+| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object` (Stage 29) |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel` (Stage 25); cross triple object emit (Stage 26) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 21 subset of `docs/examples/valid/**` (stdout matches JIT); structs / errors / regions still E393    |
@@ -45,7 +45,6 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 | Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity           |
 | Warnings    | Only unused / dead-stack; more lints later                                                                    |
 | Projects    | Multi-root check via `check_project` (Stage 28); no CLI project driver yet                                   |
-| Default     | Session / CLI still default to JIT; product switch to `object` is Stage 29                                    |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
 | LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`)             |
 | Formatter   | Whitespace still rebuilt by printer (`yarrow-fmt`)                                                            |
@@ -55,6 +54,8 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 ## Next (Phase F)
 
 Focus: AOT polish on linux-gnu first (debug + opts), then target / linker story, then project shape and default backend. Keep interpreter corpus growth opportunistic when it unblocks a gate; do not invent language features.
+
+Phase F Stages 25–26 and 28–29 are complete; Stage 27 remains deferred. See [Later (backlog)](#later-backlog).
 
 ### Stage 25 - AOT DWARF and `-O` tiers ✅
 
@@ -107,7 +108,7 @@ Today: one root file + `"path" [scope] require` relative to that file / search p
 
 **Done:** Product shape = explicit root set + shared search paths (RUNTIME Projects; `docs/examples/project/`). `ProjectOptions` / `check_project` / `Session::check_project` → `CheckedProject` + `ModuleGraph`. `E382` require cycles (spans); `E383` missing/empty roots; `E380` still unknown module.
 
-### Stage 29 - Default backend `object` instead of `jit`
+### Stage 29 - Default backend `object` instead of `jit` ✅
 
 Product/CLI decision; core must expose a coherent default.
 
@@ -116,6 +117,8 @@ Product/CLI decision; core must expose a coherent default.
 3. Update driver-facing docs / help strings when CLI lands the flip; core stage is done when the library default and Session behavior match the decision.
 
 **Gate:** new `CompileOptions::new` (or documented CLI default) matches the chosen backend; `docs/examples/valid/01_hello.yar` still runs under an explicit JIT path. No silent change to `interpret` / `check`.
+
+**Done:** Chose library + CLI together: `ExecutionMode` / `CompileOptions::new` default to `Object`; CLI `run` / `compile` / bare `yarrow <file>` default `--target object`. `Session::compile_source` / `run_main` require explicit `ExecutionMode::Jit`. `check` / `interpret` unchanged. RUNTIME documents the default.
 
 ---
 

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use yarrow_core::{CompileOptions, Session, SourceFile, Token};
+use yarrow_core::{CompileOptions, ExecutionMode, Session, SourceFile, Token};
 
 use crate::args::{EmitKind, GlobalArgs};
 use crate::diagnostics::render_batch;
@@ -36,6 +36,8 @@ pub fn dump_file(file: &Path, emit: EmitKind, global: &GlobalArgs) -> ExitCode {
     }
     opts.error_limit = global.error_limit;
     opts.require_main = false;
+    // `dump --emit ir` uses the JIT lower path; Object is the library default.
+    opts.mode = ExecutionMode::Jit;
 
     let session = Session::new(opts);
     match emit {

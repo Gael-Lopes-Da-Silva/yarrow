@@ -29,8 +29,8 @@ src/main.rs  →  yarrow_cli::run
 
 | Command     | Behavior                                                     |
 | ----------- | ------------------------------------------------------------ |
-| `run`       | `--target jit` (default) or `object` (link + exec); `--main`; args after `--` |
-| `compile`   | Codegen only; `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
+| `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--` |
+| `compile`   | Codegen only; default `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
 | `check`     | Semantic check only                                          |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit` |
@@ -38,7 +38,7 @@ src/main.rs  →  yarrow_cli::run
 | `explain`   | Long form for a diagnostic code                              |
 | `version`   | Crate version (`-V` too)                                     |
 
-**Defaults:** `yarrow <file.yar>` → `run --target jit`. Entry name `main` unless `--main` is set.
+**Defaults:** `yarrow <file.yar>` → `run --target object` (Stage 29; matches `CompileOptions` / `ExecutionMode::Object`). Entry name `main` unless `--main` is set. Use `--target jit` for in-process run.
 
 **Global flags:** `--color`, `--error-limit`, `-L` / `--search-path`, `-q`, `-v`.
 
@@ -100,7 +100,6 @@ Evaluated readiness; wired nothing that is not ready.
 | `yarrow fmt` wrapper      | After `yarrow-fmt` Stage 11+; in-process `format_*`      |
 | `yarrow lsp` wrapper      | After `yarrow-lsp` Stage 10+; `run_stdio`                |
 | `yarrow clean`            | Only if a build-artifact convention is documented        |
-| Default `--target object` | Product choice; keep `jit` default until AOT is the norm |
 | `test` subcommand         | Needs a language-level test story                        |
 | ICE exit `101`            | Optional once core distinguishes ICE                     |
 | Color / quiet polish      | Only if real UX pain shows up                            |
