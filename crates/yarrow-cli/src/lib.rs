@@ -83,6 +83,7 @@ where
                 sort_requires,
                 no_sort_requires,
                 reorder_layout,
+                best_effort,
                 paths,
             }),
             None,
@@ -93,6 +94,7 @@ where
             max_width,
             yarrow_fmt::resolve_sort_requires_flags(sort_requires, no_sort_requires),
             reorder_layout,
+            best_effort,
         ),
         (
             Some(Cmd::Lsp {

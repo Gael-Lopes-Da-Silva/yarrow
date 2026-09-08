@@ -85,7 +85,7 @@ Interactive loop on `EvalContext`. Line-oriented: snippets without top-level `fu
 
 ### Stage 12 - Tooling subcommands (thin wrappers) ✅
 
-1. `yarrow fmt` wired: in-process `yarrow_fmt::run_fmt` (`--check`, `--stdin`, `--max-width`, `--sort-requires` / `--no-sort-requires`, `--reorder-layout`, directory recurse). Same exit codes as `yarrow-fmt`.
+1. `yarrow fmt` wired: in-process `yarrow_fmt::run_fmt` (`--check`, `--stdin`, `--max-width`, `--sort-requires` / `--no-sort-requires`, `--reorder-layout`, `--best-effort`, directory recurse). Same exit codes as `yarrow-fmt`.
 2. `yarrow lsp` wired: in-process `yarrow_lsp::run_stdio_blocking` with `--stdio`, `-L`, `--main`, `--no-format`, `--log-level` (see [`yarrow-lsp` Stage 10](../yarrow-lsp/PLAN.md)).
 3. `yarrow clean` skipped: no documented build-dir / artifact manifest; default `stem.o` / bare `stem` in cwd is not enough to clean safely.
 

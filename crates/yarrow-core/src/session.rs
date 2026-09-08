@@ -211,11 +211,26 @@ impl Session {
         &self,
         source: String,
     ) -> Result<(SourceFile, Program), SessionDiagnostics> {
-        let (file, tokens) = self.tokenize_source(source)?;
-        match Parser::with_error_limit(tokens, self.options.error_limit).parse() {
-            Ok(program) => Ok((file, program)),
-            Err(batch) => Err(SessionDiagnostics { file, batch }),
+        let (file, program, batch) = self.parse_source_recovering(source)?;
+        if !batch.is_empty() {
+            return Err(SessionDiagnostics { file, batch });
         }
+        Ok((file, program))
+    }
+
+    /// Tokenize and parse with recovery: returns the recovered program plus any
+    /// syntax diagnostics. Tokenize failure is still `Err`.
+    ///
+    /// The program may be incomplete when `batch` is non-empty; see
+    /// [`Parser::parse_recovering`].
+    pub fn parse_source_recovering(
+        &self,
+        source: String,
+    ) -> Result<(SourceFile, Program, DiagnosticBatch), SessionDiagnostics> {
+        let (file, tokens) = self.tokenize_source(source)?;
+        let (program, batch) =
+            Parser::with_error_limit(tokens, self.options.error_limit).parse_recovering();
+        Ok((file, program, batch))
     }
 
     /// Type-check / ownership-check source without a JIT or object product.

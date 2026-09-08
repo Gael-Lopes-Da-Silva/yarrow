@@ -3,9 +3,9 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 16: corpus gate is `docs/examples/valid` and `lib/std` via
-//! `scripts/fmt-check.sh` / CI. Shared [`run_fmt`] for `yarrow-fmt` /
-//! `yarrow fmt`; [`format_range`] for span edits.
+//! Stage 17: [`format_source_best_effort`] applies source hygiene on incomplete
+//! parses (construct reprint stays fail-closed). Shared [`run_fmt`] for
+//! `yarrow-fmt` / `yarrow fmt`; [`format_range`] for span edits.
 
 mod blank;
 mod comment;
@@ -25,7 +25,7 @@ pub use comment::{normalize_comment, trailing_suffix};
 pub use driver::{FmtInput, run_fmt};
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
-pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
+pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, FormatIrParse, TriviaMap};
 pub use layout::{LayoutKind, layout_kind, reorder_toplevel_indices, reorder_toplevel_items};
 pub use paths::collect_yar_paths;
 pub use print::apply_construct_layout;
@@ -140,6 +140,15 @@ impl From<SessionDiagnostics> for FormatError {
     }
 }
 
+/// Result of formatting, including whether only a safe subset ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormattedSource {
+    pub text: String,
+    /// True when parse was incomplete and only source hygiene was applied.
+    /// Idempotence for construct/indent/blanks applies only when this is false.
+    pub best_effort: bool,
+}
+
 /// Build a format IR from source text (`path` is for diagnostics only).
 pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError> {
     FormatIr::parse(source.to_string(), path).map_err(FormatError::from)
@@ -151,38 +160,79 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 /// default, optional file-layout reorder), tab indent / `end` alignment, then
 /// blank-line rules. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
-    format_source_at(source, "<input>", options)
+    Ok(format_source_at(source, "<input>", options, false)?.text)
+}
+
+/// Format with a safe subset on incomplete parse.
+///
+/// On a clean parse, same as [`format_source`]. On syntax / tokenize failure,
+/// returns hygiened text (`LF`, no trailing WS, final newline) with
+/// [`FormattedSource::best_effort`] set and leaves the broken region intact
+/// (no construct reprint from a recovered AST). I/O and UTF-8 errors still
+/// surface as [`FormatError`].
+pub fn format_source_best_effort(
+    source: &str,
+    options: &FormatOptions,
+) -> Result<FormattedSource, FormatError> {
+    format_source_at(source, "<input>", options, true)
 }
 
 fn format_source_at(
     source: &str,
     path: &str,
     options: &FormatOptions,
-) -> Result<String, FormatError> {
+    best_effort: bool,
+) -> Result<FormattedSource, FormatError> {
     let cleaned = apply_source_hygiene(source);
-    let ir = build_format_ir(&cleaned, path)?;
+    let ir = match FormatIr::parse_recovering(cleaned.clone(), path) {
+        Ok(FormatIrParse::Complete(ir)) => ir,
+        Ok(FormatIrParse::Partial { file, batch, .. }) => {
+            if best_effort {
+                return Ok(FormattedSource {
+                    text: cleaned,
+                    best_effort: true,
+                });
+            }
+            return Err(FormatError::Parse(SessionDiagnostics { file, batch }));
+        }
+        Err(diag) => {
+            if best_effort {
+                return Ok(FormattedSource {
+                    text: cleaned,
+                    best_effort: true,
+                });
+            }
+            return Err(FormatError::from(diag));
+        }
+    };
     let laid_out = apply_source_hygiene(&apply_construct_layout(&ir, options));
     // Re-parse so indent / blank line numbers match post-layout text.
     let ir = build_format_ir(&laid_out, path)?;
     let indented = apply_source_hygiene(&apply_indent(&ir, options));
     let ir = build_format_ir(&indented, path)?;
     let blanked = apply_blank_lines(&ir);
-    Ok(apply_source_hygiene(&blanked))
+    Ok(FormattedSource {
+        text: apply_source_hygiene(&blanked),
+        best_effort: false,
+    })
 }
 
 /// Read `path` and format its contents.
 ///
 /// Rejects non-UTF-8 files with [`FormatError::NotUtf8`] (no lossy rewrite).
 pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, FormatError> {
-    Ok(load_and_format(path, options)?.1)
+    Ok(load_and_format(path, options, false)?.1)
 }
 
 /// Read `path` once and return `(original, formatted)`.
 ///
 /// Rejects non-UTF-8 files with [`FormatError::NotUtf8`] (no lossy rewrite).
+/// When `best_effort` is true, incomplete parses yield hygiened text instead of
+/// [`FormatError::Parse`].
 pub fn load_and_format(
     path: &Path,
     options: &FormatOptions,
+    best_effort: bool,
 ) -> Result<(String, String), FormatError> {
     let bytes = std::fs::read(path).map_err(|source| FormatError::Io {
         path: path.to_path_buf(),
@@ -192,8 +242,8 @@ pub fn load_and_format(
         path: path.to_path_buf(),
     })?;
     let path_str = path.to_string_lossy();
-    let formatted = format_source_at(source, &path_str, options)?;
-    Ok((source.to_string(), formatted))
+    let formatted = format_source_at(source, &path_str, options, best_effort)?;
+    Ok((source.to_string(), formatted.text))
 }
 
 /// Write UTF-8 `contents` to `path` (creates or replaces the file).

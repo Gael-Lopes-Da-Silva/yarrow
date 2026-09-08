@@ -13,6 +13,7 @@ pub fn run_fmt_command(
     max_width: usize,
     sort_requires: bool,
     reorder_layout: bool,
+    best_effort: bool,
 ) -> ExitCode {
     run_fmt(
         "yarrow fmt",
@@ -24,6 +25,7 @@ pub fn run_fmt_command(
             },
             check,
             stdin,
+            best_effort,
             paths,
         },
     )

@@ -48,7 +48,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
 | LSP assist  | Typed-at-span via `type_at`; no require-path index API yet (navigation stays LSP AST)                      |
-| Formatter   | Whitespace still rebuilt by printer (`yarrow-fmt`)                                                            |
+| Formatter   | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene via `parse_recovering` |
 
 ---
 
