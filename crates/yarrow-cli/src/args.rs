@@ -191,6 +191,31 @@ pub enum Cmd {
     /// Exit with `exit`, `quit`, or EOF.
     Repl,
 
+    /// Start the Yarrow language server (LSP over stdio).
+    ///
+    /// Delegates in-process to `yarrow_lsp`. Point editors at `yarrow lsp`.
+    Lsp {
+        /// Speak LSP over stdin/stdout (default and only transport in v1).
+        #[arg(long, default_value_t = true)]
+        stdio: bool,
+
+        /// Extra module search path (in addition to global `-L`).
+        #[arg(short = 'L', long = "search-path", value_name = "DIR")]
+        search_paths: Vec<std::path::PathBuf>,
+
+        /// Top-level entry function name (default `main`).
+        #[arg(long, value_name = "NAME", default_value = "main")]
+        main: String,
+
+        /// Disable `textDocument/formatting`.
+        #[arg(long)]
+        no_format: bool,
+
+        /// Log level for process messages on stderr.
+        #[arg(long, value_enum, default_value = "info")]
+        log_level: crate::commands::LspLogLevel,
+    },
+
     /// Print the long form of a diagnostic code.
     Explain {
         /// Diagnostic code, for example `E308`.

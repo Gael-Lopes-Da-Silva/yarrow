@@ -18,28 +18,41 @@ pub struct ModuleTarget {
 }
 
 /// Resolve a `require` path string to a file under search roots / `lib/std`.
-pub fn resolve_require_file(source_path: &str, require_path: &str) -> Option<ModuleTarget> {
-    let (module_path, item) = classify_require(source_path, require_path)?;
-    let path = locate_module_file(source_path, &module_path)?;
+pub fn resolve_require_file(
+    source_path: &str,
+    require_path: &str,
+    search_paths: &[PathBuf],
+) -> Option<ModuleTarget> {
+    let (module_path, item) = classify_require(source_path, require_path, search_paths)?;
+    let path = locate_module_file(source_path, &module_path, search_paths)?;
     Some(ModuleTarget { path, item })
 }
 
 /// Parent-first item import vs whole-module (mirrors core `resolve_require`).
-fn classify_require(source_path: &str, require_path: &str) -> Option<(String, Option<String>)> {
+fn classify_require(
+    source_path: &str,
+    require_path: &str,
+    search_paths: &[PathBuf],
+) -> Option<(String, Option<String>)> {
     if let Some((parent, last)) = require_path.rsplit_once('.')
-        && locate_module_file(source_path, parent).is_some()
-        && module_has_top_level_function(source_path, parent, last)
+        && locate_module_file(source_path, parent, search_paths).is_some()
+        && module_has_top_level_function(source_path, parent, last, search_paths)
     {
         return Some((parent.to_string(), Some(last.to_string())));
     }
-    if locate_module_file(source_path, require_path).is_some() {
+    if locate_module_file(source_path, require_path, search_paths).is_some() {
         return Some((require_path.to_string(), None));
     }
     None
 }
 
-fn module_has_top_level_function(source_path: &str, module_path: &str, name: &str) -> bool {
-    let Some(path) = locate_module_file(source_path, module_path) else {
+fn module_has_top_level_function(
+    source_path: &str,
+    module_path: &str,
+    name: &str,
+    search_paths: &[PathBuf],
+) -> bool {
+    let Some(path) = locate_module_file(source_path, module_path, search_paths) else {
         return false;
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -56,7 +69,11 @@ fn module_has_top_level_function(source_path: &str, module_path: &str, name: &st
     })
 }
 
-fn locate_module_file(source_path: &str, module_path: &str) -> Option<PathBuf> {
+fn locate_module_file(
+    source_path: &str,
+    module_path: &str,
+    search_paths: &[PathBuf],
+) -> Option<PathBuf> {
     if let Some(rest) = module_path.strip_prefix("std.") {
         let rel = PathBuf::from(rest.replace('.', "/")).with_extension("yar");
         for root in std_lib_roots(source_path) {
@@ -70,6 +87,12 @@ fn locate_module_file(source_path: &str, module_path: &str) -> Option<PathBuf> {
     let rel = PathBuf::from(module_path.replace('.', "/")).with_extension("yar");
     if let Some(parent) = Path::new(source_path).parent() {
         let candidate = parent.join(&rel);
+        if candidate.is_file() {
+            return canonical_or_self(candidate);
+        }
+    }
+    for root in search_paths {
+        let candidate = root.join(&rel);
         if candidate.is_file() {
             return canonical_or_self(candidate);
         }

@@ -75,6 +75,23 @@ where
             None,
         ) => commands::interpret_file(&file, &main, &program_args, &cli.global),
         (Some(Cmd::Repl), None) => commands::run_repl(&cli.global),
+        (
+            Some(Cmd::Lsp {
+                stdio,
+                search_paths,
+                main,
+                no_format,
+                log_level,
+            }),
+            None,
+        ) => {
+            if !stdio {
+                eprintln!("error: only --stdio transport is supported");
+                ExitCode::from(2)
+            } else {
+                commands::run_lsp(&cli.global, &search_paths, &main, !no_format, log_level)
+            }
+        }
         (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
         (Some(Cmd::Explain { code }), None) => commands::explain_code(&code, &cli.global),
         (Some(Cmd::Version), None) => {
@@ -93,7 +110,7 @@ where
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow lsp"
             );
             ExitCode::from(2)
         }

@@ -1,10 +1,11 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 9 adds
-//! typed hover via `CheckedProgram::type_at`.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 10 adds
+//! process flags, init options, and the `yarrow lsp` CLI wrapper.
 
 mod analysis;
 mod completion;
+mod config;
 mod definition;
 mod document;
 mod format;
@@ -33,6 +34,7 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 pub use analysis::{check_document, uri_to_source_path};
 pub use completion::completions;
+pub use config::{InitializationOptions, LspConfig};
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
 pub use format::format_document;
@@ -64,20 +66,34 @@ impl From<String> for LspError {
     }
 }
 
-/// Library entry used by the binary and later by `yarrow lsp`.
+/// Library entry used by the binary and by `yarrow lsp` (default config).
 pub async fn run_stdio() -> Result<(), LspError> {
+    run_stdio_with(LspConfig::default()).await
+}
+
+/// stdio server with process-level defaults (CLI `-L` / `--main` / `--no-format`).
+pub async fn run_stdio_with(config: LspConfig) -> Result<(), LspError> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    run_with_streams(stdin, stdout).await
+    run_with_streams(stdin, stdout, config).await
+}
+
+/// Blocking stdio entry for sync CLI wrappers.
+pub fn run_stdio_blocking(config: LspConfig) -> Result<(), LspError> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| LspError::Message(format!("tokio runtime: {e}")))?;
+    rt.block_on(run_stdio_with(config))
 }
 
 /// Run the server over explicit async read/write streams (tests / embedding).
-pub async fn run_with_streams<I, O>(stdin: I, stdout: O) -> Result<(), LspError>
+pub async fn run_with_streams<I, O>(stdin: I, stdout: O, config: LspConfig) -> Result<(), LspError>
 where
     I: tokio::io::AsyncRead + Unpin,
     O: tokio::io::AsyncWrite,
 {
-    let (service, socket) = LspService::new(Backend::new);
+    let (service, socket) = LspService::new(move |client| Backend::new(client, config));
     Server::new(stdin, stdout, socket).serve(service).await;
     Ok(())
 }
@@ -85,6 +101,7 @@ where
 struct ServerState {
     documents: Mutex<DocumentStore>,
     encoding: Mutex<PositionEncoding>,
+    config: Mutex<LspConfig>,
     /// Per-URI generation counter; bumping cancels an in-flight debounce.
     analysis_gens: Mutex<HashMap<String, u64>>,
 }
@@ -95,15 +112,24 @@ struct Backend {
 }
 
 impl Backend {
-    fn new(client: Client) -> Self {
+    fn new(client: Client, config: LspConfig) -> Self {
         Self {
             client,
             state: Arc::new(ServerState {
                 documents: Mutex::new(DocumentStore::default()),
                 encoding: Mutex::new(PositionEncoding::Utf16),
+                config: Mutex::new(config),
                 analysis_gens: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    fn config_snapshot(&self) -> LspConfig {
+        self.state
+            .config
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     fn bump_analysis_gen(&self, uri: &Uri) -> u64 {
@@ -152,7 +178,8 @@ impl Backend {
                 .lock()
                 .map(|g| *g)
                 .unwrap_or(PositionEncoding::Utf16);
-            let diagnostics = check_document(&uri, &text, encoding);
+            let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
+            let diagnostics = check_document(&uri, &text, encoding, &config);
 
             {
                 let Ok(store) = state.documents.lock() else {
@@ -198,6 +225,31 @@ impl LanguageServer for Backend {
             *slot = encoding;
         }
 
+        let init_opts = InitializationOptions::from_value(params.initialization_options.as_ref());
+        let mut folders = Vec::new();
+        if let Some(ws) = params.workspace_folders {
+            for folder in ws {
+                if let Some(path) = folder.uri.to_file_path() {
+                    folders.push(path.into_owned());
+                }
+            }
+        }
+
+        let format_enable = {
+            let Ok(mut cfg) = self.state.config.lock() else {
+                return Ok(InitializeResult {
+                    capabilities: ServerCapabilities::default(),
+                    server_info: Some(ServerInfo {
+                        name: "yarrow-lsp".into(),
+                        version: Some(env!("CARGO_PKG_VERSION").into()),
+                    }),
+                    ..Default::default()
+                });
+            };
+            cfg.apply_initialize(init_opts.as_ref(), &folders);
+            cfg.format_enable
+        };
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 position_encoding: Some(encoding.as_lsp()),
@@ -216,7 +268,11 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec!["\"".into()]),
                     ..Default::default()
                 }),
-                document_formatting_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: if format_enable {
+                    Some(OneOf::Left(true))
+                } else {
+                    None
+                },
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -368,7 +424,8 @@ impl LanguageServer for Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
-        Ok(document_symbols(&path, &text, encoding).map(DocumentSymbolResponse::Nested))
+        let config = self.config_snapshot();
+        Ok(document_symbols(&path, &text, encoding, &config).map(DocumentSymbolResponse::Nested))
     }
 
     async fn goto_definition(
@@ -393,8 +450,9 @@ impl LanguageServer for Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
         Ok(definition::goto_definition(
-            &uri, &path, &text, encoding, position,
+            &uri, &path, &text, encoding, position, &config,
         ))
     }
 
@@ -417,7 +475,8 @@ impl LanguageServer for Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
-        Ok(hover::hover(&path, &text, encoding, position))
+        let config = self.config_snapshot();
+        Ok(hover::hover(&path, &text, encoding, position, &config))
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
@@ -439,7 +498,10 @@ impl LanguageServer for Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
-        Ok(completion::completions(&path, &text, encoding, position))
+        let config = self.config_snapshot();
+        Ok(completion::completions(
+            &path, &text, encoding, position, &config,
+        ))
     }
 
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
@@ -462,6 +524,7 @@ impl LanguageServer for Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
         Ok(references::find_references(
             &uri,
             &path,
@@ -469,6 +532,7 @@ impl LanguageServer for Backend {
             encoding,
             position,
             include_declaration,
+            &config,
         ))
     }
 
@@ -476,6 +540,9 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentFormattingParams,
     ) -> LspResult<Option<Vec<TextEdit>>> {
+        if !self.config_snapshot().format_enable {
+            return Ok(None);
+        }
         let uri = params.text_document.uri;
         let text = {
             let Ok(store) = self.state.documents.lock() else {
