@@ -1,4 +1,5 @@
 # mutable / const / static bindings, coercion on declare, and typeof.
+
 "std.io" io require
 
 main function do

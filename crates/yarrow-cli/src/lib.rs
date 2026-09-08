@@ -81,6 +81,7 @@ where
                 stdin,
                 max_width,
                 sort_requires,
+                no_sort_requires,
                 reorder_layout,
                 paths,
             }),
@@ -90,7 +91,7 @@ where
             check,
             stdin,
             max_width,
-            sort_requires,
+            yarrow_fmt::resolve_sort_requires_flags(sort_requires, no_sort_requires),
             reorder_layout,
         ),
         (

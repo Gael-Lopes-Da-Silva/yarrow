@@ -1,4 +1,5 @@
 # Nested function, parameter move vs copy, and call.
+
 "std.io" io require
 
 demo function do

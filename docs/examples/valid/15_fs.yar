@@ -1,6 +1,7 @@
 # std.fs: write a temp file, read it back, print confirmation.
-"std.io" io require
+
 "std.fs" fs require
+"std.io" io require
 "std.string" str require
 
 main function do

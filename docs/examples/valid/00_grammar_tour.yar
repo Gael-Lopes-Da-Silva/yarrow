@@ -16,8 +16,9 @@
 # - Without alias: bindings enter the current scope.
 # - Item path ("std.math.sqrt"): import only that function into the current scope.
 # Private top-level entities stay file-local and are not exported.
-"std.io" io require # Whole std.io module → scope named io
+
 "std.error" error require # Whole std.error module → scope named error
+"std.io" io require # Whole std.io module → scope named io
 
 # "std.math.sqrt" require     # Item import: only sqrt into the current scope
 # "std.math" require          # Whole module into the current scope

@@ -1,8 +1,8 @@
-//! Top-level `require` sorting from `docs/STYLE_GUIDE.md` (Stage 10).
+//! Top-level `require` sorting from `docs/STYLE_GUIDE.md` (Stages 10 / 14).
 //!
-//! When enabled, consecutive top-level requires are reordered: `"std.…"` first,
-//! then other paths, alphabetically within each group. Function-local requires
-//! are left alone.
+//! When enabled (default), consecutive top-level requires are reordered:
+//! `"std.…"` first, then other paths, alphabetically within each group.
+//! Function-local requires are left alone.
 
 use yarrow_core::parser::ast::{Stmt, StmtKind};
 

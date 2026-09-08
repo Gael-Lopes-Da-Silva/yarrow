@@ -1,4 +1,5 @@
 # Struct literal, implement block, borrow + method call, and enum match.
+
 "std.io" io require
 
 Point struct

@@ -205,13 +205,17 @@ pub enum Cmd {
         #[arg(long)]
         stdin: bool,
 
-        /// Soft wrap width in columns (default 100).
+        /// Soft wrap width in columns (default 100; minimum 20).
         #[arg(long, value_name = "N", default_value_t = 100)]
         max_width: usize,
 
-        /// Sort top-level requires (std first, then local; alphabetical within groups).
-        #[arg(long)]
+        /// Force-on top-level require sorting (default is already on).
+        #[arg(long = "sort-requires", overrides_with = "no_sort_requires")]
         sort_requires: bool,
+
+        /// Keep top-level require source order.
+        #[arg(long = "no-sort-requires", overrides_with = "sort_requires")]
+        no_sort_requires: bool,
 
         /// Reorder top-level items to style-guide file layout (high churn; opt-in).
         #[arg(long)]

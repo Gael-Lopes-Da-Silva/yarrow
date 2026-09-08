@@ -31,7 +31,7 @@ Mechanical rewrite of parseable source:
 - Blank-line rules between top-level items and inside bodies
 - Construct layout: `require`, types, `implement`, functions, `if`/`match`/`for`/`defer`/`unsafe`, calls, containers
 - Comment text preserved; spacing around `#` normalized where the guide is explicit (`# ` after hash; one space before trailing `#`)
-- Opt-in require sorting and (planned) file-layout reorder
+- Opt-in file-layout reorder; require sorting on by default (`--no-sort-requires` to disable)
 
 ### Out of scope
 
@@ -62,10 +62,13 @@ Public surface:
 
 ```rust
 pub struct FormatOptions {
-    pub max_width: usize,       // default 100
-    pub sort_requires: bool,    // default false (opt-in)
+    pub max_width: usize,       // default 100; CLI rejects below MIN_MAX_WIDTH (20); library clamps
+    pub sort_requires: bool,    // default true; --no-sort-requires to preserve order
     pub reorder_layout: bool,   // default false (opt-in; Stage 13)
 }
+
+pub const MIN_MAX_WIDTH: usize = 20;
+pub const DEFAULT_MAX_WIDTH: usize = 100;
 
 pub enum FormatError { /* Io | NotUtf8 | Parse */ }
 
@@ -78,15 +81,16 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
 
 CLI (`yarrow-fmt` and `yarrow fmt`):
 
-| Mode               | Behavior                                       |
-| ------------------ | ---------------------------------------------- |
-| default            | Format files in place                          |
-| `--check`          | Exit non-zero if any file would change         |
-| `--stdin`          | Read stdin, write formatted stdout             |
-| `--max-width N`    | Soft wrap width (default 100)                  |
-| `--sort-requires`  | Opt-in require sorting                         |
-| `--reorder-layout` | Opt-in top-level file-layout reorder           |
-| paths / dirs       | `.yar` files; recurse directories               |
+| Mode                  | Behavior                                       |
+| --------------------- | ---------------------------------------------- |
+| default               | Format files in place                          |
+| `--check`             | Exit non-zero if any file would change         |
+| `--stdin`             | Read stdin, write formatted stdout             |
+| `--max-width N`       | Soft wrap width (default 100; min 20)          |
+| `--sort-requires`     | Force-on require sorting (default already on)  |
+| `--no-sort-requires`  | Keep top-level require source order            |
+| `--reorder-layout`    | Opt-in top-level file-layout reorder           |
+| paths / dirs          | `.yar` files; recurse directories               |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
 
@@ -105,13 +109,14 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 | Construct + control layout    | Requires, types, functions, `if`/`match`/`for`/`defer`/`unsafe`/`handle` |
 | Phrase wrap                   | Soft wrap before consuming words; continuation +1 tab                 |
 | Comments                      | Preserve text; `# ` / ` #` spacing                                    |
-| Require sort (opt-in)         | `FormatOptions::sort_requires` / `--sort-requires`                    |
+| Require sort (default on)     | `sort_requires` / `--no-sort-requires` (Stage 14)                 |
 | Library + binary              | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`   |
 | Shared driver                 | `run_fmt` / `FmtInput` for binary and CLI                             |
 | `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
 | Corpus gate                   | `docs/examples/valid/**` bootstrapped; `--check` exits `0`            |
 | LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
 | File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
+| Defaults polish               | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent       |
 
 **Gates:** `yarrow fmt --check docs/examples/valid` exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -119,7 +124,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: opt-in layout reorder, stabilize defaults, unblock LSP range format, widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
+Focus: stabilize defaults, unblock LSP range format, widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
 
 ### Stage 13 - File layout reorder (opt-in) ✅
 
@@ -128,7 +133,7 @@ Style-guide **File layout**. High churn; keep **opt-in** so default format stays
 Recommended module order:
 
 1. File comment (optional)
-2. Top-level `require` lines (std then local; sorting still gated by `sort_requires`)
+2. Top-level `require` lines (std then local; sorting gated by `sort_requires`, default on)
 3. Type declarations (`struct` / `enum` / `union` / `error`)
 4. `Type implement` blocks (prefer immediately after the type they extend when both move together)
 5. Private helpers
@@ -149,7 +154,7 @@ Tasks:
 
 ---
 
-### Stage 14 - Defaults and option polish
+### Stage 14 - Defaults and option polish ✅
 
 Stage 10 left require sorting opt-in. Width is already configurable; tabs are not.
 
@@ -160,6 +165,8 @@ Stage 10 left require sorting opt-in. Width is already configurable; tabs are no
 5. Re-run `yarrow fmt` over `docs/examples/valid` (and Stage 15 corpus if already landed) so `--check` stays green under the new defaults.
 
 **Gate:** default `format_source` sorts requires without a flag; `--no-sort-requires` preserves require order; `--max-width` still soft-wraps. Idempotent. `cargo fmt && cargo check && cargo clippy` green.
+
+**Notes:** `sort_requires` default **true**; CLI `--sort-requires` / `--no-sort-requires`; `MIN_MAX_WIDTH` (20) rejected by `run_fmt`, clamped via `FormatOptions::effective_max_width` in the library; `DEFAULT_MAX_WIDTH` (100). No spaces-indent option. Style guide tooling blurb updated. Require-run printer keeps comments above the first require as a block header when there is no separating blank (so default sort does not bury file comments). Corpus re-bootstrapped under new defaults.
 
 ---
 
@@ -210,12 +217,12 @@ Today v1 requires a successful parse. Editors often want hygiene / indent on bro
 | -------------------------------------- | ------------------------------------------- |
 | Principles                             | Design only                                 |
 | Source files                           | Landed (3)                                  |
-| Indentation and line width             | Landed (4, 8); width option Stage 14        |
+| Indentation and line width             | Landed (4, 8); width floor / defaults Stage 14 ✅ |
 | Blank lines                            | Landed (5)                                  |
 | Comments                               | Landed (1, 9)                               |
 | Naming                                 | Out of scope (core / lint)                  |
 | File layout (order)                    | Stage 13 ✅ (opt-in)                        |
-| Modules and `require`                  | Landed (6, 10); default sort Stage 14       |
+| Modules and `require`                  | Landed (6, 10); default sort Stage 14 ✅    |
 | Visibility                             | Landed (print as written); Stage 13 order   |
 | Types / Functions / Variables          | Landed (6)                                  |
 | Stack phrases and operators            | Landed (8)                                  |

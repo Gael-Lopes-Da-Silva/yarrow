@@ -3,8 +3,9 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 13: opt-in top-level file-layout reorder (`reorder_layout` /
-//! `--reorder-layout`). Shared [`run_fmt`] driver for `yarrow-fmt` and
+//! Stage 14: require sorting on by default (`--no-sort-requires` to keep
+//! source order); `--max-width` below [`MIN_MAX_WIDTH`] is rejected by the
+//! driver and clamped in the library. Shared [`run_fmt`] for `yarrow-fmt` /
 //! `yarrow fmt`.
 
 mod blank;
@@ -36,14 +37,23 @@ use std::path::{Path, PathBuf};
 
 use yarrow_core::{ColorChoice, SessionDiagnostics, render_batch};
 
+/// Soft-wrap floor: CLI rejects `--max-width` below this; library formatting
+/// clamps to it. Tabs-only indent is fixed (no spaces-indent option).
+pub const MIN_MAX_WIDTH: usize = 20;
+
+/// Default soft wrap target in columns.
+pub const DEFAULT_MAX_WIDTH: usize = 100;
+
 /// Options controlling layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatOptions {
-    /// Soft wrap target in columns. Default: 100.
+    /// Soft wrap target in columns. Default: [`DEFAULT_MAX_WIDTH`]. Values
+    /// below [`MIN_MAX_WIDTH`] are clamped when formatting.
     pub max_width: usize,
     /// When true, sort consecutive top-level `require` lines: `"std.…"` first,
-    /// then other paths, alphabetically within each group. Opt-in (default
-    /// false) to avoid noisy diffs. Function-local requires are never moved.
+    /// then other paths, alphabetically within each group. Default true;
+    /// disable with `--no-sort-requires`. Function-local requires are never
+    /// moved.
     pub sort_requires: bool,
     /// When true, reorder top-level items to style-guide file layout (requires,
     /// types with matching implements, private helpers, public API, `main`).
@@ -54,10 +64,28 @@ pub struct FormatOptions {
 impl Default for FormatOptions {
     fn default() -> Self {
         Self {
-            max_width: 100,
-            sort_requires: false,
+            max_width: DEFAULT_MAX_WIDTH,
+            sort_requires: true,
             reorder_layout: false,
         }
+    }
+}
+
+impl FormatOptions {
+    /// Soft wrap width after applying [`MIN_MAX_WIDTH`].
+    pub fn effective_max_width(&self) -> usize {
+        self.max_width.max(MIN_MAX_WIDTH)
+    }
+}
+
+/// Resolve CLI `--sort-requires` / `--no-sort-requires` (default on).
+///
+/// Pass the raw clap bools; pair them with `overrides_with` so the last flag
+/// wins. When neither is set, returns `true`.
+pub fn resolve_sort_requires_flags(sort_requires: bool, no_sort_requires: bool) -> bool {
+    match (sort_requires, no_sort_requires) {
+        (_, true) => false,
+        (true, false) | (false, false) => true,
     }
 }
 
@@ -118,9 +146,9 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Hygiene, construct layout (width wrap, comment spacing, optional require
-/// sort and file-layout reorder), tab indent / `end` alignment, then blank-line
-/// rules. Parse failures surface as [`FormatError::Parse`].
+/// Hygiene, construct layout (width wrap, comment spacing, require sort by
+/// default, optional file-layout reorder), tab indent / `end` alignment, then
+/// blank-line rules. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }

@@ -2,7 +2,7 @@
 
 How Yarrow source (`.yar`) should look. Language rules live in [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md); this document is about layout, naming, and idiomatic form.
 
-The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide.
+The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide. By default they sort top-level `require` lines (std first, then local); pass `--no-sort-requires` to keep source order. Soft wrap defaults to 100 columns (`--max-width`, minimum 20). Indent is always tabs.
 
 ---
 

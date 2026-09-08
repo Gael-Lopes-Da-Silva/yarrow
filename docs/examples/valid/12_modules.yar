@@ -1,9 +1,11 @@
 # Aliased require, bare require into current scope, item import, and a local
 # helper module. Resolve helpers relative to this file:
 # helpers/greet.yar → "helpers.greet"
+
 "std.io" io require
 "std.math" math require
 "std.math.sqrt" require
+
 "helpers.greet" greet require
 
 main function do

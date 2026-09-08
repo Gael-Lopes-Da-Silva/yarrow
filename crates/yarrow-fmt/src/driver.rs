@@ -1,11 +1,12 @@
-//! Shared formatter driver for `yarrow-fmt` and `yarrow fmt` (Stage 12).
+//! Shared formatter driver for `yarrow-fmt` and `yarrow fmt`.
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::{
-    FormatError, FormatOptions, collect_yar_paths, format_source, load_and_format, write_formatted,
+    FormatError, FormatOptions, MIN_MAX_WIDTH, collect_yar_paths, format_source, load_and_format,
+    write_formatted,
 };
 
 /// Inputs for one formatter invocation.
@@ -25,7 +26,18 @@ pub struct FmtInput {
 /// Exit: `0` ok / already formatted; `1` would change (`check`) or format
 /// failure; `2` usage / I/O. `program` is the CLI name used in error prefixes
 /// (for example `yarrow-fmt` or `yarrow fmt`).
+///
+/// Rejects `--max-width` / `options.max_width` below [`MIN_MAX_WIDTH`] with
+/// exit `2`. Library callers of [`format_source`] clamp instead.
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
+    if input.options.max_width < MIN_MAX_WIDTH {
+        eprintln!(
+            "{program}: --max-width must be at least {MIN_MAX_WIDTH} (got {})",
+            input.options.max_width
+        );
+        return ExitCode::from(2);
+    }
+
     if input.stdin {
         if !input.paths.is_empty() {
             eprintln!("{program}: --stdin does not take PATH arguments");
