@@ -3,13 +3,15 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 4: parses into a format IR, applies source-file hygiene, then
-//! rewrites leading indentation to tabs with `end` aligned to openers.
+//! Stage 5: hygiene, tab indent / `end` alignment, then blank-line
+//! normalization (top-level separation, collapse doubles, tighten openers).
 
+mod blank;
 mod hygiene;
 mod indent;
 mod ir;
 
+pub use blank::apply_blank_lines;
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
@@ -90,7 +92,7 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 4: hygiene, then tab indent / `end` alignment from the format IR.
+/// Stage 5: hygiene, tab indent / `end` alignment, then blank-line rules.
 /// Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
@@ -103,9 +105,12 @@ fn format_source_at(
 ) -> Result<String, FormatError> {
     let cleaned = apply_source_hygiene(source);
     let ir = build_format_ir(&cleaned, path)?;
-    let indented = apply_indent(&ir);
+    let indented = apply_source_hygiene(&apply_indent(&ir));
+    // Re-parse so blank-line line numbers match post-indent text.
+    let ir = build_format_ir(&indented, path)?;
+    let blanked = apply_blank_lines(&ir);
     let _ = options;
-    Ok(apply_source_hygiene(&indented))
+    Ok(apply_source_hygiene(&blanked))
 }
 
 /// Read `path` and format its contents.

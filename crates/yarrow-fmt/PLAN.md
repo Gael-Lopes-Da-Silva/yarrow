@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 4: tab indent + `end` alignment from format IR (hygiene retained) |
+| `yarrow-fmt` crate | ✅     | Stage 5: blank-line normalize after indent (top-level + opener tighten) |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -165,7 +165,7 @@ Style-guide **Indentation** + **Visible structure**:
 
 ---
 
-### Stage 5 - Blank lines
+### Stage 5 - Blank lines ✅
 
 Style-guide **Blank lines**:
 
@@ -175,6 +175,8 @@ Style-guide **Blank lines**:
 4. Inside functions: do not insert a blank line after every statement; preserve or apply only coarse grouping if cheap (v1 may only normalize consecutive blanks and top-level separation).
 
 **Gate:** multi-item file (struct + implement + function + `main`) gets single blank lines between items; double blanks collapse to one.
+
+**Notes:** `apply_blank_lines` after indent (re-parse for line numbers). Requires stay one group; leading comments stick to the next item. Fixture `fixtures/stage5_blank_lines.yar`. Also fixed `yarrow-core` spans that merged `Span::default()` into var/set/enum/error heads (lo==0 stretched items and broke indent/blank grouping). Construct reprint still deferred.
 
 ---
 

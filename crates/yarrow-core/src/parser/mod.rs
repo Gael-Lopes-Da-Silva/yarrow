@@ -450,6 +450,13 @@ impl Parser {
         let ty = self.parse_type()?;
         let end = self.prev_span();
 
+        // Do not merge `Span::default()` for a missing initializer: its `lo == 0`
+        // would stretch the decl span to the start of the file.
+        let span = match value {
+            Some(_) => name_span.merge(value_span).merge(start).merge(end),
+            None => name_span.merge(start).merge(end),
+        };
+
         Ok(Stmt::new(
             StmtKind::VarDecl {
                 name,
@@ -457,7 +464,7 @@ impl Parser {
                 ty,
                 value,
             },
-            name_span.merge(value_span).merge(start).merge(end),
+            span,
         ))
     }
 
@@ -482,10 +489,12 @@ impl Parser {
             None => (None, Span::default()),
         };
 
-        Ok(Stmt::new(
-            StmtKind::Set { target, value },
-            target_span.merge(value_span).merge(start),
-        ))
+        let span = match value {
+            Some(_) => target_span.merge(value_span).merge(start),
+            None => target_span.merge(start),
+        };
+
+        Ok(Stmt::new(StmtKind::Set { target, value }, span))
     }
 
     fn parse_for(&mut self, ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> ParseResult<Stmt> {
@@ -753,11 +762,10 @@ impl Parser {
         self.expect(TokenKind::Error, "expected 'error'")?;
 
         // Operand stack: `Name` or `Name InjectPath` before the `error` keyword.
-        let mut head_span = Span::default();
+        let mut inject_span: Option<Span> = None;
         let inject = match ops.last() {
             Some(Expr::Member { .. }) | Some(Expr::Variable { .. }) if ops.len() >= 2 => {
-                let inject_span = op_spans.pop().unwrap_or_default();
-                head_span = head_span.merge(inject_span);
+                inject_span = op_spans.pop();
                 Some(expr_to_path(ops.pop().unwrap())?)
             }
             _ => None,
@@ -765,7 +773,10 @@ impl Parser {
         let (name, name_span) = self.pop_name(ops, op_spans).map_err(|_| {
             ParseError::new("'error' declaration requires a type name", location, "E230")
         })?;
-        head_span = head_span.merge(name_span);
+        let head_span = match inject_span {
+            Some(span) => span.merge(name_span),
+            None => name_span,
+        };
 
         let mut members = Vec::new();
         while self.peek_kind() != TokenKind::End {
@@ -1346,12 +1357,12 @@ impl Parser {
         op_spans: &mut Vec<Span>,
     ) -> ParseResult<(String, Option<Type>, Span)> {
         let location = self.peek_location();
-        let mut head_span = Span::default();
+        let mut underlying_span: Option<Span> = None;
         let underlying = match ops.last() {
             Some(Expr::TypeValue { name }) => {
                 let name = name.clone();
                 ops.pop();
-                head_span = op_spans.pop().unwrap_or_default();
+                underlying_span = op_spans.pop();
                 let kind = if let Some(p) = Primitive::parse_name(&name) {
                     TypeKind::Primitive(p)
                 } else {
@@ -1363,7 +1374,7 @@ impl Parser {
                 // Named underlying type that is not a primitive.
                 let name = name.clone();
                 ops.pop();
-                head_span = op_spans.pop().unwrap_or_default();
+                underlying_span = op_spans.pop();
                 Some(Type {
                     kind: TypeKind::Named(name),
                     location,
@@ -1372,7 +1383,11 @@ impl Parser {
             _ => None,
         };
         let (name, name_span) = self.pop_name(ops, op_spans)?;
-        head_span = head_span.merge(name_span);
+        // Avoid merging `Span::default()` (lo == 0) when there is no underlying type.
+        let head_span = match underlying_span {
+            Some(span) => span.merge(name_span),
+            None => name_span,
+        };
         Ok((name, underlying, head_span))
     }
 
