@@ -13,6 +13,7 @@ pub fn run_lsp(
     search_paths: &[PathBuf],
     entry_name: &str,
     format_enable: bool,
+    inlay_hints_enable: bool,
     log_level: LspLogLevel,
 ) -> ExitCode {
     let mut search = global.search_paths.clone();
@@ -25,13 +26,15 @@ pub fn run_lsp(
         search_paths: search,
         entry_name: entry_name.to_string(),
         format_enable,
+        inlay_hints_enable,
     };
 
     if log_level.allows(LspLogLevel::Info) && !global.quiet {
         eprintln!(
-            "yarrow lsp: starting (stdio; entry={}; format={}; search_paths={})",
+            "yarrow lsp: starting (stdio; entry={}; format={}; inlay={}; search_paths={})",
             config.entry_name,
             config.format_enable,
+            config.inlay_hints_enable,
             config.search_paths.len()
         );
     }

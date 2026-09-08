@@ -71,11 +71,22 @@ impl TypeIndex {
             .iter()
             .filter(|s| s.span.lo <= offset && offset < s.span.hi)
             .min_by_key(|s| s.span.len())
-            .map(|s| TypeProbe {
-                name: s.name.clone(),
-                span: s.span,
-                ty: s.ty.clone(),
-                signature: s.signature.clone(),
-            })
+            .map(TypeSite::to_probe)
+    }
+
+    /// All recorded sites in the root file (for inlay hints and similar).
+    pub fn probes(&self) -> impl Iterator<Item = TypeProbe> + '_ {
+        self.sites.iter().map(TypeSite::to_probe)
+    }
+}
+
+impl TypeSite {
+    fn to_probe(&self) -> TypeProbe {
+        TypeProbe {
+            name: self.name.clone(),
+            span: self.span,
+            ty: self.ty.clone(),
+            signature: self.signature.clone(),
+        }
     }
 }

@@ -21,6 +21,7 @@ Flags (binary and `yarrow lsp`):
 | `-L` / `--search-path DIR` | Extra module search root (repeatable) |
 | `--main NAME` | Entry function name (default `main`) |
 | `--no-format` | Do not advertise document formatting |
+| `--no-inlay` | Do not advertise inlay hints |
 | `--log-level off\|error\|warn\|info\|debug` | stderr process logs (default `info`) |
 
 ## Editor setup
@@ -33,7 +34,8 @@ Optional `initializationOptions` (JSON, camelCase):
 {
   "searchPaths": ["/extra/modules"],
   "entryName": "main",
-  "format": true
+  "format": true,
+  "inlayHints": true
 }
 ```
 
@@ -46,3 +48,7 @@ On a diagnostic whose code is in the `yarrow explain` catalog, the server offers
 ## Signature help
 
 On a postfix call site (`name call` or `a.b call`), `textDocument/signatureHelp` returns the callee signature (AST, enriched with `type_at` when check succeeds). Trigger character is space. Outside a resolved call site the response is null.
+
+## Inlay hints
+
+After a successful check, `textDocument/inlayHint` places type annotations after binding names (for example `: i32` on `answer`) and short `stack: …` notes on function sites, using only core `TypeIndex` probes. Disable with `--no-inlay` or init option `inlayHints: false`.

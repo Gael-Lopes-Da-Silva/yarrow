@@ -91,6 +91,7 @@ where
                 search_paths,
                 main,
                 no_format,
+                no_inlay,
                 log_level,
             }),
             None,
@@ -99,7 +100,14 @@ where
                 eprintln!("error: only --stdio transport is supported");
                 ExitCode::from(2)
             } else {
-                commands::run_lsp(&cli.global, &search_paths, &main, !no_format, log_level)
+                commands::run_lsp(
+                    &cli.global,
+                    &search_paths,
+                    &main,
+                    !no_format,
+                    !no_inlay,
+                    log_level,
+                )
             }
         }
         (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
