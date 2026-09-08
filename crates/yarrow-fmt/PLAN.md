@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 5: blank-line normalize after indent (top-level + opener tighten) |
+| `yarrow-fmt` crate | ✅     | Stage 6: construct layout reprint (require/types/functions/vars/containers/calls) |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -180,7 +180,7 @@ Style-guide **Blank lines**:
 
 ---
 
-### Stage 6 - Requires, types, functions (construct layout)
+### Stage 6 - Requires, types, functions (construct layout) ✅
 
 Map these style-guide sections into printer rules:
 
@@ -192,6 +192,8 @@ Map these style-guide sections into printer rules:
 6. **Containers:** spaces between elements; no commas.
 
 **Gate:** format the style-guide function / struct / require snippets (as fixtures under e.g. `crates/yarrow-fmt/fixtures/` or `docs/examples`) so output matches the guide’s “prefer” shape for those constructs. Comment-free fixtures OK if Stage 1 incomplete.
+
+**Notes:** `apply_construct_layout` AST reprint before indent/blank. Requires stay one group; Seq prefixes absorbed into bindings are split back by original line (with gap comments). Fixture `fixtures/stage6_constructs.yar`. Control-flow polish still Stage 7; width wrap Stage 8; comment spacing Stage 9.
 
 ---
 

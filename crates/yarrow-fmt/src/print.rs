@@ -1,0 +1,1082 @@
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stage 6).
+//!
+//! Reprints the AST into preferred forms for requires, types, functions,
+//! variables, containers, and short calls. Own-line comments between
+//! constructs are preserved from the original source by line gap; trailing
+//! comment spacing is left to Stage 9.
+
+use yarrow_core::parser::ast::{
+    BinOp, EnumDecl, ErrorDecl, Expr, Field, Function, Implement, MatchCase, MatchCaseKind,
+    Mutability, ParamModifier, Parameter, Primitive, StackOp, Stmt, StmtKind, StructDecl, Type,
+    TypeKind, UnOp, UnionDecl, Visibility,
+};
+use yarrow_core::{SourceFile, Span};
+
+use crate::FormatOptions;
+use crate::ir::FormatIr;
+
+/// Reprint the program with Stage 6 construct layout.
+///
+/// Emits tab indentation and a single blank line between top-level items.
+/// Idempotent when composed with hygiene / indent / blank on accepted inputs.
+pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String {
+    let mut p = Printer {
+        file: &ir.file,
+        max_width: options.max_width.max(1),
+        out: String::with_capacity(ir.file.source.len().saturating_add(64)),
+        depth: 0,
+        last_emitted_line: 0,
+        at_line_start: true,
+        pending_blank: false,
+    };
+
+    let items = &ir.program.items;
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            // Requires stay one group; blank only before a non-require item
+            // (or when leaving the require block).
+            let prev_req = matches!(items[i - 1].kind, StmtKind::Require { .. });
+            let cur_req = matches!(item.kind, StmtKind::Require { .. });
+            p.pending_blank = !(prev_req && cur_req);
+        }
+        p.emit_gap_comments(item.span.line);
+        p.print_stmt(item);
+        p.finish_line();
+        p.last_emitted_line = end_line(p.file, item.span).max(p.last_emitted_line);
+    }
+
+    p.emit_gap_comments(p.file.line_count().saturating_add(1));
+    if !p.out.ends_with('\n') {
+        p.out.push('\n');
+    }
+    p.out
+}
+
+struct Printer<'a> {
+    file: &'a SourceFile,
+    max_width: usize,
+    out: String,
+    depth: usize,
+    /// Last original source line whose content (or gap) was considered.
+    last_emitted_line: usize,
+    at_line_start: bool,
+    pending_blank: bool,
+}
+
+impl<'a> Printer<'a> {
+    fn emit_gap_comments(&mut self, until_line: usize) {
+        let start = self.last_emitted_line.saturating_add(1);
+        let last = self.file.line_count();
+        if start == 0 || until_line <= start {
+            return;
+        }
+        let end = until_line.min(last.saturating_add(1));
+        for line in start..end {
+            if line > last {
+                break;
+            }
+            let raw = self.file.line_text(line);
+            let trimmed = trim_indent(raw);
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                self.flush_pending_blank();
+                self.write_indent();
+                self.out.push_str(trimmed);
+                self.out.push('\n');
+                self.at_line_start = true;
+                self.last_emitted_line = line;
+            }
+        }
+    }
+
+    fn flush_pending_blank(&mut self) {
+        if self.pending_blank && !self.out.is_empty() && !self.out.ends_with("\n\n") {
+            if !self.out.ends_with('\n') {
+                self.out.push('\n');
+            }
+            self.out.push('\n');
+            self.at_line_start = true;
+        }
+        self.pending_blank = false;
+    }
+
+    fn write_indent(&mut self) {
+        if self.at_line_start {
+            for _ in 0..self.depth {
+                self.out.push('\t');
+            }
+            self.at_line_start = false;
+        }
+    }
+
+    fn finish_line(&mut self) {
+        if !self.at_line_start {
+            self.out.push('\n');
+            self.at_line_start = true;
+        }
+    }
+
+    fn write_tokens_line(&mut self, tokens: &[String]) {
+        if tokens.is_empty() {
+            return;
+        }
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&tokens.join(" "));
+        self.finish_line();
+    }
+
+    fn print_stmt(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Require { path, alias } => self.print_require(path, alias.as_deref()),
+            StmtKind::Struct(decl) => self.print_struct(decl),
+            StmtKind::Enum(decl) => self.print_enum(decl),
+            StmtKind::Union(decl) => self.print_union(decl),
+            StmtKind::Error(decl) => self.print_error(decl),
+            StmtKind::Implement(impls) => self.print_implement(impls),
+            StmtKind::Function(func) => self.print_function(func),
+            StmtKind::VarDecl {
+                name,
+                mutability,
+                ty,
+                value,
+            } => self.print_var_decl(name, *mutability, ty, value.as_ref()),
+            StmtKind::Set { target, value } => self.print_set(target, value.as_ref()),
+            StmtKind::Expr(expr) => {
+                let tokens = expr_tokens(expr);
+                self.write_tokens_line(&tokens);
+            }
+            StmtKind::Return { value } => self.print_return(value.as_ref()),
+            StmtKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => self.print_if(condition, then_branch, else_branch),
+            StmtKind::For { source, body } => self.print_for(source, body),
+            StmtKind::Match {
+                value,
+                cases,
+                else_branch,
+            } => self.print_match(value, cases, else_branch),
+            StmtKind::Defer { body } => self.print_defer(body),
+            StmtKind::Unsafe { body } => self.print_unsafe_block(body),
+            StmtKind::Handle { body, fallback } => self.print_handle(body, fallback.as_ref()),
+            StmtKind::Move { target, source } => {
+                let mut tokens = expr_tokens(source);
+                tokens.push(target.clone());
+                tokens.push("move".into());
+                self.write_tokens_line(&tokens);
+            }
+            StmtKind::Fallback { value } => {
+                let mut tokens = Vec::new();
+                if let Some(v) = value {
+                    tokens.extend(expr_tokens(v));
+                }
+                tokens.push("fallback".into());
+                self.write_tokens_line(&tokens);
+            }
+        }
+    }
+
+    fn print_require(&mut self, path: &str, alias: Option<&str>) {
+        let mut line = format!("\"{path}\"");
+        if let Some(alias) = alias {
+            line.push(' ');
+            line.push_str(alias);
+        }
+        line.push_str(" require");
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&line);
+        self.finish_line();
+    }
+
+    fn print_struct(&mut self, decl: &StructDecl) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&decl.name);
+        if let Some(vis) = decl.visibility {
+            self.out.push(' ');
+            self.out.push_str(visibility_word(vis));
+        }
+        self.out.push_str(" struct");
+        self.finish_line();
+
+        self.depth += 1;
+        for field in &decl.fields {
+            self.print_field(field);
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_field(&mut self, field: &Field) {
+        self.write_indent();
+        self.out.push_str(&format_type(&field.ty));
+        self.out.push(' ');
+        self.out.push_str(&field.name);
+        if let Some(vis) = field.visibility {
+            self.out.push(' ');
+            self.out.push_str(visibility_word(vis));
+        }
+        self.finish_line();
+    }
+
+    fn print_enum(&mut self, decl: &EnumDecl) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&decl.name);
+        if let Some(ty) = &decl.underlying {
+            self.out.push(' ');
+            self.out.push_str(&format_type(ty));
+        }
+        self.out.push_str(" enum");
+        self.finish_line();
+
+        self.depth += 1;
+        for member in &decl.members {
+            self.write_indent();
+            self.out.push_str(&member.name);
+            if let Some(value) = &member.value {
+                self.out.push(' ');
+                self.out.push_str(value);
+            }
+            self.finish_line();
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_union(&mut self, decl: &UnionDecl) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&decl.name);
+        self.out.push_str(" union");
+        self.finish_line();
+
+        self.depth += 1;
+        for ty in &decl.types {
+            self.write_indent();
+            self.out.push_str(&format_type(ty));
+            self.finish_line();
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_error(&mut self, decl: &ErrorDecl) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&decl.name);
+        if let Some(inject) = &decl.inject {
+            self.out.push(' ');
+            self.out.push_str(inject);
+        }
+        self.out.push_str(" error");
+        self.finish_line();
+
+        self.depth += 1;
+        for member in &decl.members {
+            self.write_indent();
+            self.out.push_str(member);
+            self.finish_line();
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_implement(&mut self, impls: &Implement) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&impls.target);
+        self.out.push_str(" implement");
+        self.finish_line();
+
+        self.depth += 1;
+        for (i, func) in impls.functions.iter().enumerate() {
+            if i > 0 {
+                self.pending_blank = true;
+            }
+            self.print_function(func);
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_function(&mut self, func: &Function) {
+        self.flush_pending_blank();
+        self.write_indent();
+        self.out.push_str(&func.name);
+        if let Some(vis) = func.visibility {
+            self.out.push(' ');
+            self.out.push_str(visibility_word(vis));
+        }
+        if func.is_unsafe {
+            self.out.push_str(" unsafe");
+        }
+        self.out.push_str(" function");
+
+        if func.params.is_empty() {
+            self.out.push_str(" do");
+            self.finish_line();
+        } else {
+            self.finish_line();
+            self.depth += 1;
+            for param in &func.params {
+                self.print_param(param);
+            }
+            self.depth -= 1;
+            self.write_indent();
+            self.out.push_str("do");
+            self.finish_line();
+        }
+
+        self.depth += 1;
+        self.print_body(&func.body);
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        if let Some(ret) = nonzero_return(&func.returns) {
+            self.out.push_str(" with ");
+            self.out.push_str(&format_type(ret));
+        }
+        self.finish_line();
+    }
+
+    fn print_param(&mut self, param: &Parameter) {
+        self.write_indent();
+        self.out.push_str(&format_type(&param.ty));
+        match param.modifier {
+            Some(ParamModifier::Copy) => self.out.push_str(" copy"),
+            Some(ParamModifier::Mutable) => self.out.push_str(" mutable"),
+            None => {}
+        }
+        self.finish_line();
+    }
+
+    fn print_body(&mut self, stmts: &[Stmt]) {
+        let mut i = 0;
+        let mut prev_end_line = self.last_emitted_line;
+        while i < stmts.len() {
+            match &stmts[i].kind {
+                StmtKind::Expr(_) => {
+                    let start = i;
+                    i += 1;
+                    while i < stmts.len() && matches!(stmts[i].kind, StmtKind::Expr(_)) {
+                        i += 1;
+                    }
+                    if had_blank_between(self.file, prev_end_line, stmts[start].span.line) {
+                        self.pending_blank = true;
+                    }
+                    self.emit_gap_comments(stmts[start].span.line);
+                    self.print_expr_phrase(&stmts[start..i]);
+                    if let Some(last) = stmts.get(i.saturating_sub(1)) {
+                        prev_end_line = end_line(self.file, last.span);
+                        self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+                    }
+                }
+                _ => {
+                    if had_blank_between(self.file, prev_end_line, stmts[i].span.line) {
+                        self.pending_blank = true;
+                    }
+                    // Nested functions get a blank before the next sibling when
+                    // the source had one; also prefer a blank after a nested
+                    // function before non-function code (style-guide demo).
+                    self.emit_gap_comments(stmts[i].span.line);
+                    let is_nested_fn = matches!(stmts[i].kind, StmtKind::Function(_));
+                    self.print_stmt(&stmts[i]);
+                    prev_end_line = end_line(self.file, stmts[i].span);
+                    self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+                    if is_nested_fn && i + 1 < stmts.len() {
+                        self.pending_blank = true;
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Stage 6 calls: keep `name call` with prior args on one line when under
+    /// `max_width`. Otherwise preserve original line grouping.
+    fn print_expr_phrase(&mut self, stmts: &[Stmt]) {
+        if stmts.is_empty() {
+            return;
+        }
+
+        let words: Vec<(usize, Vec<String>)> = stmts
+            .iter()
+            .map(|s| {
+                let expr = match &s.kind {
+                    StmtKind::Expr(e) => e,
+                    _ => unreachable!(),
+                };
+                (s.span.line.max(1), expr_tokens(expr))
+            })
+            .collect();
+
+        // Group tokens that shared an original source line.
+        let mut lines: Vec<(usize, Vec<String>)> = Vec::new();
+        let mut cur_line = 0usize;
+        for (line, tokens) in &words {
+            if lines.is_empty() || *line != cur_line {
+                lines.push((*line, Vec::new()));
+                cur_line = *line;
+            }
+            if let Some((_, last)) = lines.last_mut() {
+                last.extend(tokens.iter().cloned());
+            }
+        }
+
+        let indent_cols = self.depth;
+        // Pull preceding arg lines into a call/unwrap line while under width.
+        let mut i = 0;
+        while i < lines.len() {
+            if is_call_tail(&lines[i].1) {
+                let mut start = i;
+                while start > 0 && !is_phrase_end(&lines[start - 1].1) {
+                    let mut merged = lines[start - 1].1.clone();
+                    for (_, line) in &lines[start..=i] {
+                        merged.extend(line.iter().cloned());
+                    }
+                    if indent_cols + merged.join(" ").len() > self.max_width {
+                        break;
+                    }
+                    start -= 1;
+                }
+                if start < i {
+                    let line_no = lines[start].0;
+                    let mut merged = Vec::new();
+                    for (_, line) in &lines[start..=i] {
+                        merged.extend(line.iter().cloned());
+                    }
+                    lines[start] = (line_no, merged);
+                    lines.drain(start + 1..=i);
+                    i = start;
+                }
+            }
+            i += 1;
+        }
+
+        for (line_no, tokens) in lines {
+            if had_blank_between(self.file, self.last_emitted_line, line_no) {
+                self.pending_blank = true;
+            }
+            self.emit_gap_comments(line_no);
+            if !tokens.is_empty() {
+                self.write_tokens_line(&tokens);
+                self.last_emitted_line = line_no.max(self.last_emitted_line);
+            }
+        }
+    }
+
+    fn print_var_decl(
+        &mut self,
+        name: &str,
+        mutability: Mutability,
+        ty: &Type,
+        value: Option<&Expr>,
+    ) {
+        let value_tokens = match value {
+            Some(v) => self.emit_absorbed_prefix(v),
+            None => Vec::new(),
+        };
+        let mut tokens = value_tokens;
+        tokens.push(name.into());
+        tokens.push(mutability_word(mutability).into());
+        tokens.push(format_type(ty));
+        self.write_tokens_line(&tokens);
+    }
+
+    fn print_set(&mut self, target: &Expr, value: Option<&Expr>) {
+        let value_tokens = match value {
+            Some(v) => self.emit_absorbed_prefix(v),
+            None => Vec::new(),
+        };
+        let mut tokens = value_tokens;
+        tokens.extend(expr_tokens(target));
+        tokens.push("set".into());
+        self.write_tokens_line(&tokens);
+    }
+
+    /// Emit stack phrases the parser folded into a consuming construct, and
+    /// return the final line's tokens (the true initializer / condition tail).
+    fn emit_absorbed_prefix(&mut self, expr: &Expr) -> Vec<String> {
+        let lines = phrase_lines_spanned(expr);
+        if lines.len() <= 1 {
+            return phrase_tokens(expr);
+        }
+        for (spans, tokens) in &lines[..lines.len() - 1] {
+            if let Some(first) = spans.first() {
+                let line = first.line.max(1);
+                if had_blank_between(self.file, self.last_emitted_line, line) {
+                    self.pending_blank = true;
+                }
+                self.emit_gap_comments(line);
+            }
+            if !tokens.is_empty() {
+                self.write_tokens_line(tokens);
+            }
+            if let Some(last) = spans.last() {
+                let end = end_line(self.file, *last);
+                self.last_emitted_line = end.max(self.last_emitted_line);
+            }
+        }
+        let (spans, tokens) = &lines[lines.len() - 1];
+        if let Some(first) = spans.first() {
+            let line = first.line.max(1);
+            if had_blank_between(self.file, self.last_emitted_line, line) {
+                self.pending_blank = true;
+            }
+            self.emit_gap_comments(line);
+        }
+        tokens.clone()
+    }
+
+    fn print_return(&mut self, value: Option<&Expr>) {
+        let mut tokens = Vec::new();
+        if let Some(v) = value {
+            tokens.extend(phrase_tokens(v));
+        }
+        tokens.push("return".into());
+        self.write_tokens_line(&tokens);
+    }
+
+    fn print_if(&mut self, condition: &Expr, then_branch: &[Stmt], else_branch: &[Stmt]) {
+        // Condition may absorb prior stack lines via Seq; emit by original line.
+        let cond_lines = phrase_lines(condition);
+        if cond_lines.is_empty() {
+            self.write_tokens_line(&["if".into()]);
+        } else {
+            for (i, line) in cond_lines.iter().enumerate() {
+                let mut tokens = line.clone();
+                if i + 1 == cond_lines.len() {
+                    tokens.push("if".into());
+                }
+                self.write_tokens_line(&tokens);
+            }
+        }
+
+        self.depth += 1;
+        self.print_body(then_branch);
+        self.depth -= 1;
+
+        if !else_branch.is_empty() {
+            self.write_indent();
+            self.out.push_str("else");
+            self.finish_line();
+            self.depth += 1;
+            self.print_body(else_branch);
+            self.depth -= 1;
+        }
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_for(&mut self, source: &Expr, body: &[Stmt]) {
+        let mut tokens = phrase_tokens(source);
+        // If source was multi-line Seq, print prior lines first.
+        let lines = phrase_lines(source);
+        if lines.len() > 1 {
+            for line in &lines[..lines.len() - 1] {
+                self.write_tokens_line(line);
+            }
+            let mut last = lines.last().cloned().unwrap_or_default();
+            last.push("for".into());
+            self.write_tokens_line(&last);
+        } else {
+            tokens.push("for".into());
+            self.write_tokens_line(&tokens);
+        }
+
+        self.depth += 1;
+        self.print_body(body);
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_match(&mut self, value: &Expr, cases: &[MatchCase], else_branch: &[Stmt]) {
+        let lines = phrase_lines(value);
+        if lines.len() > 1 {
+            for line in &lines[..lines.len() - 1] {
+                self.write_tokens_line(line);
+            }
+            let mut last = lines.last().cloned().unwrap_or_default();
+            last.push("match".into());
+            self.write_tokens_line(&last);
+        } else {
+            let mut tokens = phrase_tokens(value);
+            tokens.push("match".into());
+            self.write_tokens_line(&tokens);
+        }
+
+        self.depth += 1;
+        for (i, case) in cases.iter().enumerate() {
+            if i > 0 {
+                self.pending_blank = true;
+            }
+            self.print_match_case(case);
+        }
+        if !else_branch.is_empty() {
+            if !cases.is_empty() {
+                self.pending_blank = true;
+            }
+            self.write_indent();
+            self.out.push_str("else");
+            self.finish_line();
+            self.depth += 1;
+            self.print_body(else_branch);
+            self.depth -= 1;
+            self.write_indent();
+            self.out.push_str("end");
+            self.finish_line();
+        }
+        self.depth -= 1;
+
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_match_case(&mut self, case: &MatchCase) {
+        match &case.kind {
+            MatchCaseKind::Condition(expr) => {
+                let lines = phrase_lines(expr);
+                if lines.len() > 1 {
+                    for line in &lines[..lines.len() - 1] {
+                        self.write_tokens_line(line);
+                    }
+                    let mut last = lines.last().cloned().unwrap_or_default();
+                    last.push("case".into());
+                    self.write_tokens_line(&last);
+                } else {
+                    let mut tokens = phrase_tokens(expr);
+                    tokens.push("case".into());
+                    self.write_tokens_line(&tokens);
+                }
+            }
+            MatchCaseKind::Type(ty) => {
+                self.write_tokens_line(&[format_type(ty), "case".into()]);
+            }
+        }
+        self.depth += 1;
+        self.print_body(&case.body);
+        self.depth -= 1;
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_defer(&mut self, body: &[Stmt]) {
+        // One-line when a single short phrase; else block form (Stage 7 gate).
+        if body.len() == 1
+            && let StmtKind::Expr(expr) = &body[0].kind
+        {
+            let mut tokens = expr_tokens(expr);
+            let joined = tokens.join(" ");
+            if self.depth + "defer ".len() + joined.len() + " end".len() <= self.max_width {
+                let mut line = vec!["defer".into()];
+                line.append(&mut tokens);
+                line.push("end".into());
+                self.write_tokens_line(&line);
+                return;
+            }
+        }
+
+        self.write_indent();
+        self.out.push_str("defer");
+        self.finish_line();
+        self.depth += 1;
+        self.print_body(body);
+        self.depth -= 1;
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_unsafe_block(&mut self, body: &[Stmt]) {
+        self.write_indent();
+        self.out.push_str("unsafe");
+        self.finish_line();
+        self.depth += 1;
+        self.print_body(body);
+        self.depth -= 1;
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn print_handle(&mut self, body: &[Stmt], fallback: Option<&Expr>) {
+        // Caller prints the expression + `handle`; here body is the handle block.
+        // When Handle appears as its own stmt, print `handle` … `end`.
+        self.write_indent();
+        self.out.push_str("handle");
+        self.finish_line();
+        self.depth += 1;
+        self.print_body(body);
+        if let Some(fb) = fallback {
+            let mut tokens = phrase_tokens(fb);
+            tokens.push("fallback".into());
+            self.write_tokens_line(&tokens);
+        }
+        self.depth -= 1;
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+}
+
+fn trim_indent(line: &str) -> &str {
+    line.trim_start_matches([' ', '\t'])
+}
+
+fn is_blank_line(line: &str) -> bool {
+    trim_indent(line).is_empty()
+}
+
+fn had_blank_between(file: &SourceFile, prev_end_line: usize, next_start_line: usize) -> bool {
+    if prev_end_line == 0 || next_start_line <= prev_end_line + 1 {
+        return false;
+    }
+    let last = file.line_count();
+    ((prev_end_line + 1)..next_start_line)
+        .filter(|l| *l <= last)
+        .any(|l| is_blank_line(file.line_text(l)))
+}
+
+fn end_line(file: &SourceFile, span: Span) -> usize {
+    if span.hi == 0 {
+        return span.line;
+    }
+    file.location(span.hi.saturating_sub(1)).line
+}
+
+fn visibility_word(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
+    }
+}
+
+fn mutability_word(m: Mutability) -> &'static str {
+    match m {
+        Mutability::Mutable => "mutable",
+        Mutability::Const => "const",
+        Mutability::Static => "static",
+    }
+}
+
+fn nonzero_return(returns: &[Type]) -> Option<&Type> {
+    match returns {
+        [] => None,
+        [ty] => match &ty.kind {
+            TypeKind::Primitive(Primitive::Void) => None,
+            _ => Some(ty),
+        },
+        [ty, ..] => Some(ty),
+    }
+}
+
+fn is_call_tail(tokens: &[String]) -> bool {
+    matches!(tokens.last().map(String::as_str), Some("call" | "unwrap"))
+}
+
+/// A line that already ends a stack phrase (do not merge into a following call).
+fn is_phrase_end(tokens: &[String]) -> bool {
+    match tokens.last().map(String::as_str) {
+        Some(
+            "call" | "unwrap" | "drop" | "pop" | "dup" | "swap" | "rot" | "unrot" | "borrow"
+            | "typeof" | "load" | "store" | "return" | "set" | "move" | "fallback",
+        ) => true,
+        Some(w) if binop_word_set(w) || w == "not" => true,
+        _ => false,
+    }
+}
+
+fn binop_word_set(w: &str) -> bool {
+    matches!(
+        w,
+        "+" | "-"
+            | "*"
+            | "/"
+            | "//"
+            | "%"
+            | "^"
+            | "~"
+            | "=="
+            | "!="
+            | ">"
+            | ">="
+            | "<"
+            | "<="
+            | "and"
+            | "or"
+            | "xor"
+            | "lshift"
+            | "rshift"
+    )
+}
+
+pub(crate) fn format_type(ty: &Type) -> String {
+    match &ty.kind {
+        TypeKind::Named(name) => name.clone(),
+        TypeKind::Primitive(p) => primitive_name(*p).into(),
+        TypeKind::Array { element, size } => match size {
+            Some(n) => format!("array<{} {n}>", format_type(element)),
+            None => format!("array<{}>", format_type(element)),
+        },
+        TypeKind::List { element } => format!("list<{}>", format_type(element)),
+        TypeKind::Hashmap { key, value } => {
+            format!("hashmap<{} {}>", format_type(key), format_type(value))
+        }
+        TypeKind::Reference { inner } => format!("reference<{}>", format_type(inner)),
+        TypeKind::Pointer { inner } => format!("pointer<{}>", format_type(inner)),
+        TypeKind::Union(members) => {
+            let inner = members
+                .iter()
+                .map(format_type)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("|{inner}|")
+        }
+    }
+}
+
+fn primitive_name(p: Primitive) -> &'static str {
+    match p {
+        Primitive::I8 => "i8",
+        Primitive::I16 => "i16",
+        Primitive::I32 => "i32",
+        Primitive::I64 => "i64",
+        Primitive::U8 => "u8",
+        Primitive::U16 => "u16",
+        Primitive::U32 => "u32",
+        Primitive::U64 => "u64",
+        Primitive::F16 => "f16",
+        Primitive::F32 => "f32",
+        Primitive::F64 => "f64",
+        Primitive::String => "string",
+        Primitive::Rune => "rune",
+        Primitive::Bool => "bool",
+        Primitive::Void => "void",
+        Primitive::Error => "error",
+        Primitive::Type => "type",
+    }
+}
+
+/// Tokens for a stack phrase, flattening `Seq` in source order.
+fn phrase_tokens(expr: &Expr) -> Vec<String> {
+    match expr {
+        Expr::Seq(elems) => elems.iter().flat_map(|(e, _)| expr_tokens(e)).collect(),
+        other => expr_tokens(other),
+    }
+}
+
+/// Group a phrase into lines using original `Seq` element spans when present.
+fn phrase_lines(expr: &Expr) -> Vec<Vec<String>> {
+    phrase_lines_spanned(expr)
+        .into_iter()
+        .map(|(_, tokens)| tokens)
+        .collect()
+}
+
+fn phrase_lines_spanned(expr: &Expr) -> Vec<(Vec<Span>, Vec<String>)> {
+    match expr {
+        Expr::Seq(elems) if !elems.is_empty() => {
+            let mut lines: Vec<(Vec<Span>, Vec<String>)> = Vec::new();
+            let mut cur_line = 0usize;
+            for (e, span) in elems {
+                let line = span.line.max(1);
+                if line != cur_line {
+                    lines.push((Vec::new(), Vec::new()));
+                    cur_line = line;
+                }
+                if let Some((spans, tokens)) = lines.last_mut() {
+                    spans.push(*span);
+                    tokens.extend(expr_tokens(e));
+                }
+            }
+            lines.retain(|(_, t)| !t.is_empty());
+            if lines.is_empty() {
+                vec![(Vec::new(), phrase_tokens(expr))]
+            } else {
+                lines
+            }
+        }
+        other => vec![(Vec::new(), expr_tokens(other))],
+    }
+}
+
+fn expr_tokens(expr: &Expr) -> Vec<String> {
+    match expr {
+        Expr::Integer { value }
+        | Expr::Float { value }
+        | Expr::String { value }
+        | Expr::Rune { value } => {
+            vec![value.clone()]
+        }
+        Expr::Bool { value } => vec![if *value { "true" } else { "false" }.into()],
+        Expr::Variable { name } | Expr::TypeValue { name } => vec![name.clone()],
+        Expr::Member { base, member } => {
+            let mut tokens = expr_tokens(base);
+            if let Some(last) = tokens.last_mut() {
+                last.push('.');
+                last.push_str(member);
+            } else {
+                tokens.push(format!(".{member}"));
+            }
+            tokens
+        }
+        Expr::Binary { op, left, right } => {
+            let mut tokens = expr_tokens(left);
+            tokens.extend(expr_tokens(right));
+            tokens.push(binop_word(*op).into());
+            tokens
+        }
+        Expr::Unary { op, operand } => {
+            let mut tokens = expr_tokens(operand);
+            tokens.push(unop_word(*op).into());
+            tokens
+        }
+        Expr::Call { target } => {
+            let mut tokens = expr_tokens(target);
+            tokens.push("call".into());
+            tokens
+        }
+        Expr::Unwrap { inner } => {
+            let mut tokens = expr_tokens(inner);
+            tokens.push("unwrap".into());
+            tokens
+        }
+        Expr::Typeof { inner } => {
+            let mut tokens = expr_tokens(inner);
+            tokens.push("typeof".into());
+            tokens
+        }
+        Expr::Borrow { inner } => {
+            let mut tokens = expr_tokens(inner);
+            tokens.push("borrow".into());
+            tokens
+        }
+        Expr::Load { inner } => {
+            let mut tokens = expr_tokens(inner);
+            tokens.push("load".into());
+            tokens
+        }
+        Expr::Store { addr, value } => {
+            let mut tokens = expr_tokens(addr);
+            tokens.extend(expr_tokens(value));
+            tokens.push("store".into());
+            tokens
+        }
+        Expr::ApplyBin(op) => vec![binop_word(*op).into()],
+        Expr::ApplyUn(op) => vec![unop_word(*op).into()],
+        Expr::ApplyTypeof => vec!["typeof".into()],
+        Expr::ApplyBorrow => vec!["borrow".into()],
+        Expr::ApplyLoad => vec!["load".into()],
+        Expr::Builtin { name } => vec![format!("@{name}")],
+        Expr::StackOp(op) => vec![stack_op_word(*op).into()],
+        Expr::Array(elems) => vec![format_container('[', ']', elems)],
+        Expr::List(elems) => vec![format_container('(', ')', elems)],
+        Expr::Map(pairs) => {
+            let mut inner = String::new();
+            for (i, (k, v)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    inner.push(' ');
+                }
+                inner.push_str(&expr_tokens(k).join(" "));
+                inner.push(' ');
+                inner.push_str(&expr_tokens(v).join(" "));
+            }
+            vec![format!("{{{inner}}}")]
+        }
+        Expr::StructLit(fields) => {
+            let mut inner = String::new();
+            for (i, (name, value)) in fields.iter().enumerate() {
+                if i > 0 {
+                    inner.push(' ');
+                }
+                inner.push_str(name);
+                inner.push(' ');
+                inner.push_str(&expr_tokens(value).join(" "));
+            }
+            vec![format!("{{{inner}}}")]
+        }
+        Expr::EmptyMapOrStruct => vec!["{}".into()],
+        Expr::Seq(elems) => elems.iter().flat_map(|(e, _)| expr_tokens(e)).collect(),
+    }
+}
+
+fn format_container(open: char, close: char, elems: &[Expr]) -> String {
+    let mut inner = String::new();
+    for (i, e) in elems.iter().enumerate() {
+        if i > 0 {
+            inner.push(' ');
+        }
+        inner.push_str(&expr_tokens(e).join(" "));
+    }
+    format!("{open}{inner}{close}")
+}
+
+fn binop_word(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Plus => "+",
+        BinOp::Minus => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Fdiv => "//",
+        BinOp::Mod => "%",
+        BinOp::Pow => "^",
+        BinOp::Concat => "~",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Gt => ">",
+        BinOp::Gte => ">=",
+        BinOp::Lt => "<",
+        BinOp::Lte => "<=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+        BinOp::Xor => "xor",
+        BinOp::Lshift => "lshift",
+        BinOp::Rshift => "rshift",
+    }
+}
+
+fn unop_word(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Not => "not",
+    }
+}
+
+fn stack_op_word(op: StackOp) -> &'static str {
+    match op {
+        StackOp::Dup => "dup",
+        StackOp::Swap => "swap",
+        StackOp::Rot => "rot",
+        StackOp::Unrot => "unrot",
+        StackOp::Pop => "pop",
+        StackOp::Drop => "drop",
+    }
+}
