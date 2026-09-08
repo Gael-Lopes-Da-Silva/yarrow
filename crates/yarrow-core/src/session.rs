@@ -10,14 +10,17 @@ use crate::tokenizer::{Token, Tokenizer};
 /// How a session turns a checked program into code or executes it.
 ///
 /// `Check` / `Jit` (13a), `Interpret` (13b), and `Object` emit (13c) are landed.
+/// Default is [`ExecutionMode::Object`] (Stage 29); set [`ExecutionMode::Jit`]
+/// explicitly for in-process JIT / [`Session::compile_source`] / `run_main`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
     /// Full type / ownership / stack / region checks; no JIT / object product.
     Check,
-    /// Cranelift in-process machine code (default for `run` / `compile`).
-    #[default]
+    /// Cranelift in-process machine code. Opt in for `compile_source` / `run_main`.
     Jit,
-    /// Native relocatable object (AOT). Use [`Session::compile_object_source`].
+    /// Native relocatable object (AOT). Default for [`CompileOptions::new`].
+    /// Use [`Session::compile_object_source`] / [`Session::compile_executable_source`].
+    #[default]
     Object,
     /// Stack VM / AST interpreter (`Session::interpret_source`).
     Interpret,
@@ -90,7 +93,7 @@ impl CompileOptions {
             require_main: true,
             entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
             error_limit: crate::diagnostics::DEFAULT_ERROR_LIMIT,
-            mode: ExecutionMode::Jit,
+            mode: ExecutionMode::Object,
             opt_level: OptLevel::None,
             debug_info: true,
             target: None,
@@ -231,9 +234,13 @@ impl Session {
         crate::project::check_project(options)
     }
 
-    /// Compile source according to [`CompileOptions::mode`].
+    /// Compile source to a JIT [`SessionArtifact`] (does not run `main`).
     ///
-    /// - [`ExecutionMode::Jit`]: full check + JIT install (does not run `main`).
+    /// Requires [`ExecutionMode::Jit`] or [`ExecutionMode::Check`]. The library
+    /// default is [`ExecutionMode::Object`]; set `mode` to `Jit` before calling,
+    /// or use [`Self::compile_object_source`] / [`Self::compile_executable_source`].
+    ///
+    /// - [`ExecutionMode::Jit`]: full check + JIT install.
     /// - [`ExecutionMode::Check`]: same as [`Self::check_source`] but returns an
     ///   artifact whose compiler is check-only (`run_main` will fail).
     /// - [`ExecutionMode::Object`]: clear error; use [`Self::compile_object_source`].

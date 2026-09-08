@@ -71,9 +71,9 @@ pub enum CompileEmitKind {
 /// Compile / run backend selected with `--target`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TargetKind {
-    /// Cranelift in-process machine code (default).
+    /// Cranelift in-process machine code (`--target jit`).
     Jit,
-    /// Native relocatable object (AOT).
+    /// Native relocatable object / linked executable (default).
     Object,
 }
 
@@ -103,7 +103,7 @@ pub enum Cmd {
     /// `yarrow file.yar` is sugar for `yarrow run file.yar`.
     ///
     /// Program arguments go after `--` (for example
-    /// `yarrow run --target object file.yar -- arg1 arg2`). With
+    /// `yarrow run file.yar -- arg1 arg2`). With the default
     /// `--target object` they are the child process argv. JIT has no
     /// language-level argv API yet; non-empty args are rejected.
     Run {
@@ -111,8 +111,8 @@ pub enum Cmd {
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
 
-        /// Codegen backend (`jit` or `object`). Default: `jit`.
-        #[arg(long, value_enum, default_value = "jit")]
+        /// Codegen backend (`jit` or `object`). Default: `object`.
+        #[arg(long, value_enum, default_value = "object")]
         target: TargetKind,
 
         /// Top-level entry function name (default `main`).
@@ -126,16 +126,16 @@ pub enum Cmd {
 
     /// Check + codegen without running the entry.
     ///
-    /// Default `--target jit` finalizes JIT code in-process. `--target object`
-    /// writes a native artifact; use `--emit object` (default, `stem.o`) or
-    /// `--emit exe` (linked host binary, default `stem`).
+    /// Default `--target object` writes a native artifact; use `--emit object`
+    /// (default, `stem.o`) or `--emit exe` (linked host binary, default `stem`).
+    /// `--target jit` finalizes JIT code in-process (no file written).
     Compile {
         /// Source file to compile.
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
 
-        /// Codegen backend (`jit` or `object`). Default: `jit`.
-        #[arg(long, value_enum, default_value = "jit")]
+        /// Codegen backend (`jit` or `object`). Default: `object`.
+        #[arg(long, value_enum, default_value = "object")]
         target: TargetKind,
 
         /// Artifact for `--target object`: relocatable `object` or linked `exe`.

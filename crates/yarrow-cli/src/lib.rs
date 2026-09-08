@@ -52,8 +52,8 @@ where
             None,
         ) => commands::run_file(&file, target, &main, &program_args, &cli.global),
         (None, Some(file)) => {
-            // `yarrow <file>` is sugar for `yarrow run --target jit <file>`.
-            commands::run_file(&file, TargetKind::Jit, "main", &[], &cli.global)
+            // `yarrow <file>` is sugar for `yarrow run --target object <file>`.
+            commands::run_file(&file, TargetKind::Object, "main", &[], &cli.global)
         }
         (
             Some(Cmd::Compile {
