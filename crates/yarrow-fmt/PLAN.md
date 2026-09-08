@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 2: `FormatIr` (AST + `TriviaMap`); `format_source` parses then returns input unchanged until printer stages |
+| `yarrow-fmt` crate | ✅     | Stage 3: parse IR + source hygiene (LF, strip trailing WS, final newline; reject non-UTF-8) |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -136,7 +136,7 @@ Today the tokenizer drops `# …` comments. A formatter cannot preserve them wit
 
 ---
 
-### Stage 3 - Source file hygiene
+### Stage 3 - Source file hygiene ✅
 
 Implement style-guide **Source files** + checklist basics:
 
@@ -146,6 +146,8 @@ Implement style-guide **Source files** + checklist basics:
 4. Do not rewrite non-UTF-8 (error clearly).
 
 **Gate:** dirty fixture with trailing spaces / missing final newline / CRLF → clean output matching those three rules. Idempotent.
+
+**Notes:** `apply_source_hygiene` + `FormatError::NotUtf8` on `format_file`. Fixture `fixtures/stage3_dirty.yar`. Construct reprint still deferred.
 
 ---
 
