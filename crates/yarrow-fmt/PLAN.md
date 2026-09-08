@@ -1,8 +1,8 @@
 # Yarrow Formatter Implementation Plan
 
-Library (and later binary) that rewrites `.yar` source to match [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md).
+Library and binary that rewrite `.yar` source to match [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md).
 
-`yarrow-fmt` is a **tooling crate**. It may depend on `yarrow-core` for tokenize / parse / diagnostics. It does **not** type-check, borrow-check, or codegen. CLI wiring (`yarrow fmt`) is in [`crates/yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md) Stage 12.
+`yarrow-fmt` is a **tooling crate**. It may depend on `yarrow-core` for tokenize / parse / diagnostics. It does **not** type-check, borrow-check, or codegen. CLI wiring (`yarrow fmt`) lives in [`crates/yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md). Editors format via [`yarrow-lsp`](../yarrow-lsp/PLAN.md) calling the same `format_source` API.
 
 ## Source of truth
 
@@ -21,26 +21,27 @@ When the style guide and the formatter disagree, **change the formatter** (or am
 
 ## Scope
 
-### In scope (formatter)
+### In scope
 
-Mechanical rewrite of valid (or parseable) source:
+Mechanical rewrite of parseable source:
 
 - Source file hygiene: UTF-8, LF, no trailing whitespace, final newline
 - Indent: **one tab per nesting level**; no space indent
-- Soft wrap target: **100 columns** (break before consuming words)
+- Soft wrap target: **100 columns** (break before consuming words); `FormatOptions::max_width` / `--max-width`
 - Blank-line rules between top-level items and inside bodies
 - Construct layout: `require`, types, `implement`, functions, `if`/`match`/`for`/`defer`/`unsafe`, calls, containers
 - Comment text preserved; spacing around `#` normalized where the guide is explicit (`# ` after hash; one space before trailing `#`)
+- Opt-in require sorting and (planned) file-layout reorder
 
-### Out of scope (v1)
+### Out of scope
 
 | Concern                         | Why                                                              |
 | ------------------------------- | ---------------------------------------------------------------- |
-| Renaming (`PascalCase`, etc.)   | Naming is style/lint, not rewrite; core warnings may cover later |
+| Renaming (`PascalCase`, etc.)   | Naming is style/lint, not rewrite; core warnings / future lint   |
 | Idiom rewrites (`+`→`~`, etc.)  | Semantic / teachable; not silent format                          |
-| Reordering functions / types    | File layout order is guidance; optional later flag               |
 | Type-check / borrow fixes       | Compiler / `yarrow check`                                        |
-| Partial format of invalid files | May best-effort later; v1 requires a successful parse            |
+| Tabs vs spaces as a config knob | Style guide fixes tabs; formatter always emits tabs              |
+| Editor format-on-save wiring    | Editor / LSP client; server already exposes full-doc format      |
 
 **Idempotence:** `format(format(src)) == format(src)` for accepted inputs.
 
@@ -50,269 +51,183 @@ Mechanical rewrite of valid (or parseable) source:
 
 ```text
 source (.yar)
-  → trivia-aware tokens (core; see Stage 1)
+  → comment tokens (yarrow-core; whitespace rebuilt in printer)
   → parse (yarrow-core Parser / Session::parse_source)
-  → format IR (CST-ish or AST + attached trivia)
-  → printer (STYLE_GUIDE rules)
+  → format IR (AST + TriviaMap)
+  → printer (STYLE_GUIDE rules: construct → phrase wrap → indent → blanks → hygiene)
   → UTF-8 string / write back
 ```
 
-Public surface (target):
+Public surface:
 
 ```rust
 pub struct FormatOptions {
     pub max_width: usize,      // default 100
-    pub sort_requires: bool,   // default false (opt-in)
+    pub sort_requires: bool,   // default false (opt-in; Stage 14 may flip)
 }
 
-pub struct FormatError { /* path, diagnostics from parse, or I/O */ }
+pub enum FormatError { /* Io | NotUtf8 | Parse */ }
 
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError>;
 pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, FormatError>;
+
+pub struct FmtInput { /* options, check, stdin, paths */ }
+pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
 ```
 
-CLI / binary (this crate or thin `yarrow fmt` wrapper):
+CLI (`yarrow-fmt` and `yarrow fmt`):
 
-| Mode         | Behavior                                         |
-| ------------ | ------------------------------------------------ |
-| default      | Format files in place                            |
-| `--check`    | Exit non-zero if any file would change           |
-| `--stdin`    | Read stdin, write formatted stdout               |
-| paths / dirs | `.yar` files; recurse directories when requested |
+| Mode             | Behavior                                       |
+| ---------------- | ---------------------------------------------- |
+| default          | Format files in place                          |
+| `--check`        | Exit non-zero if any file would change         |
+| `--stdin`        | Read stdin, write formatted stdout             |
+| `--max-width N`  | Soft wrap width (default 100)                  |
+| `--sort-requires`| Opt-in require sorting                         |
+| paths / dirs     | `.yar` files; recurse directories               |
 
-Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/format failure, `2` usage / I/O.
-
----
-
-## Current state
-
-| Piece              | Status | Notes                                                                 |
-| ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 12: `run_fmt` driver; `yarrow fmt` + corpus `--check` on `docs/examples/valid` |
-| Style guide        | ✅     | Authoritative layout doc                                              |
-| Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
-| Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
+Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
 
 ---
 
-## Stages
+## Landed (v1)
 
-### Stage 0 - Crate skeleton and API stubs ✅
+Stages 0–12 are complete. Historical stage write-ups were removed; git history keeps them.
 
-1. Depend on `yarrow_core` (path).
-2. Add `FormatOptions`, `FormatError`, `format_source` stub that returns the input unchanged (or errors clearly if not implemented).
-3. Optional: `src/main.rs` binary later; library-first is enough here.
-4. Document crate role in this file’s Current state.
+| Piece                         | Notes                                                                 |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Core comment tokens           | `TokenKind::Comment`; parser skips; printer rebuilds whitespace       |
+| Format IR                     | `FormatIr` + `TriviaMap` (leading / trailing / file trailing)         |
+| Hygiene                       | LF, strip trailing WS, final newline; `NotUtf8` on bad files          |
+| Indent / blanks               | Tab nesting; aligned `end`; top-level blanks; collapse doubles        |
+| Construct + control layout    | Requires, types, functions, `if`/`match`/`for`/`defer`/`unsafe`/`handle` |
+| Phrase wrap                   | Soft wrap before consuming words; continuation +1 tab                 |
+| Comments                      | Preserve text; `# ` / ` #` spacing                                    |
+| Require sort (opt-in)         | `FormatOptions::sort_requires` / `--sort-requires`                    |
+| Library + binary              | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`   |
+| Shared driver                 | `run_fmt` / `FmtInput` for binary and CLI                             |
+| `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
+| Corpus gate                   | `docs/examples/valid/**` bootstrapped; `--check` exits `0`            |
+| LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
 
-**Gate:** `cargo check -p yarrow_fmt` green. Public API compiles.
-
----
-
-### Stage 1 - Comment / trivia tokens in `yarrow-core` ✅
-
-Today the tokenizer drops `# …` comments. A formatter cannot preserve them without trivia.
-
-1. In `yarrow-core`, emit line-comment tokens (lexeme + span) and optionally newline / whitespace trivia **or** attach leading/trailing trivia to tokens (pick one model; prefer comment tokens + rebuild whitespace in the printer if simpler).
-2. Parser ignores comment tokens the same way it ignores nothing today (skip in the token cursor).
-3. JIT / check / examples unchanged.
-4. Document the trivia contract briefly in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) or a short note in [`docs/AST.md`](../../docs/AST.md) only if the AST gains comment nodes; prefer keeping comments off the semantic AST.
-
-**Gate:** round-trip test at the token level: source with `#` comments yields tokens that still carry comment text; `Session::parse_source` / valid corpus still parses. `cargo clippy` green for core + fmt.
-
-**Notes:** Chose comment tokens only (no whitespace/newline trivia). Lexeme is `#` + text through EOL exclusive of `\n`. Parser peeks/advances skip `Comment`. Whitespace rebuilt later in the printer.
+**Gates:** `yarrow fmt --check docs/examples/valid` exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
 ---
 
-### Stage 2 - Parse + format IR ✅
+## Next
 
-1. `format_source`: tokenize (with trivia when Stage 1 landed) → parse → build a format IR.
-2. Prefer **AST + trivia map** (span → comments) over a full CST unless CST becomes necessary.
-3. On parse failure: return `FormatError` with core diagnostics (reuse render later in CLI). Do not invent fmt-only syntax errors.
-4. No semantic analysis.
+Focus: opt-in layout reorder, stabilize defaults, unblock LSP range format, widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
 
-**Gate:** IR can represent `01_hello.yar` (requires, function, body, string call). Unit-style probe or `cargo run` example optional; corpus gate comes later.
+### Stage 13 - File layout reorder (opt-in)
 
-**Notes:** `FormatIr` + `TriviaMap` (leading/trailing by token span, `file_trailing` for post-EOF comments). `FormatError::Parse(SessionDiagnostics)`. Reprint still identity until Stage 3+.
+Style-guide **File layout**. High churn; keep **opt-in** so default format stays diff-quiet.
 
----
+Recommended module order:
 
-### Stage 3 - Source file hygiene ✅
+1. File comment (optional)
+2. Top-level `require` lines (std then local; sorting still gated by `sort_requires`)
+3. Type declarations (`struct` / `enum` / `union` / `error`)
+4. `Type implement` blocks (prefer immediately after the type they extend when both move together)
+5. Private helpers
+6. Public API functions
+7. `main` last (entry files only)
 
-Implement style-guide **Source files** + checklist basics:
+Tasks:
 
-1. Normalize to LF (`\n`).
-2. Strip trailing whitespace on every line.
-3. Ensure exactly one final newline.
-4. Do not rewrite non-UTF-8 (error clearly).
+1. Add `FormatOptions::reorder_layout` (default **false**) and CLI `--reorder-layout`.
+2. Reorder only **top-level** items; never pull function-local requires or nested decls to file scope.
+3. Move each item with its attached leading own-line comments; preserve relative order inside the same category when the guide does not distinguish further (stable sort).
+4. Keep a single blank line between top-level items after the move (reuse blank-line pass).
+5. Document that visibility (`public` / private helpers) is inferred from existing AST flags / keywords, not guessed from names.
 
-**Gate:** dirty fixture with trailing spaces / missing final newline / CRLF → clean output matching those three rules. Idempotent.
-
-**Notes:** `apply_source_hygiene` + `FormatError::NotUtf8` on `format_file`. Fixture `fixtures/stage3_dirty.yar`. Construct reprint still deferred.
-
----
-
-### Stage 4 - Indent and `end` alignment ✅
-
-Style-guide **Indentation** + **Visible structure**:
-
-1. One tab per nesting level for bodies of `do` / `if` / `else` / `match` / `case` / `for` / `defer` / `unsafe` / type / `implement`.
-2. `end` at the same indent as the opener keyword’s line.
-3. Reject or rewrite leading space-indent to tabs for indented lines (formatter output always tabs).
-
-**Gate:** a nested `if` / `function` example formats with tab indent and aligned `end`. Matches the shape of style-guide control-flow snippets.
-
-**Notes:** `apply_indent` paints nesting from the AST (plus keyword-line finds for `do` / `else` / case `end`), then rewrites leading whitespace to tabs. Fixture `fixtures/stage4_indent.yar`. Phrase/construct reprint still deferred to later stages.
+**Gate:** fixture with shuffled types / implements / helpers / `main` reorders to the guide sequence when the option is enabled; disabled path preserves order. Idempotent either way. `cargo fmt && cargo check && cargo clippy` green.
 
 ---
 
-### Stage 5 - Blank lines ✅
+### Stage 14 - Defaults and option polish
 
-Style-guide **Blank lines**:
+Stage 10 left require sorting opt-in. Width is already configurable; tabs are not.
 
-1. Single blank line between top-level items (requires block, types, implement, functions).
-2. No more than one consecutive blank line anywhere.
-3. No blank line immediately after `do` / `if` / `else` / `case` / `for` / `defer` / `unsafe` or immediately before matching `end` (unless a later exception for dense multi-branch match is needed; start strict).
-4. Inside functions: do not insert a blank line after every statement; preserve or apply only coarse grouping if cheap (v1 may only normalize consecutive blanks and top-level separation).
+1. Flip `FormatOptions::sort_requires` default to **true** once Stage 13 (or corpus) shows diffs are acceptable; add `--no-sort-requires` (and keep `--sort-requires` as an explicit no-op / force-on for scripts).
+2. Leave `max_width` default at 100; document that values below a small floor (e.g. 20) are clamped or rejected with a clear usage error.
+3. Do **not** add a spaces-indent option. Reject or ignore any future indent-style config; printer always emits tabs.
+4. Update CLI help, style-guide tooling blurb if defaults change, and this plan’s Architecture snippet.
+5. Re-run `yarrow fmt` over `docs/examples/valid` (and Stage 15 corpus if already landed) so `--check` stays green under the new defaults.
 
-**Gate:** multi-item file (struct + implement + function + `main`) gets single blank lines between items; double blanks collapse to one.
-
-**Notes:** `apply_blank_lines` after indent (re-parse for line numbers). Requires stay one group; leading comments stick to the next item. Fixture `fixtures/stage5_blank_lines.yar`. Also fixed `yarrow-core` spans that merged `Span::default()` into var/set/enum/error heads (lo==0 stretched items and broke indent/blank grouping). Construct reprint still deferred.
-
----
-
-### Stage 6 - Requires, types, functions (construct layout) ✅
-
-Map these style-guide sections into printer rules:
-
-1. **Modules / `require`:** one require per line; `"path" [alias] require`; group at file top when they appear there.
-2. **Types:** one field / member / union arm per line; `end` placement.
-3. **Functions:** each parameter type on its own line between `function` and `do`; `name function do` when no params; `end with Type` on the same line as `end`; omit `with` for void.
-4. **Calls:** keep `name call` with the last argument on one line when under `max_width`.
-5. **Variables:** `<value> <name> (mutable|const|static) <Type>` on one line.
-6. **Containers:** spaces between elements; no commas.
-
-**Gate:** format the style-guide function / struct / require snippets (as fixtures under e.g. `crates/yarrow-fmt/fixtures/` or `docs/examples`) so output matches the guide’s “prefer” shape for those constructs. Comment-free fixtures OK if Stage 1 incomplete.
-
-**Notes:** `apply_construct_layout` AST reprint before indent/blank. Requires stay one group; Seq prefixes absorbed into bindings are split back by original line (with gap comments). Fixture `fixtures/stage6_constructs.yar`. Control-flow polish still Stage 7; width wrap Stage 8; comment spacing Stage 9.
+**Gate:** default `format_source` sorts requires without a flag; `--no-sort-requires` preserves require order; `--max-width` still soft-wraps. Idempotent. `cargo fmt && cargo check && cargo clippy` green.
 
 ---
 
-### Stage 7 - Control flow, defer, unsafe, errors ✅
+### Stage 15 - Range / span format API
 
-Layout from style-guide **Control flow**, **Defer**, **Unsafe**, **Errors**:
+Unblocks [`yarrow-lsp` Stage 17](../yarrow-lsp/PLAN.md) (`rangeFormatting` / optional on-type). Full-document format stays the source of truth; do not ship a second pretty-printer.
 
-1. `condition if` / `else` / `end` blocks.
-2. `match` with indented `case` … `end`; blank line between multi-line cases when easy.
-3. `for` bodies.
-4. One-line `defer … end` when the body is a single short phrase; else block form.
-5. `unsafe … end` kept tight.
-6. `call unwrap` / `call handle … end` spacing.
+1. Add a library entry point, e.g. `format_range(source, span, options) -> Result<FormatRangeEdit, FormatError>` (exact names flexible), that either:
+   - formats the whole file via `format_source` and returns the rewritten slice / text edits intersecting `span`, **or**
+   - expands `span` to enclosing top-level item boundaries when a naive intersect would break indent / blanks, and documents that expansion.
+2. Return enough data for LSP `TextEdit`s (byte or line/column ranges in the original buffer). Prefer one contiguous replacement when simpler and still correct.
+3. On parse failure: return `FormatError::Parse` (LSP maps to empty edits); never partially corrupt the buffer.
+4. Keep the API usable without writing files; binary / `yarrow fmt` need not expose range mode in this stage.
 
-**Gate:** fixtures derived from the guide’s `match` / `defer` / `unsafe` / `handle` examples format stably and idempotently.
-
-**Notes:** Extends `apply_construct_layout`: `call handle` merge + short `handle … fallback end`; multi-expr one-line `defer`; match blanks only when cases are multi-line. Parser: drain ops before `defer`/`unsafe` (statement order); bare `match` span no longer merges `Span::default()`. Indent: one-line defer/handle stay at opener depth; `fallback` line painted inside handle. Fixture `fixtures/stage7_control_flow.yar`. Width wrap still Stage 8; comment spacing Stage 9.
+**Gate:** fixture with a messy contiguous region; range format yields edits confined to (or documented expansion of) that region and matches full-doc format for the rewritten slice. Second call on the result is a no-op. `cargo fmt && cargo check && cargo clippy` green.
 
 ---
 
-### Stage 8 - Line width and stack phrases ✅
+### Stage 16 - Stdlib corpus + CI `--check`
 
-Style-guide **Indentation and line width** + **Stack phrases**:
+Stage 12 gated `docs/examples/valid`. Widen the always-green surface and make CI enforce it.
 
-1. Default `max_width = 100`.
-2. Space-separate tokens; never jam (`1 2 +`, not `1 2+`).
-3. Prefer one primary effect per line; allow short pure arithmetic on one line.
-4. When over width, break **before** a consuming word (`call`, operator, `if`, …), continuation indented one tab deeper.
+1. Bootstrap-format `crates/yarrow-core/lib/std/**/*.yar` (commit results).
+2. Document the gate set in notes: at least `docs/examples/valid` and `lib/std`.
+3. Add a CI step (or script invoked by CI) that runs `yarrow fmt --check` on that set and fails the job on exit `1`.
+4. Do not silently format `docs/examples/invalid/**` (parse failures are expected).
 
-**Gate:** a deliberately long call phrase wraps before `call` like the guide example. Width-100 content stays single-line when it fits.
-
-**Notes:** `phrase` module: all-or-nothing call merge under width; over-width flattens the arg run and wraps into units (args alone, `callee call` / `callee call unwrap` together) with continuation at `depth + 1`. Indent preserves construct-layout continuation tabs. Also wraps long `set` / `return` / `if` / `for` heads. Fixture `fixtures/stage8_line_width.yar`. Comment spacing still Stage 9.
+**Gate:** `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std` exits `0`. CI job fails if a `.yar` in that set drifts. `cargo fmt && cargo check && cargo clippy` green.
 
 ---
 
-### Stage 9 - Comments ✅
+### Stage 17 - Best-effort format on partial parse
 
-Requires Stage 1.
+Today v1 requires a successful parse. Editors often want hygiene / indent on broken buffers.
 
-1. Preserve comment text (no em-dash rewriting beyond leaving text alone; guide forbids writing `-` in new comments, not stripping existing Unicode).
-2. Own-line comments: single space after `#`.
-3. Trailing comments: one space before `#`.
-4. Keep own-line comments above the code they document when attachment is unambiguous; if ambiguous, keep relative order to the following token.
+1. Coordinate with `yarrow-core`: needs an error-tolerant / recovery parse policy that still yields a partial AST (or token stream with statement boundaries). Do not invent a second parser in this crate. If core has no recovery API yet, mark this stage **blocked** and stop after a short design note.
+2. Define a safe subset when parse is incomplete: source hygiene always; indent / blanks only where structure is unambiguous; skip construct reprint for broken regions (leave original text).
+3. Extend `FormatError` or return a structured “partial success” only if callers can distinguish full vs best-effort (LSP must not replace the buffer with a worse partial). Prefer: succeed with a flag, or fail closed like today until recovery is trustworthy.
+4. Idempotence applies only to the fully-parsed subset; document limits.
 
-**Gate:** `01_hello.yar`-style file with a file comment and a trailing comment round-trips comment text; spacing matches the guide. Idempotent.
-
-**Notes:** `comment` module normalizes `#` / `# text`. Construct layout: own-line gaps via normalized lexemes; trailing reattached from trivia on stmt / field / phrase end lines (` # text`). Fixture `fixtures/stage9_comments.yar`. Require sorting still Stage 10.
-
----
-
-### Stage 10 - Require sorting (optional flag) ✅
-
-Style-guide: std requires first, then local; alphabetical within groups.
-
-1. Default **on** for `format` once stable, or default **off** with `--sort-requires` / `FormatOptions::sort_requires` (prefer **opt-in** first to avoid noisy diffs, then flip default if desired).
-2. Only reorder top-level requires; do not move function-local requires to file top.
-
-**Gate:** fixture with shuffled `"std.…"` / local requires sorts as documented when the option is enabled; disabled path preserves order.
-
-**Notes:** `FormatOptions::sort_requires` defaults false. `require` module + construct-layout require runs: std then local (alpha within each), blank between groups when sorting; own-line comments above a require move with it; file comments above a blank stay at block top. Fixture `fixtures/stage10_requires.yar`. CLI flag still Stage 11.
-
----
-
-### Stage 11 - Library finish + check mode + binary ✅
-
-1. Stabilize `format_source` / `format_file`.
-2. `--check`: compare formatted vs input; exit `1` if different (or CLI-aligned code).
-3. In-place write; stdin/stdout mode.
-4. Recurse directories for `*.yar` when given a directory.
-
-**Gate:** `cargo run -p yarrow_fmt -- --check docs/examples/valid/01_hello.yar` exits `0` after a bootstrap format (or documents that corpus is not yet fully styled). Formatting twice does not change bytes.
-
-**Notes:** Binary `yarrow-fmt` with `--check`, `--stdin`, `--max-width`, `--sort-requires`; directories recurse for `*.yar`. Exit `0` ok / already formatted, `1` would reformat or parse failure, `2` usage / I/O. Helpers: `collect_yar_paths`, `load_and_format`, `write_formatted`, `would_reformat`. Bootstrapped `docs/examples/valid/01_hello.yar` for the gate; full corpus still Stage 12.
-
----
-
-### Stage 12 - CLI `yarrow fmt` + corpus gate ✅
-
-1. Implement [`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md) wrapper: `yarrow fmt -- …` delegates to this crate’s API (same process; do not shell out).
-2. Run formatter over `docs/examples/valid/**` (and optionally `lib/std/**`): either commit formatted results or keep `--check` green in CI later.
-3. Update style-guide one-liner if needed: “Tools and formatters should target this guide” remains true.
-
-**Gate:** `yarrow fmt --check` on `docs/examples/valid/01_hello.yar` (and a small set listed in notes) exits `0`. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** Shared `driver::run_fmt` / `FmtInput` used by `yarrow-fmt` and `yarrow fmt`. Bootstrapped all of `docs/examples/valid/**` (committed). Gate set: `docs/examples/valid` directory `--check` exits `0`; also `01_hello.yar` alone. Style guide names `yarrow fmt` / `yarrow-fmt`.
+**Gate:** one deliberately broken fixture gets LF / trailing-WS / final-newline cleanup without deleting the broken region; a fully valid file still fully formats. If core recovery is unavailable, Done notes say blocked and this stage stays open. `cargo fmt && cargo check && cargo clippy` green for whatever landed.
 
 ---
 
 ## Mapping: style guide → stages
 
-| Style guide section                    | Stages                                 |
-| -------------------------------------- | -------------------------------------- |
-| Principles                             | Design only                            |
-| Source files                           | 3                                      |
-| Indentation and line width             | 4, 8                                   |
-| Blank lines                            | 5                                      |
-| Comments                               | 1, 9                                   |
-| Naming                                 | Out of scope                           |
-| File layout (order)                    | Later / opt                            |
-| Modules and `require`                  | 6, 10                                  |
-| Visibility                             | 6 (print as written; no insert/remove) |
-| Types / Functions / Variables          | 6                                      |
-| Stack phrases and operators            | 8                                      |
-| Literals and containers                | 6                                      |
-| Control flow / Defer / Unsafe / Errors | 7                                      |
-| Ownership / Stack hygiene              | Out of scope (semantics)               |
-| Checklist                              | Split across 3–9; naming rows ignored  |
+| Style guide section                    | Stages                                      |
+| -------------------------------------- | ------------------------------------------- |
+| Principles                             | Design only                                 |
+| Source files                           | Landed (3)                                  |
+| Indentation and line width             | Landed (4, 8); width option Stage 14        |
+| Blank lines                            | Landed (5)                                  |
+| Comments                               | Landed (1, 9)                               |
+| Naming                                 | Out of scope (core / lint)                  |
+| File layout (order)                    | Stage 13 (opt-in)                           |
+| Modules and `require`                  | Landed (6, 10); default sort Stage 14       |
+| Visibility                             | Landed (print as written); Stage 13 order   |
+| Types / Functions / Variables          | Landed (6)                                  |
+| Stack phrases and operators            | Landed (8)                                  |
+| Literals and containers                | Landed (6)                                  |
+| Control flow / Defer / Unsafe / Errors | Landed (7)                                  |
+| Ownership / Stack hygiene              | Out of scope (semantics)                    |
+| Checklist                              | Landed layout rows; naming rows ignored     |
 
 ---
 
 ## Later (backlog)
 
-| Item                                | Notes                                              |
-| ----------------------------------- | -------------------------------------------------- |
-| Reorder file layout to guide order  | High churn; opt-in only                            |
-| Format invalid / partial parse      | Needs error-tolerant parser recovery policy        |
-| Naming lints                        | Belong in core warnings or a future `yarrow lint`  |
-| `yarrow-lsp` format-on-save         | See `yarrow-lsp` Stage 8; same `format_source` API |
-| Configurable width / tabs vs spaces | Style guide fixes tabs; width may stay option only |
+| Item                         | Notes                                                                 |
+| ---------------------------- | --------------------------------------------------------------------- |
+| Naming lints                 | Belong in core warnings or a future `yarrow lint`, not silent format  |
+| Diff-friendly ignore regions | Only if real need (`yarrow-fmt-ignore` style); not in the guide today |
+| Parallel / incremental fmt   | Premature until corpus + CI pain shows up                             |
 
 ---
 
@@ -320,8 +235,9 @@ Style-guide: std requires first, then local; alphabetical within groups.
 
 - Prefer minimal diffs that pass the **current** stage gate.
 - Do not add tests unless explicitly asked; use fixtures + `docs/examples/**` as gates.
-- Update this file when a stage gate lands (mark done, short notes; do not re-expand history).
+- Update this file when a stage gate lands (mark ✅, short notes; do not re-expand history).
 - Do not reimplement the language grammar in this crate; parse via `yarrow-core`.
 - Do not type-check or run programs as part of format.
 - Never use `-` in comments or docs added by this work.
-- If core needs trivia/API changes, land them in `yarrow-core` with a note here and in the core plan Known gaps / Next as needed.
+- Format only through this crate’s API from CLI / LSP; never a second pretty-printer.
+- If core needs trivia / recovery / API changes, land them in `yarrow-core` with a note here and in the core plan as needed.
