@@ -1,4 +1,4 @@
-//! Same-file `textDocument/hover` from AST signatures (+ optional diagnostic explain).
+//! Same-file `textDocument/hover` from AST signatures (+ typed core probes, optional diagnostic explain).
 
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 use yarrow_core::parser::ast::{
@@ -28,9 +28,35 @@ pub fn hover(
     let range = map.range(decl.name_span);
 
     let mut md = format!("```yarrow\n{}\n```", decl.signature);
-    if let Some(explain) = explain_at(&session, text, offset) {
-        md.push_str("\n\n---\n\n");
-        md.push_str(&explain);
+
+    // Stage 9: enrich with checker types / stack effects when check succeeds.
+    match session.check_source(text.to_string()) {
+        Ok(checked) => {
+            if let Some(probe) = checked
+                .type_at(offset)
+                .or_else(|| checked.type_at(decl.name_span.lo))
+            {
+                if let Some(ty) = probe.ty.as_deref() {
+                    md.push_str("\n\n**type:** `");
+                    md.push_str(ty);
+                    md.push('`');
+                } else if let Some(sig) = probe.signature.as_deref() {
+                    md.push_str("\n\n```yarrow\n");
+                    md.push_str(sig);
+                    md.push_str("\n```");
+                }
+            }
+            if let Some(explain) = explain_in_batch(&checked.warnings, offset) {
+                md.push_str("\n\n---\n\n");
+                md.push_str(&explain);
+            }
+        }
+        Err(err) => {
+            if let Some(explain) = explain_in_batch(&err.batch, offset) {
+                md.push_str("\n\n---\n\n");
+                md.push_str(&explain);
+            }
+        }
     }
 
     Some(Hover {
@@ -403,12 +429,8 @@ fn primitive_name(p: Primitive) -> &'static str {
     }
 }
 
-/// If a check diagnostic covers `offset` and has a catalog explain, return a short blurb.
-fn explain_at(session: &Session, text: &str, offset: usize) -> Option<String> {
-    let batch = match session.check_source(text.to_string()) {
-        Ok(checked) => checked.warnings,
-        Err(err) => err.batch,
-    };
+/// If a diagnostic covers `offset` and has a catalog explain, return a short blurb.
+fn explain_in_batch(batch: &yarrow_core::DiagnosticBatch, offset: usize) -> Option<String> {
     for diag in batch.iter() {
         let covers = diag
             .labels

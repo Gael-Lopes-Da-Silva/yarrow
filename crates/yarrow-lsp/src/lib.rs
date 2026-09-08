@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 8 adds
-//! full-document formatting via `yarrow_fmt`.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 9 adds
+//! typed hover via `CheckedProgram::type_at`.
 
 mod analysis;
 mod completion;

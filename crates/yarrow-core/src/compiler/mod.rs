@@ -23,6 +23,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use dwarf::DebugFnInfo;
 
+use crate::analysis::TypeIndex;
 use crate::diagnostics::{DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, Span};
 use crate::parser::ast::{
     BinOp, Expr, Function, MatchCase, MatchCaseKind, Mutability, ParamModifier, Primitive, Program,
@@ -311,6 +312,10 @@ pub struct Compiler {
     debug_info: bool,
     /// Functions defined in this object compile, for DWARF subprograms / lines.
     debug_fns: Vec<DebugFnInfo>,
+    /// Root-file source text for Stage 30 name-span probes.
+    source_text: String,
+    /// Typed sites in the root file (Stage 30).
+    type_index: TypeIndex,
 }
 
 impl Compiler {
@@ -419,6 +424,8 @@ impl Compiler {
             entry_name: crate::DEFAULT_ENTRY_NAME.to_string(),
             debug_info,
             debug_fns: Vec::new(),
+            source_text: String::new(),
+            type_index: TypeIndex::default(),
         })
     }
 
@@ -486,6 +493,16 @@ impl Compiler {
         self.source_path = path.into();
     }
 
+    /// Root-file source text used to locate identifier spans for typed probes.
+    pub fn set_source_text(&mut self, source: impl Into<String>) {
+        self.source_text = source.into();
+    }
+
+    /// Take Stage 30 typed sites collected by the last successful [`Self::compile`].
+    pub fn take_type_index(&mut self) -> TypeIndex {
+        std::mem::take(&mut self.type_index)
+    }
+
     /// Add a directory searched for user modules (`"a.b"` -> `a/b.yar`).
     pub fn add_module_search_path(&mut self, path: impl Into<std::path::PathBuf>) {
         self.loader.add_search_path(path);
@@ -502,6 +519,7 @@ impl Compiler {
         self.errors = DiagnosticBatch::with_limit(self.error_limit);
         self.warnings = DiagnosticBatch::unlimited();
         self.require_warns.clear();
+        self.type_index.clear();
         match self.compile_inner(program) {
             Ok(()) => {
                 if self.errors.is_empty() {
@@ -510,12 +528,14 @@ impl Compiler {
                 } else {
                     // Warnings are only kept on a successful check path.
                     self.warnings = DiagnosticBatch::unlimited();
+                    self.type_index.clear();
                     Err(self.errors.take())
                 }
             }
             Err(e) => {
                 self.report(e);
                 self.warnings = DiagnosticBatch::unlimited();
+                self.type_index.clear();
                 Err(self.errors.take())
             }
         }
@@ -2209,6 +2229,10 @@ impl Compiler {
             }
         }
 
+        if module.is_none() {
+            self.record_function_site(span, name, f);
+        }
+
         let sig = self.sigs.get(name).cloned().unwrap();
         let id = *self.func_ids.get(name).unwrap();
 
@@ -2725,6 +2749,9 @@ impl Compiler {
                             used: false,
                         },
                     );
+                }
+                if st.module.is_none() && name != "self" {
+                    self.record_binding_site(s.span, name, t);
                 }
             }
 
@@ -3403,6 +3430,69 @@ impl Compiler {
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| format!("enum#{id}")),
         }
+    }
+
+    fn name_span_in(&self, span: Span, name: &str) -> Option<Span> {
+        if name.is_empty() || span.lo > span.hi || span.hi > self.source_text.len() {
+            return None;
+        }
+        let slice = &self.source_text[span.lo..span.hi];
+        let rel = slice.find(name)?;
+        let lo = span.lo + rel;
+        let hi = lo + name.len();
+        Some(Span::new(lo, hi))
+    }
+
+    fn record_binding_site(&mut self, haystack: Span, name: &str, ty: Ty) {
+        let Some(span) = self.name_span_in(haystack, name) else {
+            return;
+        };
+        let ty_s = self.format_ty(ty);
+        self.type_index.push_binding(span, name, ty_s);
+    }
+
+    fn format_fn_probe(&self, display_name: &str, f: &Function, fq: &str) -> String {
+        let (params, rets) = self
+            .sig_tys
+            .get(fq)
+            .cloned()
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+        let unsafe_kw = if f.is_unsafe { "unsafe " } else { "" };
+        let mut s = format!("{display_name} {unsafe_kw}function");
+        if !params.is_empty() {
+            let p = params
+                .iter()
+                .map(|t| self.format_ty(*t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            s.push_str(" (");
+            s.push_str(&p);
+            s.push(')');
+        }
+        if !rets.is_empty() {
+            let r = rets
+                .iter()
+                .map(|t| self.format_ty(*t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            s.push_str(" with ");
+            s.push_str(&r);
+        }
+        let effect = format!(
+            "stack: {} → {}",
+            self.format_stack_tys(&params),
+            self.format_stack_tys(&rets)
+        );
+        format!("{s}\n{effect}")
+    }
+
+    fn record_function_site(&mut self, span: Span, fq: &str, f: &Function) {
+        let display = fq.rsplit("::").next().unwrap_or(fq);
+        let Some(name_span) = self.name_span_in(span, display) else {
+            return;
+        };
+        let sig = self.format_fn_probe(display, f, fq);
+        self.type_index.push_signature(name_span, display, sig);
     }
 
     fn format_stack_tys(&self, tys: &[Ty]) -> String {
@@ -4643,6 +4733,9 @@ impl Compiler {
                     info.used = true;
                 }
                 if let Some((var, t, _own)) = st.vars.get(name).cloned() {
+                    if st.module.is_none() {
+                        self.record_binding_site(st.current_span, name, t);
+                    }
                     let v = b.use_var(var);
                     self.require_region_live(st, v)?;
                     stack.push(Slot {

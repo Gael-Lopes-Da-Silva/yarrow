@@ -117,12 +117,25 @@ pub struct Session {
 /// Program that passed semantic analysis (Stage 13a handoff for later backends).
 ///
 /// Warnings (Stage 20) may be non-empty while this remains `Ok` from
-/// [`Session::check_source`].
+/// [`Session::check_source`]. [`CheckedProgram::type_at`] answers typed hover
+/// probes (Stage 30) without re-running the checker.
 #[derive(Debug, Clone)]
 pub struct CheckedProgram {
     pub file: SourceFile,
     pub program: Program,
     pub warnings: DiagnosticBatch,
+    /// Typed sites in the root file (bindings / function signatures).
+    pub type_index: crate::TypeIndex,
+}
+
+impl CheckedProgram {
+    /// Probe the binding / function type at a byte offset in the root file.
+    ///
+    /// Returns `None` when the offset is outside any recorded site (whitespace,
+    /// comments, or code that was not indexed).
+    pub fn type_at(&self, offset: usize) -> Option<crate::TypeProbe> {
+        self.type_index.type_at(offset)
+    }
 }
 
 /// Successful JIT session artifact ready for run / IR dump.
@@ -217,10 +230,12 @@ impl Session {
         self.require_main_if_needed(&file, &program)?;
         let mut compiler = self.lower(&file, &program, LowerKind::Check)?;
         let warnings = compiler.take_warnings();
+        let type_index = compiler.take_type_index();
         Ok(CheckedProgram {
             file,
             program,
             warnings,
+            type_index,
         })
     }
 
@@ -480,6 +495,7 @@ impl Session {
         })?;
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
+        compiler.set_source_text(file.source.clone());
         compiler.set_entry_name(self.options.entry_name.clone());
         if let Some(dir) = Path::new(&self.options.source_path).parent()
             && !dir.as_os_str().is_empty()
