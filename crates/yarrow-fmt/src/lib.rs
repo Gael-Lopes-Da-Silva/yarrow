@@ -3,9 +3,9 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 12: shared [`run_fmt`] driver for the `yarrow-fmt` binary and
-//! `yarrow fmt` CLI subcommand (`--check`, in-place, `--stdin`, directory
-//! recurse, `--sort-requires`).
+//! Stage 13: opt-in top-level file-layout reorder (`reorder_layout` /
+//! `--reorder-layout`). Shared [`run_fmt`] driver for `yarrow-fmt` and
+//! `yarrow fmt`.
 
 mod blank;
 mod comment;
@@ -13,6 +13,7 @@ mod driver;
 mod hygiene;
 mod indent;
 mod ir;
+mod layout;
 mod paths;
 mod phrase;
 mod print;
@@ -24,6 +25,7 @@ pub use driver::{FmtInput, run_fmt};
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
+pub use layout::{LayoutKind, layout_kind, reorder_toplevel_indices, reorder_toplevel_items};
 pub use paths::collect_yar_paths;
 pub use print::apply_construct_layout;
 pub use require::{is_std_path, sort_toplevel_requires};
@@ -43,6 +45,10 @@ pub struct FormatOptions {
     /// then other paths, alphabetically within each group. Opt-in (default
     /// false) to avoid noisy diffs. Function-local requires are never moved.
     pub sort_requires: bool,
+    /// When true, reorder top-level items to style-guide file layout (requires,
+    /// types with matching implements, private helpers, public API, `main`).
+    /// Opt-in (default false). Function-local items are never moved.
+    pub reorder_layout: bool,
 }
 
 impl Default for FormatOptions {
@@ -50,6 +56,7 @@ impl Default for FormatOptions {
         Self {
             max_width: 100,
             sort_requires: false,
+            reorder_layout: false,
         }
     }
 }
@@ -112,8 +119,8 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 /// Format a Yarrow source string.
 ///
 /// Hygiene, construct layout (width wrap, comment spacing, optional require
-/// sort), tab indent / `end` alignment, then blank-line rules. Parse failures
-/// surface as [`FormatError::Parse`].
+/// sort and file-layout reorder), tab indent / `end` alignment, then blank-line
+/// rules. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }

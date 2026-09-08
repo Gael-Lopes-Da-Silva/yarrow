@@ -1,11 +1,12 @@
-//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–10).
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–13).
 //!
 //! Reprints the AST into preferred forms for requires, types, functions,
 //! variables, containers, calls, control flow, defer, unsafe, and
 //! handle/unwrap, with soft wrap at `max_width`. Own-line comments are
 //! preserved by line gap with `# ` spacing; trailing comments are reattached
 //! from trivia with one space before `#`. Optional top-level require sorting
-//! is opt-in via [`FormatOptions::sort_requires`].
+//! ([`FormatOptions::sort_requires`]) and file-layout reorder
+//! ([`FormatOptions::reorder_layout`]) are opt-in.
 
 use std::collections::HashSet;
 
@@ -19,10 +20,11 @@ use yarrow_core::{SourceFile, Span};
 use crate::FormatOptions;
 use crate::comment::{normalize_comment, trailing_on_line, trailing_suffix};
 use crate::ir::{FormatIr, TriviaMap};
+use crate::layout::reorder_toplevel_indices;
 use crate::phrase::{expr_tokens, layout_expr_stmts, wrap_tokens};
 use crate::require::{require_group_blank, require_sort_key};
 
-/// Reprint the program with Stage 6–10 construct layout.
+/// Reprint the program with Stage 6–13 construct layout.
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
@@ -41,30 +43,34 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
     };
 
     let items = &ir.program.items;
-    let mut i = 0;
-    while i < items.len() {
-        if options.sort_requires && matches!(items[i].kind, StmtKind::Require { .. }) {
-            let start = i;
-            i += 1;
-            while i < items.len() && matches!(items[i].kind, StmtKind::Require { .. }) {
+    if options.reorder_layout {
+        p.print_reordered_toplevel(items, options.sort_requires);
+    } else {
+        let mut i = 0;
+        while i < items.len() {
+            if options.sort_requires && matches!(items[i].kind, StmtKind::Require { .. }) {
+                let start = i;
                 i += 1;
+                while i < items.len() && matches!(items[i].kind, StmtKind::Require { .. }) {
+                    i += 1;
+                }
+                p.print_require_run(&items[start..i], start > 0, true);
+                continue;
             }
-            p.print_require_run(&items[start..i], start > 0, true);
-            continue;
-        }
 
-        if i > 0 {
-            // Requires stay one group; blank only before a non-require item
-            // (or when leaving the require block).
-            let prev_req = matches!(items[i - 1].kind, StmtKind::Require { .. });
-            let cur_req = matches!(items[i].kind, StmtKind::Require { .. });
-            p.pending_blank = !(prev_req && cur_req);
+            if i > 0 {
+                // Requires stay one group; blank only before a non-require item
+                // (or when leaving the require block).
+                let prev_req = matches!(items[i - 1].kind, StmtKind::Require { .. });
+                let cur_req = matches!(items[i].kind, StmtKind::Require { .. });
+                p.pending_blank = !(prev_req && cur_req);
+            }
+            p.emit_gap_comments(items[i].span.line);
+            p.print_stmt(&items[i]);
+            p.finish_line();
+            p.last_emitted_line = end_line(p.file, items[i].span).max(p.last_emitted_line);
+            i += 1;
         }
-        p.emit_gap_comments(items[i].span.line);
-        p.print_stmt(&items[i]);
-        p.finish_line();
-        p.last_emitted_line = end_line(p.file, items[i].span).max(p.last_emitted_line);
-        i += 1;
     }
 
     p.emit_gap_comments(p.file.line_count().saturating_add(1));
@@ -218,6 +224,138 @@ impl<'a> Printer<'a> {
         }
 
         let max_end = group
+            .iter()
+            .map(|s| end_line(self.file, s.span))
+            .max()
+            .unwrap_or(self.last_emitted_line);
+        self.last_emitted_line = max_end.max(self.last_emitted_line);
+    }
+
+    /// Attach leading comments in source order, then emit items in style-guide
+    /// file layout. Requires stay one group (optionally sorted).
+    fn print_reordered_toplevel(&mut self, items: &[Stmt], sort_requires: bool) {
+        if items.is_empty() {
+            return;
+        }
+
+        let mut pre_group: Vec<String> = Vec::new();
+        let mut entries: Vec<(Stmt, Vec<String>)> = Vec::with_capacity(items.len());
+        for (idx, stmt) in items.iter().enumerate() {
+            let lo = if idx == 0 {
+                self.last_emitted_line.saturating_add(1)
+            } else {
+                end_line(self.file, items[idx - 1].span).saturating_add(1)
+            };
+            let hi = stmt.span.line;
+            let mut gap: Vec<(usize, String)> = Vec::new();
+            let mut last_blank: Option<usize> = None;
+            if lo > 0 && lo < hi {
+                for line in lo..hi {
+                    if line > self.file.line_count() {
+                        break;
+                    }
+                    let raw = self.file.line_text(line);
+                    let trimmed = trim_indent(raw);
+                    if trimmed.is_empty() {
+                        last_blank = Some(line);
+                    } else if trimmed.starts_with('#') {
+                        gap.push((line, normalize_comment(trimmed)));
+                    }
+                }
+            }
+
+            let mut leads = Vec::new();
+            if idx == 0 {
+                if let Some(blank) = last_blank {
+                    for (line, comment) in gap {
+                        if line < blank {
+                            pre_group.push(comment);
+                        } else {
+                            leads.push(comment);
+                        }
+                    }
+                } else {
+                    leads.extend(gap.into_iter().map(|(_, c)| c));
+                }
+            } else {
+                leads.extend(gap.into_iter().map(|(_, c)| c));
+            }
+            entries.push((stmt.clone(), leads));
+        }
+
+        let order = reorder_toplevel_indices(items);
+        let ordered: Vec<(Stmt, Vec<String>)> = order
+            .into_iter()
+            .map(|i| {
+                let (stmt, leads) = entries[i].clone();
+                (stmt, leads)
+            })
+            .collect();
+
+        for comment in &pre_group {
+            self.flush_pending_blank();
+            self.write_indent();
+            self.out.push_str(comment);
+            self.out.push('\n');
+            self.at_line_start = true;
+        }
+        if !pre_group.is_empty() {
+            self.pending_blank = true;
+        }
+
+        let mut i = 0;
+        while i < ordered.len() {
+            if matches!(ordered[i].0.kind, StmtKind::Require { .. }) {
+                let start = i;
+                i += 1;
+                while i < ordered.len() && matches!(ordered[i].0.kind, StmtKind::Require { .. }) {
+                    i += 1;
+                }
+                let mut run = ordered[start..i].to_vec();
+                if sort_requires {
+                    run.sort_by(|a, b| require_sort_key(&a.0).cmp(&require_sort_key(&b.0)));
+                }
+                // Blank before the require block when something already printed.
+                if start > 0 || !pre_group.is_empty() {
+                    // start > 0 means prior non-require; pre_group already set pending.
+                    if start > 0 {
+                        self.pending_blank = true;
+                    }
+                }
+                for (j, (stmt, leads)) in run.iter().enumerate() {
+                    if j > 0 {
+                        self.pending_blank = require_group_blank(&run[j - 1].0, stmt);
+                    }
+                    for comment in leads {
+                        self.flush_pending_blank();
+                        self.write_indent();
+                        self.out.push_str(comment);
+                        self.out.push('\n');
+                        self.at_line_start = true;
+                    }
+                    self.print_stmt(stmt);
+                    self.finish_line();
+                }
+                continue;
+            }
+
+            if i > 0 || !pre_group.is_empty() {
+                self.pending_blank = true;
+            }
+            let (stmt, leads) = &ordered[i];
+            for comment in leads {
+                self.flush_pending_blank();
+                self.write_indent();
+                self.out.push_str(comment);
+                self.out.push('\n');
+                self.at_line_start = true;
+            }
+            self.print_stmt(stmt);
+            self.finish_line();
+            i += 1;
+        }
+
+        let max_end = items
             .iter()
             .map(|s| end_line(self.file, s.span))
             .max()

@@ -30,6 +30,10 @@ struct Args {
     #[arg(long)]
     sort_requires: bool,
 
+    /// Reorder top-level items to style-guide file layout (high churn; opt-in).
+    #[arg(long)]
+    reorder_layout: bool,
+
     /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
@@ -43,6 +47,7 @@ fn main() -> ExitCode {
             options: FormatOptions {
                 max_width: args.max_width,
                 sort_requires: args.sort_requires,
+                reorder_layout: args.reorder_layout,
             },
             check: args.check,
             stdin: args.stdin,
