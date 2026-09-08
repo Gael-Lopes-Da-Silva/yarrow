@@ -3,18 +3,20 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 5: hygiene, tab indent / `end` alignment, then blank-line
-//! normalization (top-level separation, collapse doubles, tighten openers).
+//! Stage 6: construct layout (requires, types, functions, variables,
+//! containers, short calls), then indent and blank-line passes.
 
 mod blank;
 mod hygiene;
 mod indent;
 mod ir;
+mod print;
 
 pub use blank::apply_blank_lines;
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
+pub use print::apply_construct_layout;
 
 use std::fmt;
 use std::io;
@@ -92,8 +94,8 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 5: hygiene, tab indent / `end` alignment, then blank-line rules.
-/// Parse failures surface as [`FormatError::Parse`].
+/// Stage 6: hygiene, construct layout reprint, tab indent / `end` alignment,
+/// then blank-line rules. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }
@@ -105,11 +107,12 @@ fn format_source_at(
 ) -> Result<String, FormatError> {
     let cleaned = apply_source_hygiene(source);
     let ir = build_format_ir(&cleaned, path)?;
+    let laid_out = apply_source_hygiene(&apply_construct_layout(&ir, options));
+    // Re-parse so indent / blank line numbers match post-layout text.
+    let ir = build_format_ir(&laid_out, path)?;
     let indented = apply_source_hygiene(&apply_indent(&ir));
-    // Re-parse so blank-line line numbers match post-indent text.
     let ir = build_format_ir(&indented, path)?;
     let blanked = apply_blank_lines(&ir);
-    let _ = options;
     Ok(apply_source_hygiene(&blanked))
 }
 
