@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 6: keyword + name completions               |
+| `yarrow-lsp` crate | ✅     | Stage 7: refs + require cross-file def             |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -208,13 +208,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 7 - References and cross-file definition via `require`
+### Stage 7 - References and cross-file definition via `require` ✅
 
 1. Find references in the current document (all name occurrences bound to the same decl when cheap; textual fallback only if binding data is missing, and document the limitation).
 2. For `require`d modules: when core check already loaded them, use resolved module path + name to support go-to-definition into dependency files (open as `file://` path from search path / std embed materialization policy).
 3. If std modules are embedded and have no on-disk path, either skip jump or expose a read-only virtual URI scheme; pick one and document it (prefer real `lib/std/**` paths from the repo / install layout when available).
 
 **Gate:** definition on an imported `std` / local require name opens or returns a location for that module entity when a file path exists. Same-file find-all-references returns ≥1 location for a used function.
+
+**Done:** `textDocument/references` same-file via scoped AST decls (textual identifier fallback when unbound). `textDocument/definition` on `require` bindings jumps to on-disk module files (`lib/std/**` via adjacent crate / ancestor walk; local modules relative to the source file); item imports land on the function name when found. No virtual URI when the file is missing (skip / same-file fallback). Scripted gate: def on `io` → `lib/std/io.yar`; refs on `main` ≥1.
 
 ---
 

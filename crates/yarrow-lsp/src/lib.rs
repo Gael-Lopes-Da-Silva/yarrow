@@ -1,14 +1,16 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 6 adds
-//! keyword + same-file name completions (and `std.*` require paths).
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 7 adds
+//! same-file references and `require` cross-file go-to-definition.
 
 mod analysis;
 mod completion;
 mod definition;
 mod document;
 mod hover;
+mod modules;
 mod position;
+mod references;
 mod symbols;
 
 use std::collections::HashMap;
@@ -21,9 +23,9 @@ use tower_lsp_server::ls_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
     DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType,
-    OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, Uri,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, ReferenceParams, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -33,6 +35,7 @@ pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
 pub use hover::hover as hover_at;
 pub use position::{PositionEncoding, PositionMap};
+pub use references::find_references;
 pub use symbols::document_symbols;
 
 /// Debounce window for rapid `didChange` before re-checking.
@@ -204,6 +207,7 @@ impl LanguageServer for Backend {
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec!["\"".into()]),
@@ -432,5 +436,35 @@ impl LanguageServer for Backend {
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
         Ok(completion::completions(&path, &text, encoding, position))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        Ok(references::find_references(
+            &uri,
+            &path,
+            &text,
+            encoding,
+            position,
+            include_declaration,
+        ))
     }
 }
