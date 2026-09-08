@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 11 adds
-//! diagnostic explain code actions (`yarrow.explain`).
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 12 adds
+//! `textDocument/signatureHelp` for postfix `name call` sites.
 
 mod analysis;
 mod code_action;
@@ -14,6 +14,7 @@ mod hover;
 mod modules;
 mod position;
 mod references;
+mod signature_help;
 mod symbols;
 
 use std::collections::HashMap;
@@ -29,8 +30,8 @@ use tower_lsp_server::ls_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InitializedParams, LSPAny, Location, MessageType, OneOf, ReferenceParams,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextEdit, Uri,
+    ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -44,6 +45,7 @@ pub use format::format_document;
 pub use hover::hover as hover_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use references::find_references;
+pub use signature_help::signature_help as signature_help_at;
 pub use symbols::document_symbols;
 
 /// Debounce window for rapid `didChange` before re-checking.
@@ -281,6 +283,12 @@ impl LanguageServer for Backend {
                     commands: vec![code_action::EXPLAIN_COMMAND.into()],
                     ..Default::default()
                 }),
+                // Postfix `name call`: space (and `call` as retrigger) is the useful trigger.
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec![" ".into()]),
+                    retrigger_characters: Some(vec![" ".into()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -485,6 +493,34 @@ impl LanguageServer for Backend {
         let path = uri_to_source_path(&uri);
         let config = self.config_snapshot();
         Ok(hover::hover(&path, &text, encoding, position, &config))
+    }
+
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> LspResult<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
+        Ok(signature_help::signature_help(
+            &path, &text, encoding, position, &config,
+        ))
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
