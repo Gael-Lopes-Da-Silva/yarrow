@@ -77,6 +77,11 @@ pub(crate) struct Decl {
 }
 
 pub(crate) fn identifier_at(source: &str, offset: usize) -> Option<String> {
+    identifier_span_at(source, offset).map(|(name, _)| name)
+}
+
+/// Identifier lexeme and byte span at `offset` (or at the exclusive end of the word).
+pub(crate) fn identifier_span_at(source: &str, offset: usize) -> Option<(String, Span)> {
     let mut tokenizer = Tokenizer::new(source.to_string());
     let tokens = tokenizer.tokenize().ok()?;
     let token = tokens
@@ -92,7 +97,10 @@ pub(crate) fn identifier_at(source: &str, offset: usize) -> Option<String> {
                     && t.location.offset < offset
             })
         })?;
-    Some(token.lexeme.clone())
+    Some((
+        token.lexeme.clone(),
+        Span::new(token.location.offset, token.end_offset),
+    ))
 }
 
 pub(crate) fn collect_decls(file: &SourceFile, program: &Program) -> Vec<Decl> {

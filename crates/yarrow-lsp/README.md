@@ -56,3 +56,7 @@ After a successful check, `textDocument/inlayHint` places type annotations after
 ## Semantic tokens
 
 `textDocument/semanticTokens/full` classifies core tokenizer tokens (keywords, strings, numbers, comments, operators) and same-file resolved identifiers (`function` / `variable` / `type` / `property`). Unresolved names and brackets are left to the client grammar. Legend types: keyword, function, variable, type, parameter, property, string, number, comment, operator; modifier `declaration` on binding sites.
+
+## Rename
+
+`textDocument/prepareRename` and `textDocument/rename` rename local functions, variables, types, properties, and explicit require aliases in the current file (binding-accurate identifier edits only). Keywords, scope collisions, unresolved names, and implicit / cross-module require renames are rejected with a clear error; module path strings are not rewritten.

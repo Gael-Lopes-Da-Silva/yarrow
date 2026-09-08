@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 14 adds
-//! `textDocument/semanticTokens/full` from core tokens + AST decls.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 15 adds
+//! file-local `textDocument/rename` / `prepareRename`.
 
 mod analysis;
 mod code_action;
@@ -15,6 +15,7 @@ mod inlay_hints;
 mod modules;
 mod position;
 mod references;
+mod rename;
 mod semantic_tokens;
 mod signature_help;
 mod symbols;
@@ -24,7 +25,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tower_lsp_server::jsonrpc::Result as LspResult;
+use tower_lsp_server::jsonrpc::{Error as LspErrorRpc, Result as LspResult};
 use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -32,10 +33,12 @@ use tower_lsp_server::ls_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny, Location, MessageType,
-    OneOf, ReferenceParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
+    OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -50,6 +53,7 @@ pub use hover::hover as hover_at;
 pub use inlay_hints::inlay_hints as inlay_hints_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use references::find_references;
+pub use rename::{prepare_rename, rename};
 pub use semantic_tokens::{legend as semantic_tokens_legend, semantic_tokens_full};
 pub use signature_help::signature_help as signature_help_at;
 pub use symbols::document_symbols;
@@ -308,6 +312,10 @@ impl LanguageServer for Backend {
                         ..Default::default()
                     },
                 )),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -726,5 +734,60 @@ impl LanguageServer for Backend {
             .show_message(MessageType::INFO, text.clone())
             .await;
         Ok(Some(LSPAny::String(text)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> LspResult<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
+        Ok(rename::prepare_rename(
+            &path, &text, encoding, position, &config,
+        ))
+    }
+
+    async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        let config = self.config_snapshot();
+        match rename::rename(&uri, &path, &text, encoding, position, &new_name, &config) {
+            Ok(edit) => Ok(Some(edit)),
+            Err(msg) => Err(LspErrorRpc::invalid_params(msg)),
+        }
     }
 }

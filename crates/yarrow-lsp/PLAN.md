@@ -37,10 +37,10 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Signature help at postfix `name call` sites
 - Inlay hints from core type probes (`--no-inlay` / init `inlayHints`)
 - Semantic tokens (full document) from tokenizer + AST decls
+- File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 
-### In scope (next, Stages 15+)
+### In scope (next, Stages 16+)
 
-- File-local rename (cautious cross-file only when resolve is solid)
 - Workspace symbols over open buffers + resolved `require`s
 - Range / on-type formatting
 - Pull diagnostics (LSP 3.17) alongside push
@@ -120,7 +120,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 14: semantic tokens                      |
+| `yarrow-lsp` crate | ✅     | Stage 15: file-local rename                    |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -130,9 +130,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–13)
+## Landed (Stages 0–14)
 
-Stages 0–13 are complete. Historical stage write-ups for 0–12 were removed; git history keeps them. Stage 13 remains below for context until the next plan collapse.
+Stages 0–14 are complete. Historical stage write-ups for 0–13 were removed; git history keeps them. Stage 14 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -150,27 +150,11 @@ Stages 0–13 are complete. Historical stage write-ups for 0–12 were removed; 
 | 11 | `codeAction` Explain Exxx + `yarrow.explain` command |
 | 12 | `signatureHelp` for postfix `name call` |
 | 13 | Inlay hints from `TypeIndex` probes |
+| 14 | Semantic tokens (full document) from tokenizer + AST decls |
 
 ---
 
 ## Stages
-
-### Stage 13 - Inlay hints (types / stack) ✅
-
-Non-editing type / stack annotations after bindings and optionally after call results, driven only by core probes.
-
-1. Advertise `inlayHintProvider`.
-2. On `textDocument/inlayHint` for a range: run check (or use cached `CheckedProgram`) and place hints from `type_at` on declaration name spans (and optionally simple expression ends) inside the range.
-3. Hint label is the type string (and a short stack-effect note for functions if already available); kind `Type` (or `Parameter` only if truly parameter names).
-4. Do **not** invent types when `type_at` misses; skip the site.
-5. Respect a config / init option to disable inlays (`inlayHints` / `--no-inlay`) defaulting to on once shipped.
-6. Keep latency acceptable: reuse the same check cache as diagnostics / hover when possible; do not JIT.
-
-**Gate:** open `03_variables_and_typeof.yar`; inlay on `answer` (or the typed binding used in Stage 9) shows `i32` (or the same string as typed hover). Empty / unchecked buffer yields no fake hints. Scripted or editor probe documents the range.
-
-**Done:** `textDocument/inlayHint` from `TypeIndex::probes` (sites intersecting the request range); binding labels `: ty`, function sites use the `stack: …` line when present; kind `Type`; skip on check failure / missing probe. Toggle via `--no-inlay` and init `inlayHints` (default on). Scripted gate on `03_variables_and_typeof.yar`: hint after `answer` includes `i32`.
-
----
 
 ### Stage 14 - Semantic tokens ✅
 
@@ -189,7 +173,7 @@ Theme-friendly token classification without a second highlighter that disagrees 
 
 ---
 
-### Stage 15 - Rename (file-local first)
+### Stage 15 - Rename (file-local first) ✅
 
 Safe rename for identifiers with a clear edit set; never silent cross-module breakage.
 
@@ -200,6 +184,8 @@ Safe rename for identifiers with a clear edit set; never silent cross-module bre
 5. Do not rename string module paths unless the user is clearly on the path literal and policy is documented; default is identifier rename only.
 
 **Gate:** rename a local function used twice in one file updates both sites; prepareRename on whitespace / unknown ident fails cleanly. Cross-file either edits the known module file correctly or returns a clear error (no partial silent skip). Scripted gate preferred.
+
+**Done:** `prepareRename` + `rename` for local function/variable/type/property and explicit require aliases; binding-accurate same-file identifier edits only; reject keywords, collisions, unresolved names, and implicit / cross-module require renames with `invalid_params` (no partial skip). Scripted gate: local function used twice gets three edits; whitespace / unknown prepareRename null.
 
 ---
 
@@ -290,7 +276,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | signatureHelp                          | 12 ✅    | AST + `type_at`                    |
 | inlayHint                              | 13 ✅    | `TypeIndex` probes                 |
 | semanticTokens                         | 14 ✅    | tokens + AST                       |
-| rename                                 | 15       | references / resolve               |
+| rename                                 | 15 ✅    | references / resolve               |
 | workspaceSymbol                        | 16       | open buffers + require ASTs         |
 | rangeFormatting / onTypeFormatting     | 17       | `yarrow-fmt`                       |
 | textDocument/diagnostic (pull)         | 18       | same as publish                    |
