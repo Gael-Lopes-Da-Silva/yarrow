@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 1: full-text document sync + `DocumentStore` |
+| `yarrow-lsp` crate | ✅     | Stage 2: position map + publishDiagnostics         |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -145,7 +145,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 2 - Position map + diagnostic publish
+### Stage 2 - Position map + diagnostic publish ✅
 
 1. Implement LSP ↔ `Span` conversion against `SourceFile`.
 2. On open/change: `Session::check_source` (or parse on earlier failure).
@@ -154,6 +154,8 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 5. Debounce rapid `didChange` (e.g. 150–300 ms) so typing stays responsive.
 
 **Gate:** opening `docs/examples/invalid/**` (or a known-bad snippet) publishes at least one diagnostic with a sensible range. Valid `01_hello.yar` publishes empty diagnostics after check.
+
+**Done:** `PositionMap` + UTF-8/UTF-16 negotiate; `check_document` via `Session::check_source`; publish on open (immediate) / change (200 ms debounce); clear on close. Scripted invalid open yields ≥1 diagnostic; `valid/01_hello.yar` yields empty.
 
 ---
 

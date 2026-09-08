@@ -1,22 +1,31 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 1 adds
-//! full-text document sync and an in-memory [`DocumentStore`].
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 2 adds
+//! position mapping and `textDocument/publishDiagnostics` from `check_source`.
 
+mod analysis;
 mod document;
+mod position;
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
+pub use analysis::{check_document, uri_to_source_path};
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
+pub use position::{PositionEncoding, PositionMap};
+
+/// Debounce window for rapid `didChange` before re-checking.
+const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Errors from starting or running the language server.
 #[derive(Debug, thiserror::Error)]
@@ -56,17 +65,101 @@ where
     Ok(())
 }
 
+struct ServerState {
+    documents: Mutex<DocumentStore>,
+    encoding: Mutex<PositionEncoding>,
+    /// Per-URI generation counter; bumping cancels an in-flight debounce.
+    analysis_gens: Mutex<HashMap<String, u64>>,
+}
+
 struct Backend {
     client: Client,
-    documents: Mutex<DocumentStore>,
+    state: Arc<ServerState>,
 }
 
 impl Backend {
     fn new(client: Client) -> Self {
         Self {
             client,
-            documents: Mutex::new(DocumentStore::default()),
+            state: Arc::new(ServerState {
+                documents: Mutex::new(DocumentStore::default()),
+                encoding: Mutex::new(PositionEncoding::Utf16),
+                analysis_gens: Mutex::new(HashMap::new()),
+            }),
         }
+    }
+
+    fn bump_analysis_gen(&self, uri: &Uri) -> u64 {
+        let Ok(mut gens) = self.state.analysis_gens.lock() else {
+            return 0;
+        };
+        let entry = gens.entry(uri.as_str().to_string()).or_insert(0);
+        *entry = entry.saturating_add(1);
+        *entry
+    }
+
+    fn schedule_analysis(&self, uri: Uri, version: i32, debounce: bool) {
+        let ticket = self.bump_analysis_gen(&uri);
+        let state = Arc::clone(&self.state);
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            if debounce {
+                tokio::time::sleep(CHANGE_DEBOUNCE).await;
+                let current = state
+                    .analysis_gens
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(uri.as_str()).copied())
+                    .unwrap_or(0);
+                if current != ticket {
+                    return;
+                }
+            }
+
+            let text = {
+                let Ok(store) = state.documents.lock() else {
+                    return;
+                };
+                let Some(doc) = store.get(&uri) else {
+                    return;
+                };
+                if doc.version != version {
+                    return;
+                }
+                doc.text.clone()
+            };
+
+            let encoding = state
+                .encoding
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(PositionEncoding::Utf16);
+            let diagnostics = check_document(&uri, &text, encoding);
+
+            {
+                let Ok(store) = state.documents.lock() else {
+                    return;
+                };
+                match store.get(&uri) {
+                    Some(doc) if doc.version == version => {}
+                    _ => return,
+                }
+                let current = state
+                    .analysis_gens
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(uri.as_str()).copied())
+                    .unwrap_or(0);
+                if current != ticket {
+                    return;
+                }
+            }
+
+            client
+                .publish_diagnostics(uri, diagnostics, Some(version))
+                .await;
+        });
     }
 }
 
@@ -77,9 +170,20 @@ impl fmt::Debug for Backend {
 }
 
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> LspResult<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
+        let encodings = params
+            .capabilities
+            .general
+            .as_ref()
+            .and_then(|g| g.position_encodings.as_deref());
+        let encoding = PositionEncoding::negotiate(encodings);
+        if let Ok(mut slot) = self.state.encoding.lock() {
+            *slot = encoding;
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                position_encoding: Some(encoding.as_lsp()),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -123,10 +227,10 @@ impl LanguageServer for Backend {
         let version = doc.version;
         let len = doc.text.len();
         {
-            let Ok(mut store) = self.documents.lock() else {
+            let Ok(mut store) = self.state.documents.lock() else {
                 return;
             };
-            store.open(doc.uri, version, doc.text);
+            store.open(doc.uri.clone(), version, doc.text);
         }
 
         self.client
@@ -135,6 +239,8 @@ impl LanguageServer for Backend {
                 format!("didOpen {uri_str} v{version} ({len} bytes)"),
             )
             .await;
+
+        self.schedule_analysis(doc.uri, version, false);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -161,7 +267,7 @@ impl LanguageServer for Backend {
 
         let len = text.len();
         let updated = {
-            let Ok(mut store) = self.documents.lock() else {
+            let Ok(mut store) = self.state.documents.lock() else {
                 return;
             };
             store.set_text(&uri, version, text)
@@ -174,6 +280,7 @@ impl LanguageServer for Backend {
                     format!("didChange {uri_str} v{version} ({len} bytes)"),
                 )
                 .await;
+            self.schedule_analysis(uri, version, true);
         } else {
             self.client
                 .log_message(
@@ -187,8 +294,9 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         let uri_str = uri.as_str().to_string();
+        let _ = self.bump_analysis_gen(&uri);
         let (closed, remaining) = {
-            let Ok(mut store) = self.documents.lock() else {
+            let Ok(mut store) = self.state.documents.lock() else {
                 return;
             };
             let closed = store.close(&uri);
@@ -196,6 +304,7 @@ impl LanguageServer for Backend {
         };
 
         if closed {
+            self.client.publish_diagnostics(uri, Vec::new(), None).await;
             self.client
                 .log_message(
                     MessageType::INFO,
