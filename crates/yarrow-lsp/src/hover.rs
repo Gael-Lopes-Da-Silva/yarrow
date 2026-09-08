@@ -440,7 +440,7 @@ fn explain_in_batch(batch: &yarrow_core::DiagnosticBatch, offset: usize) -> Opti
         }
         let entry = explain_code(&diag.code)?;
         return Some(format!(
-            "**{}**: {}\n\n{}",
+            "**Explain {}**: {}\n\n{}",
             entry.code,
             entry.title,
             entry.body.trim()

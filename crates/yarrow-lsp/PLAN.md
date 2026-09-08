@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 10: flags + `yarrow lsp` wrapper            |
+| `yarrow-lsp` crate | ✅     | Stage 11: explain code actions                    |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)         |
@@ -258,13 +258,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 11 - Code actions and explain
+### Stage 11 - Code actions and explain ✅
 
 1. Code action or hover link: “Explain E3xx” using `format_explain` / `explain_code`.
 2. Optional: “Open style guide” is out of scope; keep actions diagnostic-centric.
 3. No auto-fix that changes semantics unless tied to a known safe rewrite (prefer none in v1).
 
 **Gate:** a published diagnostic with a known code offers an action or hover section that includes the explain text.
+
+**Done:** `textDocument/codeAction` offers `Explain Exxx` for catalog codes (`data.explain` = `format_explain`); `workspace/executeCommand` `yarrow.explain` shows the text; hover diagnostic blurb titled `Explain Exxx`. No semantic rewrites. Scripted gate on `01_use_after_move.yar`: code action for `E373` includes explain body.
 
 ---
 

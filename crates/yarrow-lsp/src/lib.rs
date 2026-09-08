@@ -1,9 +1,10 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 10 adds
-//! process flags, init options, and the `yarrow lsp` CLI wrapper.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 11 adds
+//! diagnostic explain code actions (`yarrow.explain`).
 
 mod analysis;
+mod code_action;
 mod completion;
 mod config;
 mod definition;
@@ -22,17 +23,19 @@ use std::time::Duration;
 
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, ReferenceParams, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextEdit, Uri,
+    CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
+    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, LSPAny, Location, MessageType, OneOf, ReferenceParams,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 pub use analysis::{check_document, uri_to_source_path};
+pub use code_action::EXPLAIN_COMMAND;
 pub use completion::completions;
 pub use config::{InitializationOptions, LspConfig};
 pub use definition::goto_definition;
@@ -273,6 +276,11 @@ impl LanguageServer for Backend {
                 } else {
                     None
                 },
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![code_action::EXPLAIN_COMMAND.into()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -562,5 +570,49 @@ impl LanguageServer for Backend {
         // Client FormattingOptions are ignored; style comes from yarrow-fmt defaults.
         let _ = params.options;
         Ok(format::format_document(&text, encoding))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let only = params.context.only;
+        let mut diagnostics = params.context.diagnostics;
+        if diagnostics.is_empty() {
+            let text = {
+                let Ok(store) = self.state.documents.lock() else {
+                    return Ok(None);
+                };
+                let Some(doc) = store.get(&uri) else {
+                    return Ok(None);
+                };
+                doc.text.clone()
+            };
+            let encoding = self
+                .state
+                .encoding
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(PositionEncoding::Utf16);
+            let config = self.config_snapshot();
+            diagnostics = check_document(&uri, &text, encoding, &config);
+        }
+        Ok(code_action::code_actions(
+            &diagnostics,
+            range,
+            only.as_deref(),
+        ))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<LSPAny>> {
+        if params.command != code_action::EXPLAIN_COMMAND {
+            return Ok(None);
+        }
+        let Some(text) = code_action::explain_command_text(&params.arguments) else {
+            return Ok(None);
+        };
+        self.client
+            .show_message(MessageType::INFO, text.clone())
+            .await;
+        Ok(Some(LSPAny::String(text)))
     }
 }
