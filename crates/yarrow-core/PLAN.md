@@ -46,7 +46,7 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 | Warnings    | Only unused / dead-stack; more lints later                                                                    |
 | Projects    | Single-file + `require` only; no multi-root project graph (Stage 28)                                          |
 | Default     | Session / CLI still default to JIT; product switch to `object` is Stage 29                                    |
-| Linker      | System `ld`/`lld` only; bundled linker only if that becomes too painful (Stage 27)                            |
+| Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
 | LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`)             |
 | Formatter   | Whitespace still rebuilt by printer (`yarrow-fmt`)                                                            |
 
@@ -82,7 +82,7 @@ Host is linux-gnu; add a real target triple story.
 
 **Done:** `CompileOptions::target` / `TargetTriple`; object ISA via Cranelift lookup; host + other of `x86_64`/`aarch64` linux-gnu; `linkable_archive_for` + `YARROW_RUNTIME_AOT_ARCHIVE_*` / `YARROW_BUILD_CROSS_AOT`; link CRT via `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR`; `E397`; RUNTIME documents layout.
 
-### Stage 27 - Bundled linker (optional)
+### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
 Only if Stage 25–26 show system `ld`/`lld` discovery is too fragile for everyday use. Skip this stage (mark cancelled / deferred in notes) if system linkers remain reliable.
 
@@ -91,6 +91,8 @@ Only if Stage 25–26 show system `ld`/`lld` discovery is too fragile for everyd
 3. Feature-gate or option-gate the bundle so default builds do not force a huge download unless chosen.
 
 **Gate:** with the bundle enabled on linux-gnu, `compile_executable_source` succeeds without requiring a system `ld`/`lld` on `PATH` (CRT still locatable). Document how to enable it. If skipped: one-line note here and leave Known gaps pointing at system linkers.
+
+**Deferred:** Stages 25–26 keep host/cross AOT linking on PATH `ld`/`lld` with clear `E394`/`E395` diagnostics; no everyday fragility that justifies vendoring a linker.
 
 ### Stage 28 - Multi-file project graph beyond `require`
 
