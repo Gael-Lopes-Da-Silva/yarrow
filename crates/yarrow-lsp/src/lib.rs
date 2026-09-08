@@ -1,9 +1,10 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 5 adds
-//! same-file `textDocument/hover` from AST signatures (typed detail later).
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 6 adds
+//! keyword + same-file name completions (and `std.*` require paths).
 
 mod analysis;
+mod completion;
 mod definition;
 mod document;
 mod hover;
@@ -17,15 +18,17 @@ use std::time::Duration;
 
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, MessageType, OneOf, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType,
+    OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 pub use analysis::{check_document, uri_to_source_path};
+pub use completion::completions;
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
 pub use hover::hover as hover_at;
@@ -202,6 +205,10 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["\"".into()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -403,5 +410,27 @@ impl LanguageServer for Backend {
             .unwrap_or(PositionEncoding::Utf16);
         let path = uri_to_source_path(&uri);
         Ok(hover::hover(&path, &text, encoding, position))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        Ok(completion::completions(&path, &text, encoding, position))
     }
 }
