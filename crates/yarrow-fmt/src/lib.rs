@@ -3,13 +3,15 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 3: parses into a format IR, then applies source-file hygiene
-//! (LF, no trailing whitespace, final newline). Construct reprint lands later.
+//! Stage 4: parses into a format IR, applies source-file hygiene, then
+//! rewrites leading indentation to tabs with `end` aligned to openers.
 
 mod hygiene;
+mod indent;
 mod ir;
 
 pub use hygiene::apply_source_hygiene;
+pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
 
 use std::fmt;
@@ -88,13 +90,22 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 3: parses and builds IR, then applies source-file hygiene.
+/// Stage 4: hygiene, then tab indent / `end` alignment from the format IR.
 /// Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
+    format_source_at(source, "<input>", options)
+}
+
+fn format_source_at(
+    source: &str,
+    path: &str,
+    options: &FormatOptions,
+) -> Result<String, FormatError> {
     let cleaned = apply_source_hygiene(source);
-    let _ir = build_format_ir(&cleaned, "<input>")?;
+    let ir = build_format_ir(&cleaned, path)?;
+    let indented = apply_indent(&ir);
     let _ = options;
-    Ok(cleaned)
+    Ok(apply_source_hygiene(&indented))
 }
 
 /// Read `path` and format its contents.
@@ -109,8 +120,5 @@ pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, Forma
         path: path.to_path_buf(),
     })?;
     let path_str = path.to_string_lossy();
-    let cleaned = apply_source_hygiene(source);
-    let _ir = build_format_ir(&cleaned, &path_str)?;
-    let _ = options;
-    Ok(cleaned)
+    format_source_at(source, &path_str, options)
 }

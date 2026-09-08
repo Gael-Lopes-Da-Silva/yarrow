@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 3: parse IR + source hygiene (LF, strip trailing WS, final newline; reject non-UTF-8) |
+| `yarrow-fmt` crate | ✅     | Stage 4: tab indent + `end` alignment from format IR (hygiene retained) |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -151,7 +151,7 @@ Implement style-guide **Source files** + checklist basics:
 
 ---
 
-### Stage 4 - Indent and `end` alignment
+### Stage 4 - Indent and `end` alignment ✅
 
 Style-guide **Indentation** + **Visible structure**:
 
@@ -160,6 +160,8 @@ Style-guide **Indentation** + **Visible structure**:
 3. Reject or rewrite leading space-indent to tabs for indented lines (formatter output always tabs).
 
 **Gate:** a nested `if` / `function` example formats with tab indent and aligned `end`. Matches the shape of style-guide control-flow snippets.
+
+**Notes:** `apply_indent` paints nesting from the AST (plus keyword-line finds for `do` / `else` / case `end`), then rewrites leading whitespace to tabs. Fixture `fixtures/stage4_indent.yar`. Phrase/construct reprint still deferred to later stages.
 
 ---
 
