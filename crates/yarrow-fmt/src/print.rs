@@ -1,10 +1,12 @@
-//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–8).
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–9).
 //!
 //! Reprints the AST into preferred forms for requires, types, functions,
 //! variables, containers, calls, control flow, defer, unsafe, and
-//! handle/unwrap, with soft wrap at `max_width`. Own-line comments between
-//! constructs are preserved from the original source by line gap; trailing
-//! comment spacing is left to Stage 9.
+//! handle/unwrap, with soft wrap at `max_width`. Own-line comments are
+//! preserved by line gap with `# ` spacing; trailing comments are reattached
+//! from trivia with one space before `#`.
+
+use std::collections::HashSet;
 
 use yarrow_core::parser::ast::{
     EnumDecl, ErrorDecl, Expr, Field, Function, Implement, MatchCase, MatchCaseKind, Mutability,
@@ -14,22 +16,26 @@ use yarrow_core::parser::ast::{
 use yarrow_core::{SourceFile, Span};
 
 use crate::FormatOptions;
-use crate::ir::FormatIr;
+use crate::comment::{normalize_comment, trailing_on_line, trailing_suffix};
+use crate::ir::{FormatIr, TriviaMap};
 use crate::phrase::{expr_tokens, layout_expr_stmts, wrap_tokens};
 
-/// Reprint the program with Stage 6–8 construct layout.
+/// Reprint the program with Stage 6–9 construct layout.
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
 pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String {
     let mut p = Printer {
         file: &ir.file,
+        trivia: &ir.trivia,
         max_width: options.max_width.max(1),
         out: String::with_capacity(ir.file.source.len().saturating_add(64)),
         depth: 0,
         last_emitted_line: 0,
         at_line_start: true,
         pending_blank: false,
+        pending_trailing_line: None,
+        emitted_trailing: HashSet::new(),
     };
 
     let items = &ir.program.items;
@@ -56,6 +62,7 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
 
 struct Printer<'a> {
     file: &'a SourceFile,
+    trivia: &'a TriviaMap,
     max_width: usize,
     out: String,
     depth: usize,
@@ -63,6 +70,9 @@ struct Printer<'a> {
     last_emitted_line: usize,
     at_line_start: bool,
     pending_blank: bool,
+    /// When set, [`finish_line`] appends that original line's trailing comment.
+    pending_trailing_line: Option<usize>,
+    emitted_trailing: HashSet<usize>,
 }
 
 impl<'a> Printer<'a> {
@@ -85,7 +95,7 @@ impl<'a> Printer<'a> {
             if trimmed.starts_with('#') {
                 self.flush_pending_blank();
                 self.write_indent();
-                self.out.push_str(trimmed);
+                self.out.push_str(&normalize_comment(trimmed));
                 self.out.push('\n');
                 self.at_line_start = true;
                 self.last_emitted_line = line;
@@ -113,18 +123,41 @@ impl<'a> Printer<'a> {
         }
     }
 
+    fn append_trailing_for_line(&mut self, line: usize) {
+        if line == 0 || !self.emitted_trailing.insert(line) {
+            return;
+        }
+        for comment in trailing_on_line(self.trivia, line) {
+            self.out.push_str(&trailing_suffix(&comment.lexeme));
+        }
+    }
+
     fn finish_line(&mut self) {
         if !self.at_line_start {
+            if let Some(line) = self.pending_trailing_line.take() {
+                self.append_trailing_for_line(line);
+            }
             self.out.push('\n');
             self.at_line_start = true;
+        } else {
+            self.pending_trailing_line = None;
         }
     }
 
     fn write_tokens_line(&mut self, tokens: &[String]) {
-        self.write_tokens_line_at(self.depth, tokens);
+        self.write_tokens_line_at(self.depth, tokens, None);
     }
 
-    fn write_tokens_line_at(&mut self, depth: usize, tokens: &[String]) {
+    fn write_tokens_line_trailing(&mut self, tokens: &[String], trailing_line: Option<usize>) {
+        self.write_tokens_line_at(self.depth, tokens, trailing_line);
+    }
+
+    fn write_tokens_line_at(
+        &mut self,
+        depth: usize,
+        tokens: &[String],
+        trailing_line: Option<usize>,
+    ) {
         if tokens.is_empty() {
             return;
         }
@@ -133,21 +166,37 @@ impl<'a> Printer<'a> {
         self.depth = depth;
         self.write_indent();
         self.out.push_str(&tokens.join(" "));
+        self.pending_trailing_line = trailing_line;
         self.finish_line();
         self.depth = saved;
     }
 
     fn write_phrase_lines(&mut self, lines: &[(usize, Vec<String>)]) {
-        for (depth, tokens) in lines {
-            if !tokens.is_empty() {
-                self.write_tokens_line_at(*depth, tokens);
+        self.write_phrase_lines_trailing(lines, None);
+    }
+
+    fn write_phrase_lines_trailing(
+        &mut self,
+        lines: &[(usize, Vec<String>)],
+        trailing_line: Option<usize>,
+    ) {
+        let last_idx = lines
+            .iter()
+            .rposition(|(_, tokens)| !tokens.is_empty())
+            .unwrap_or(0);
+        for (i, (depth, tokens)) in lines.iter().enumerate() {
+            if tokens.is_empty() {
+                continue;
             }
+            let trail = if i == last_idx { trailing_line } else { None };
+            self.write_tokens_line_at(*depth, tokens, trail);
         }
     }
 
     fn print_stmt(&mut self, stmt: &Stmt) {
+        let trail = Some(end_line(self.file, stmt.span));
         match &stmt.kind {
-            StmtKind::Require { path, alias } => self.print_require(path, alias.as_deref()),
+            StmtKind::Require { path, alias } => self.print_require(path, alias.as_deref(), trail),
             StmtKind::Struct(decl) => self.print_struct(decl),
             StmtKind::Enum(decl) => self.print_enum(decl),
             StmtKind::Union(decl) => self.print_union(decl),
@@ -159,13 +208,13 @@ impl<'a> Printer<'a> {
                 mutability,
                 ty,
                 value,
-            } => self.print_var_decl(name, *mutability, ty, value.as_ref()),
-            StmtKind::Set { target, value } => self.print_set(target, value.as_ref()),
+            } => self.print_var_decl(name, *mutability, ty, value.as_ref(), trail),
+            StmtKind::Set { target, value } => self.print_set(target, value.as_ref(), trail),
             StmtKind::Expr(expr) => {
                 let tokens = expr_tokens(expr);
-                self.write_tokens_line(&tokens);
+                self.write_tokens_line_trailing(&tokens, trail);
             }
-            StmtKind::Return { value } => self.print_return(value.as_ref()),
+            StmtKind::Return { value } => self.print_return(value.as_ref(), trail),
             StmtKind::If {
                 condition,
                 then_branch,
@@ -184,7 +233,7 @@ impl<'a> Printer<'a> {
                 let mut tokens = expr_tokens(source);
                 tokens.push(target.clone());
                 tokens.push("move".into());
-                self.write_tokens_line(&tokens);
+                self.write_tokens_line_trailing(&tokens, trail);
             }
             StmtKind::Fallback { value } => {
                 let mut tokens = Vec::new();
@@ -192,12 +241,12 @@ impl<'a> Printer<'a> {
                     tokens.extend(expr_tokens(v));
                 }
                 tokens.push("fallback".into());
-                self.write_tokens_line(&tokens);
+                self.write_tokens_line_trailing(&tokens, trail);
             }
         }
     }
 
-    fn print_require(&mut self, path: &str, alias: Option<&str>) {
+    fn print_require(&mut self, path: &str, alias: Option<&str>, trailing_line: Option<usize>) {
         let mut line = format!("\"{path}\"");
         if let Some(alias) = alias {
             line.push(' ');
@@ -207,6 +256,7 @@ impl<'a> Printer<'a> {
         self.flush_pending_blank();
         self.write_indent();
         self.out.push_str(&line);
+        self.pending_trailing_line = trailing_line;
         self.finish_line();
     }
 
@@ -241,6 +291,9 @@ impl<'a> Printer<'a> {
             self.out.push(' ');
             self.out.push_str(visibility_word(vis));
         }
+        // Fields have no stmt span; type location is the field line head.
+        let line = field.ty.location.line.max(1);
+        self.pending_trailing_line = Some(line);
         self.finish_line();
     }
 
@@ -457,7 +510,7 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Stage 6–8: merge short calls; wrap over-width phrases before consumers.
+    /// Stage 6–9: merge short calls; wrap over-width phrases; keep trailing.
     fn print_expr_phrase(&mut self, stmts: &[Stmt]) {
         let lines = layout_expr_stmts(stmts, self.depth, self.max_width);
         // Preserve blank/comment gaps from the first source line in the run.
@@ -468,7 +521,8 @@ impl<'a> Printer<'a> {
             }
             self.emit_gap_comments(line_no);
         }
-        self.write_phrase_lines(&lines);
+        let trail = stmts.last().map(|s| end_line(self.file, s.span));
+        self.write_phrase_lines_trailing(&lines, trail);
         if let Some(last) = stmts.last() {
             self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
@@ -496,7 +550,8 @@ impl<'a> Printer<'a> {
             }
             self.emit_gap_comments(line_no);
         }
-        self.write_phrase_lines(&lines);
+        let trail = stmts.last().map(|s| end_line(self.file, s.span));
+        self.write_phrase_lines_trailing(&lines, trail);
         if let Some(last) = stmts.last() {
             self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
@@ -532,7 +587,8 @@ impl<'a> Printer<'a> {
                         }
                         self.emit_gap_comments(line_no);
                     }
-                    self.write_phrase_lines(&lines);
+                    let trail = call_stmts.last().map(|s| end_line(self.file, s.span));
+                    self.write_phrase_lines_trailing(&lines, trail);
                     if let Some(last) = call_stmts.last() {
                         self.last_emitted_line =
                             end_line(self.file, last.span).max(self.last_emitted_line);
@@ -549,7 +605,8 @@ impl<'a> Printer<'a> {
             }
             self.emit_gap_comments(line_no);
         }
-        self.write_phrase_lines(&lines);
+        let trail = call_stmts.last().map(|s| end_line(self.file, s.span));
+        self.write_phrase_lines_trailing(&lines, trail);
         if let Some(last) = call_stmts.last() {
             self.last_emitted_line = end_line(self.file, last.span).max(self.last_emitted_line);
         }
@@ -574,6 +631,7 @@ impl<'a> Printer<'a> {
         mutability: Mutability,
         ty: &Type,
         value: Option<&Expr>,
+        trailing_line: Option<usize>,
     ) {
         let value_tokens = match value {
             Some(v) => self.emit_absorbed_prefix(v),
@@ -583,10 +641,10 @@ impl<'a> Printer<'a> {
         tokens.push(name.into());
         tokens.push(mutability_word(mutability).into());
         tokens.push(format_type(ty));
-        self.write_tokens_line(&tokens);
+        self.write_tokens_line_trailing(&tokens, trailing_line);
     }
 
-    fn print_set(&mut self, target: &Expr, value: Option<&Expr>) {
+    fn print_set(&mut self, target: &Expr, value: Option<&Expr>, trailing_line: Option<usize>) {
         let value_tokens = match value {
             Some(v) => self.emit_absorbed_prefix(v),
             None => Vec::new(),
@@ -594,7 +652,10 @@ impl<'a> Printer<'a> {
         let mut tokens = value_tokens;
         tokens.extend(expr_tokens(target));
         tokens.push("set".into());
-        self.write_phrase_lines(&wrap_tokens(&tokens, self.depth, self.max_width));
+        self.write_phrase_lines_trailing(
+            &wrap_tokens(&tokens, self.depth, self.max_width),
+            trailing_line,
+        );
     }
 
     /// Emit stack phrases the parser folded into a consuming construct, and
@@ -613,7 +674,8 @@ impl<'a> Printer<'a> {
                 self.emit_gap_comments(line);
             }
             if !tokens.is_empty() {
-                self.write_tokens_line(tokens);
+                let trail = spans.last().map(|s| end_line(self.file, *s));
+                self.write_tokens_line_trailing(tokens, trail);
             }
             if let Some(last) = spans.last() {
                 let end = end_line(self.file, *last);
@@ -631,13 +693,16 @@ impl<'a> Printer<'a> {
         tokens.clone()
     }
 
-    fn print_return(&mut self, value: Option<&Expr>) {
+    fn print_return(&mut self, value: Option<&Expr>, trailing_line: Option<usize>) {
         let mut tokens = Vec::new();
         if let Some(v) = value {
             tokens.extend(phrase_tokens(v));
         }
         tokens.push("return".into());
-        self.write_phrase_lines(&wrap_tokens(&tokens, self.depth, self.max_width));
+        self.write_phrase_lines_trailing(
+            &wrap_tokens(&tokens, self.depth, self.max_width),
+            trailing_line,
+        );
     }
 
     fn print_if(&mut self, condition: &Expr, then_branch: &[Stmt], else_branch: &[Stmt]) {

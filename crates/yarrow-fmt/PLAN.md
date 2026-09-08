@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 8: line width / stack-phrase wrap |
+| `yarrow-fmt` crate | ✅     | Stage 9: comment spacing / trailing preserve |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -229,7 +229,7 @@ Style-guide **Indentation and line width** + **Stack phrases**:
 
 ---
 
-### Stage 9 - Comments
+### Stage 9 - Comments ✅
 
 Requires Stage 1.
 
@@ -239,6 +239,8 @@ Requires Stage 1.
 4. Keep own-line comments above the code they document when attachment is unambiguous; if ambiguous, keep relative order to the following token.
 
 **Gate:** `01_hello.yar`-style file with a file comment and a trailing comment round-trips comment text; spacing matches the guide. Idempotent.
+
+**Notes:** `comment` module normalizes `#` / `# text`. Construct layout: own-line gaps via normalized lexemes; trailing reattached from trivia on stmt / field / phrase end lines (` # text`). Fixture `fixtures/stage9_comments.yar`. Require sorting still Stage 10.
 
 ---
 
