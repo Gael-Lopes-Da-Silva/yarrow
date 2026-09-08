@@ -1,7 +1,7 @@
 //! Full-document `textDocument/formatting` via `yarrow_fmt`.
 
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
-use yarrow_fmt::{ByteRange, FormatOptions, format_range, format_source, format_source_best_effort};
+use yarrow_fmt::{ByteRange, FormatOptions, format_range, format_source_best_effort};
 
 use crate::position::{PositionEncoding, PositionMap};
 
