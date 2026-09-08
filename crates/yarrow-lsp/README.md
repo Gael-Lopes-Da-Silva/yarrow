@@ -38,3 +38,7 @@ Optional `initializationOptions` (JSON, camelCase):
 ```
 
 Workspace folders from `initialize` are appended as search paths. Client init options merge on top of process flags.
+
+## Code actions
+
+On a diagnostic whose code is in the `yarrow explain` catalog, the server offers **Explain Exxx** (no edits). Choosing it runs workspace command `yarrow.explain` with the code; the server shows the same long-form text as `yarrow explain`. Hover over a labeled span also appends that explain section.
