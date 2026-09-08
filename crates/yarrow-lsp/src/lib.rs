@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 15 adds
-//! file-local `textDocument/rename` / `prepareRename`.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 16 adds
+//! `workspace/symbol` over open buffers and resolved `require`s.
 
 mod analysis;
 mod code_action;
@@ -38,7 +38,7 @@ use tower_lsp_server::ls_types::{
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
-    WorkspaceEdit,
+    WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -56,7 +56,7 @@ pub use references::find_references;
 pub use rename::{prepare_rename, rename};
 pub use semantic_tokens::{legend as semantic_tokens_legend, semantic_tokens_full};
 pub use signature_help::signature_help as signature_help_at;
-pub use symbols::document_symbols;
+pub use symbols::{document_symbols, workspace_symbols};
 
 /// Debounce window for rapid `didChange` before re-checking.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -276,6 +276,7 @@ impl LanguageServer for Backend {
                     },
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -469,6 +470,27 @@ impl LanguageServer for Backend {
         let path = uri_to_source_path(&uri);
         let config = self.config_snapshot();
         Ok(document_symbols(&path, &text, encoding, &config).map(DocumentSymbolResponse::Nested))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> LspResult<Option<WorkspaceSymbolResponse>> {
+        let open = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(Some(WorkspaceSymbolResponse::Flat(Vec::new())));
+            };
+            store.snapshot_texts()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let config = self.config_snapshot();
+        let symbols = workspace_symbols(&open, &params.query, encoding, &config);
+        Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
     }
 
     async fn goto_definition(

@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–14)
+### Landed (v1, Stages 0–16)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
@@ -38,10 +38,10 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Inlay hints from core type probes (`--no-inlay` / init `inlayHints`)
 - Semantic tokens (full document) from tokenizer + AST decls
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
+- Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next, Stages 16+)
+### In scope (next, Stages 17+)
 
-- Workspace symbols over open buffers + resolved `require`s
 - Range / on-type formatting
 - Pull diagnostics (LSP 3.17) alongside push
 - TCP transport and a reusable protocol test harness
@@ -120,7 +120,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 15: file-local rename                    |
+| `yarrow-lsp` crate | ✅     | Stage 16: workspace symbols                    |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -130,9 +130,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–14)
+## Landed (Stages 0–15)
 
-Stages 0–14 are complete. Historical stage write-ups for 0–13 were removed; git history keeps them. Stage 14 remains below for context until the next plan collapse.
+Stages 0–15 are complete. Historical stage write-ups for 0–14 were removed; git history keeps them. Stage 15 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -151,27 +151,11 @@ Stages 0–14 are complete. Historical stage write-ups for 0–13 were removed; 
 | 12 | `signatureHelp` for postfix `name call` |
 | 13 | Inlay hints from `TypeIndex` probes |
 | 14 | Semantic tokens (full document) from tokenizer + AST decls |
+| 15 | File-local rename (`prepareRename` + `rename`) |
 
 ---
 
 ## Stages
-
-### Stage 14 - Semantic tokens ✅
-
-Theme-friendly token classification without a second highlighter that disagrees with the grammar.
-
-1. Advertise `semanticTokensProvider` (full document first; range optional if cheap).
-2. Legend: at least `keyword`, `function`, `variable`, `type`, `parameter`, `property`, `string`, `number`, `comment`, `operator` (trim to what the tokenizer / AST can justify).
-3. Classify from core tokens + AST decls (declaration sites and references when the same-file resolve path already exists); do not invent a parallel lexer.
-4. Map spans through `PositionMap`; produce LSP delta-encoded tokens.
-5. Invalidate / recompute on document change the same way diagnostics do (debounce OK).
-6. If a token class cannot be proven, leave it to the client TextMate/tree-sitter grammar rather than mis-tagging.
-
-**Gate:** scripted `textDocument/semanticTokens/full` on `01_hello.yar` returns a non-empty token array; at least `function` / `keyword` (or documented legend entries) appear for `main` / `function`. `cargo clippy` green.
-
-**Done:** `textDocument/semanticTokens/full` from core `Tokenizer` + `DeclKind` resolve; legend includes keyword/function/variable/type/parameter/property/string/number/comment/operator (+ `declaration` modifier); unresolved idents and brackets omitted. Scripted gate on `01_hello.yar`: non-empty data; keyword for `function`, function for `main`.
-
----
 
 ### Stage 15 - Rename (file-local first) ✅
 
@@ -189,7 +173,7 @@ Safe rename for identifiers with a clear edit set; never silent cross-module bre
 
 ---
 
-### Stage 16 - Workspace symbols
+### Stage 16 - Workspace symbols ✅
 
 Quick-open style search without a full project indexer.
 
@@ -200,6 +184,8 @@ Quick-open style search without a full project indexer.
 5. Do not crawl the filesystem beyond what analysis already resolved; document that closed, unchecked trees are invisible.
 
 **Gate:** with two `.yar` buffers open that define distinct top-level names, `workspace/symbol` query matching one name returns that symbol’s location. Empty query may return a bounded list or empty; either behavior is documented in the gate notes.
+
+**Done:** `workspace/symbol` over open buffers plus one-hop resolved `require` files; top-level functions / types / implement methods; case-insensitive substring filter (prefix preferred in sort); cap 100. Empty query returns a bounded list. Closed trees stay invisible. Scripted gate: two open buffers, query hits one name’s location.
 
 ---
 
@@ -277,7 +263,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | inlayHint                              | 13 ✅    | `TypeIndex` probes                 |
 | semanticTokens                         | 14 ✅    | tokens + AST                       |
 | rename                                 | 15 ✅    | references / resolve               |
-| workspaceSymbol                        | 16       | open buffers + require ASTs         |
+| workspaceSymbol                        | 16 ✅        | open buffers + require ASTs        |
 | rangeFormatting / onTypeFormatting     | 17       | `yarrow-fmt`                       |
 | textDocument/diagnostic (pull)         | 18       | same as publish                    |
 | TCP + test harness                     | 19       | transport only                     |

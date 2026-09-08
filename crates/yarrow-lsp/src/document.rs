@@ -62,6 +62,14 @@ impl DocumentStore {
     pub fn is_empty(&self) -> bool {
         self.docs.is_empty()
     }
+
+    /// Snapshot of open documents (URI + text) for workspace queries.
+    pub fn snapshot_texts(&self) -> Vec<(Uri, String)> {
+        self.docs
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), doc.text.clone()))
+            .collect()
+    }
 }
 
 /// Whether this open should be tracked: language id `yarrow`, or a `.yar` path.
