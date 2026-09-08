@@ -26,14 +26,15 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                      |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
-| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object` (Stage 29) |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel` (Stage 25); cross triple object emit (Stage 26) |
+| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object` |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel`; cross triple object emit (`x86_64` / `aarch64` linux-gnu) |
+| Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 21 subset of `docs/examples/valid/**` (stdout matches JIT); structs / errors / regions still E393    |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
 
-Phases A–E (Stages 0–24) are complete. Historical stage write-ups were removed; git history keeps them.
+Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete. Stage 27 (bundled linker) stays deferred. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -41,96 +42,98 @@ Phases A–E (Stages 0–24) are complete. Historical stage write-ups were remov
 
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | Cross link needs matching archive + CRT / linker emulation; broader matrix (musl, Mach-O, Windows) later |
-| Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity           |
-| Warnings    | Only unused / dead-stack; more lints later                                                                    |
-| Projects    | Multi-root check via `check_project` (Stage 28); no CLI project driver yet                                   |
+| AOT         | Cross link needs matching archive + CRT / linker emulation; musl / Mach-O / Windows later (Stages 33–34)     |
+| Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity (Stage 32) |
+| Warnings    | Only unused / dead-stack; more lints later (Stage 31)                                                         |
+| Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
-| LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`)             |
+| LSP assist  | No typed-at-span / require-path index API yet; server uses `check_source` + AST (Stage 30; see `yarrow-lsp`)   |
 | Formatter   | Whitespace still rebuilt by printer (`yarrow-fmt`)                                                            |
 
 ---
 
-## Next (Phase F)
+## Next (Phase G)
 
-Focus: AOT polish on linux-gnu first (debug + opts), then target / linker story, then project shape and default backend. Keep interpreter corpus growth opportunistic when it unblocks a gate; do not invent language features.
-
-Phase F Stages 25–26 and 28–29 are complete; Stage 27 remains deferred. See [Later (backlog)](#later-backlog).
-
-### Stage 25 - AOT DWARF and `-O` tiers ✅
-
-Everyday AOT on linux-gnu is stable; add debug info and controllable optimization.
-
-1. Emit DWARF (or Cranelift’s supported debug info) into object / executable products so a host debugger can set breakpoints on Yarrow entry and see function names / line mappings when spans exist.
-2. Expose opt tiers on [`CompileOptions`](src/session.rs) (e.g. none / speed / size) and thread them into Cranelift settings for `Object` / executable paths; JIT may honor the same knob or document that it stays debug-friendly.
-3. Keep link surface unchanged: still system `ld`/`lld` + `linkable_archive()`, no `cc` as compile driver.
-4. Document the flags / options in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) (AOT section); CLI wiring stays in `yarrow-cli` once core exposes the options.
-
-**Gate:** `compile_executable_source` (or `compile_object_source` + link) of a small valid example produces a binary with inspectable debug info (e.g. `llvm-dwarfdump` / `readelf` shows compilation units or function names). At least two opt tiers produce distinct Cranelift flags or measurable IR/object differences. `cargo clippy` green; JIT corpus gates unchanged.
-
-**Done:** `CompileOptions::{opt_level, debug_info}`; DWARF via gimli on object finish; JIT honors `opt_level`; RUNTIME documents both.
-
-### Stage 26 - Cross-compile triples ✅
-
-Host is linux-gnu; add a real target triple story.
-
-1. Accept a target triple (or Cranelift `Isa` selection) on compile/object/executable options; reject unsupported triples with a clear diagnostic (not a panic).
-2. Build or select a matching `yarrow_runtime_aot` archive and CRT objects for that triple; document the layout and how agents/CI obtain archives (no inventing a second runtime ABI).
-3. Object emit must use the triple’s ISA; executable link must pass the right linker emulation / sysroot flags when linking on the host for a different target.
-4. Prefer one additional triple first (e.g. another linux-gnu arch, or linux-musl) before a broad matrix. Mach-O / Windows stay later unless already cheap.
-
-**Gate:** documented command or Session options produce a non-host object (and, if link is in scope, an executable) for one non-host triple; missing archive/CRT fails with `E394`-family diagnostics. Host linux-gnu path still passes existing AOT examples. Update Known gaps when the first triple lands.
-
-**Done:** `CompileOptions::target` / `TargetTriple`; object ISA via Cranelift lookup; host + other of `x86_64`/`aarch64` linux-gnu; `linkable_archive_for` + `YARROW_RUNTIME_AOT_ARCHIVE_*` / `YARROW_BUILD_CROSS_AOT`; link CRT via `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR`; `E397`; RUNTIME documents layout.
+Focus: library APIs that unblock LSP hover, then lints and interpreter corpus growth, then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
-Only if Stage 25–26 show system `ld`/`lld` discovery is too fragile for everyday use. Skip this stage (mark cancelled / deferred in notes) if system linkers remain reliable.
+Only if everyday AOT shows system `ld`/`lld` discovery is too fragile. Skip (keep deferred) if PATH linkers stay reliable.
 
 1. Vendor or depend on a known linker (e.g. `lld` as a library or pinned binary) invoked from `link::link_executable` without shelling out to a random PATH `ld` when the bundle is enabled.
 2. Keep the “no `cc` compile step” rule; CRT discovery may still use `cc -print-file-name` for paths only.
 3. Feature-gate or option-gate the bundle so default builds do not force a huge download unless chosen.
 
-**Gate:** with the bundle enabled on linux-gnu, `compile_executable_source` succeeds without requiring a system `ld`/`lld` on `PATH` (CRT still locatable). Document how to enable it. If skipped: one-line note here and leave Known gaps pointing at system linkers.
+**Gate:** with the bundle enabled on linux-gnu, `compile_executable_source` succeeds without requiring a system `ld`/`lld` on `PATH` (CRT still locatable). Document how to enable it.
 
-**Deferred:** Stages 25–26 keep host/cross AOT linking on PATH `ld`/`lld` with clear `E394`/`E395` diagnostics; no everyday fragility that justifies vendoring a linker.
+**Deferred:** Host/cross AOT linking stays on PATH `ld`/`lld` with clear `E394`/`E395` diagnostics; no everyday fragility that justifies vendoring a linker.
 
-### Stage 28 - Multi-file project graph beyond `require` ✅
+### Stage 30 - Typed-at-span / signature probe API
 
-Today: one root file + `"path" [scope] require` relative to that file / search paths. No multi-root project model.
+Unblocks [`yarrow-lsp` Stage 9](../yarrow-lsp/PLAN.md) typed hover / inlay. Today `CheckedProgram` is AST-only; the LSP must not invent types.
 
-1. **Decide the product shape first** (document in RUNTIME / a short project note): e.g. explicit project manifest vs directory of roots vs “check this set of files sharing search paths.” Do not invent lifetime- or package-manager syntax absent from the docs; extend only what GRAMMAR/RUNTIME already allow or what a minimal manifest needs.
-2. Core API: build a graph of modules / roots, share checked definitions where safe, and surface cycle / missing-module diagnostics with spans.
-3. Session entry points for “check/compile project” (names TBD) that drivers can call; single-file `*_source` APIs remain.
-4. Coordinate with CLI / LSP later; this stage only lands the library graph + diagnostics.
+1. After a successful `check_source` (or from a retained check artifact), expose a stable probe: given a byte offset or `Span` in the root file, return the binding / expression type string and, when on a call or function name, a signature / stack-effect summary.
+2. Prefer data already computed during checking (do not re-run full lower or JIT). Reuse stack-effect note formatting where it already exists for diagnostics.
+3. Session surface: e.g. methods on `CheckedProgram` or a small `Analysis` / probe type returned alongside check. Keep the API usable without `ExecutionMode::Jit` / object emit.
+4. Optional stretch (same stage only if cheap): require-path or definition span for an identifier at offset, enough for hover “defined in …” without a full project index. Otherwise leave navigation to LSP AST walks.
+5. Document the probe in [`docs/RUNTIME.md`](../../docs/RUNTIME.md) or a short Session API note; coordinate names with `yarrow-lsp` Stage 9.
 
-**Gate:** a documented multi-file fixture (beyond nested `require` from one root) type-checks via the new API; cycles or missing roots fail with stable codes. Existing single-file + `require` corpus still passes. No CLI subcommand required in this stage.
+**Gate:** documented Session/`CheckedProgram` probe on a typed `const` / `mutable` in `docs/examples/valid/03_variables_and_typeof.yar` (or equivalent) returns a non-empty type string matching the checker. Probe on empty / non-code span returns none / clear miss. `check_source` latency and corpus gates unchanged; `cargo clippy` green. No fake types in the LSP.
 
-**Done:** Product shape = explicit root set + shared search paths (RUNTIME Projects; `docs/examples/project/`). `ProjectOptions` / `check_project` / `Session::check_project` → `CheckedProject` + `ModuleGraph`. `E382` require cycles (spans); `E383` missing/empty roots; `E380` still unknown module.
+### Stage 31 - Richer warning / lint catalog
 
-### Stage 29 - Default backend `object` instead of `jit` ✅
+Extend beyond `W401`–`W403` without turning warnings into hard errors.
 
-Product/CLI decision; core must expose a coherent default.
+1. Inventory high-value, low-noise lints from the language docs (e.g. unused `mutable` that is never written, redundant `copy`, unreachable after divergent path, suspicious empty `match` arm, item-vs-module require ambiguity already printed as text → promote to a stable `W` code if not already).
+2. Assign stable `W4xx` codes; add `explain_code` entries; emit only on successful check (same policy as Stage 20).
+3. Add at least two new fixtures under `docs/examples/warnings/` that check with `Ok` and assert the new codes; keep `warnings/01_unused.yar` behavior.
+4. Document codes in the diagnostics explain table / RUNTIME warnings blurb if one exists; do not invent style-guide-only nits that belong in `yarrow-fmt`.
 
-1. Agree with [`yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md) backlog (“Default `--target object`”): either flip [`ExecutionMode`](src/session.rs) default from `Jit` to `Object`, or keep core default and only change CLI defaults—pick one and document it in RUNTIME.
-2. Ensure `compile` / session helpers that today assume JIT either take an explicit mode or follow the new default without breaking `run_main` callers (JIT-only APIs stay JIT).
-3. Update driver-facing docs / help strings when CLI lands the flip; core stage is done when the library default and Session behavior match the decision.
+**Gate:** new warning fixtures check successfully and surface the new codes via `CheckedProgram::warnings`. Existing `valid/**` / `invalid/**` gates unchanged. `cargo clippy` green.
 
-**Gate:** new `CompileOptions::new` (or documented CLI default) matches the chosen backend; `docs/examples/valid/01_hello.yar` still runs under an explicit JIT path. No silent change to `interpret` / `check`.
+### Stage 32 - Interpreter corpus toward JIT parity
 
-**Done:** Chose library + CLI together: `ExecutionMode` / `CompileOptions::new` default to `Object`; CLI `run` / `compile` / bare `yarrow <file>` default `--target object`. `Session::compile_source` / `run_main` require explicit `ExecutionMode::Jit`. `check` / `interpret` unchanged. RUNTIME documents the default.
+Grow past Stage 21 / `E393` so more of `docs/examples/valid/**` interpret with stdout matching JIT `run --target jit`.
+
+1. Extend the tree-walk interpreter for, in priority order that unblocks the most examples: structs / enums / `implement` methods; unions + type-dispatch `match`; lists / maps; `error` / `|T Err|` / `unwrap` / `handle`; regions / `defer`; then unsafe / pointers only if host helpers already cover the example.
+2. Keep unsupported ops as clear `E393` (no panics, no silent wrong answers). Prefer host runtime calls over reimplementing heap layouts in the interpreter.
+3. Update the corpus list in `interpreter/mod.rs` module docs as each example lands; do not claim full parity until every `valid/**` file that JIT runs also interprets (or is explicitly documented as interpret-out-of-scope with reason).
+4. Coordinate with CLI `interpret` / REPL only if a new Session knob is required; default remains `interpret_source`.
+
+**Gate:** at least `06_structs_and_enums.yar`, `07_unions.yar`, `10_errors.yar`, and `13_containers.yar` interpret with stdout matching JIT. Remaining E393 surface listed in Known gaps / module docs. JIT and object gates unchanged.
+
+### Stage 33 - Broader cross-compile matrix (linux)
+
+After Stage 26’s first non-host linux-gnu arch: widen linux targets before Mach-O / Windows.
+
+1. Add at least one more supported triple class: prefer `*-linux-musl` (static-friendly) or document why another linux-gnu variant is chosen first.
+2. Wire archive lookup (`linkable_archive_for` / env table) and CRT / linker emulation for that triple; reject half-supported configs with `E397` / `E394` / `E396` as today (no panic).
+3. Object emit must use the triple’s ISA; executable link only when archive + CRT are actually available in CI or documented agent setup (`YARROW_BUILD_CROSS_AOT`, sysroot env).
+4. Update [`docs/RUNTIME.md`](../../docs/RUNTIME.md) Cross-compile section and Known gaps; keep Mach-O / Windows for Stage 34.
+
+**Gate:** documented Session options (or env) produce a non-host object for the new triple; missing pieces fail with stable diagnostics. Existing host + Stage 26 cross path still pass. `cargo clippy` green.
+
+### Stage 34 - Mach-O / Windows AOT link
+
+Platform object formats beyond ELF, once the linux cross story is real.
+
+1. Emit Mach-O and/or COFF/PE objects via Cranelift’s object backend for a documented host or cross triple (`x86_64-apple-darwin`, `x86_64-pc-windows-msvc` / `gnu`, or the cheapest first win).
+2. Link with the platform linker (`ld64` / `link.exe` / `lld` flavor) without introducing a `cc` compile step; CRT / import libs discovery must be explicit and documented.
+3. Runtime archive must build for that target (`yarrow_runtime_aot` + `aot-exports`); document how agents obtain it. Unsupported host/target pairs stay `E397`.
+4. Prefer object-only first if full executable link is blocked on CI; say so in RUNTIME and Known gaps.
+
+**Gate:** at least one non-ELF object (and executable if in scope) builds for a documented triple; host linux-gnu path unchanged. RUNTIME documents the matrix; Known gaps updated. `cargo clippy` green.
 
 ---
 
 ## Later (backlog)
 
-| Item                                      | Notes                                                                 |
-| ----------------------------------------- | --------------------------------------------------------------------- |
-| Interpreter corpus → JIT parity           | Structs, unions, regions, unsafe, errors, lists/maps (grow past E393) |
-| Richer warning / lint catalog             | Beyond W401–W403                                                      |
-| Typed-at-span / signature probe API       | For `yarrow-lsp` Stage 9 hover / inlay                                |
-| Broader cross-compile matrix              | After Stage 26’s first triple                                         |
-| Mach-O / Windows AOT link                 | After linux cross story is real                                       |
+| Item                         | Notes                                              |
+| ---------------------------- | -------------------------------------------------- |
+| Require-path / def index API | If Stage 30 stretch is skipped; fuller LSP navigate |
+| Interpreter full `valid/**`  | Finish remaining E393 after Stage 32 gate           |
+| Bundled linker               | Revisit Stage 27 only if PATH `ld`/`lld` is fragile |
+| Project CLI driver           | Lives in `yarrow-cli`; core graph already landed    |
 
 ---
 
