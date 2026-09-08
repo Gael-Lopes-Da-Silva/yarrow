@@ -1,11 +1,12 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 4 adds
-//! same-file `textDocument/definition` from AST declarations and token fallback.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 5 adds
+//! same-file `textDocument/hover` from AST signatures (typed detail later).
 
 mod analysis;
 mod definition;
 mod document;
+mod hover;
 mod position;
 mod symbols;
 
@@ -18,14 +19,16 @@ use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, MessageType, OneOf, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 pub use analysis::{check_document, uri_to_source_path};
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
+pub use hover::hover as hover_at;
 pub use position::{PositionEncoding, PositionMap};
 pub use symbols::document_symbols;
 
@@ -198,6 +201,7 @@ impl LanguageServer for Backend {
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -377,5 +381,27 @@ impl LanguageServer for Backend {
         Ok(definition::goto_definition(
             &uri, &path, &text, encoding, position,
         ))
+    }
+
+    async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let path = uri_to_source_path(&uri);
+        Ok(hover::hover(&path, &text, encoding, position))
     }
 }

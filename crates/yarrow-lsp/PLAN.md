@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 4: same-file go-to-definition                |
+| `yarrow-lsp` crate | ✅     | Stage 5: AST signature hover                       |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -183,13 +183,15 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 5 - Hover (AST signatures)
+### Stage 5 - Hover (AST signatures) ✅
 
 1. Hover on declarations and references shows a short markdown string: kind + name + parameter / return shape from the AST when available.
 2. On a diagnostic span, optionally append explain blurb via `explain_code` when the code is known.
 3. Typed / ownership detail is **out of scope** until core exposes it (see Stage 9 / core backlog).
 
 **Gate:** hover on `main` in `01_hello.yar` shows a non-empty signature-ish string. Hover on empty space returns none.
+
+**Done:** `textDocument/hover` via identifier-at-offset + scoped AST decls (functions/methods with params/`with`, types, fields, vars, require); markdown `yarrow` fence; known diagnostic codes append `explain_code` blurb. Scripted gate on `01_hello.yar`: `main` non-empty; whitespace null.
 
 ---
 
