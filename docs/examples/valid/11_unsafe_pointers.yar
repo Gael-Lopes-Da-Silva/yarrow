@@ -1,5 +1,4 @@
 # unsafe function + unsafe block, pointer<T> load/store, and std.mem.
-
 "std.io" io require
 "std.mem" mem require
 
@@ -10,7 +9,7 @@ end
 write_cell private unsafe function do
 	unsafe
 		32 mem.allocate call cp mutable pointer<Cell>
-		cp.value 7 set
+		7 cp.value set
 		cp.value
 		drop
 		cp mem.free call
@@ -24,7 +23,6 @@ main function do
 		p load
 		drop
 		p mem.free call
-
 		write_cell call
 	end
 

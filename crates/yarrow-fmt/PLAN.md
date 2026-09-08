@@ -2,7 +2,7 @@
 
 Library (and later binary) that rewrites `.yar` source to match [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md).
 
-`yarrow-fmt` is a **tooling crate**. It may depend on `yarrow-core` for tokenize / parse / diagnostics. It does **not** type-check, borrow-check, or codegen. CLI wiring (`yarrow fmt`) lives in [`crates/yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md) Stage 12 once this plan has a usable library API.
+`yarrow-fmt` is a **tooling crate**. It may depend on `yarrow-core` for tokenize / parse / diagnostics. It does **not** type-check, borrow-check, or codegen. CLI wiring (`yarrow fmt`) is in [`crates/yarrow-cli/PLAN.md`](../yarrow-cli/PLAN.md) Stage 12.
 
 ## Source of truth
 
@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 11: library API + `yarrow-fmt` binary (`--check` / in-place / `--stdin`) |
+| `yarrow-fmt` crate | ✅     | Stage 12: `run_fmt` driver; `yarrow fmt` + corpus `--check` on `docs/examples/valid` |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -270,13 +270,15 @@ Style-guide: std requires first, then local; alphabetical within groups.
 
 ---
 
-### Stage 12 - CLI `yarrow fmt` + corpus gate
+### Stage 12 - CLI `yarrow fmt` + corpus gate ✅
 
 1. Implement [`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md) wrapper: `yarrow fmt -- …` delegates to this crate’s API (same process; do not shell out).
 2. Run formatter over `docs/examples/valid/**` (and optionally `lib/std/**`): either commit formatted results or keep `--check` green in CI later.
 3. Update style-guide one-liner if needed: “Tools and formatters should target this guide” remains true.
 
 **Gate:** `yarrow fmt --check` on `docs/examples/valid/01_hello.yar` (and a small set listed in notes) exits `0`. `cargo fmt && cargo check && cargo clippy` green.
+
+**Notes:** Shared `driver::run_fmt` / `FmtInput` used by `yarrow-fmt` and `yarrow fmt`. Bootstrapped all of `docs/examples/valid/**` (committed). Gate set: `docs/examples/valid` directory `--check` exits `0`; also `01_hello.yar` alone. Style guide names `yarrow fmt` / `yarrow-fmt`.
 
 ---
 

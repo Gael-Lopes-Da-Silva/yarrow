@@ -1,10 +1,8 @@
 # Stack ownership, variable ownership, borrow release, and move.
-
 "std.io" io require
 "std.list" list require
 
 main function do
-	# Stack owns the temporary until pop.
 	"temp"
 	pop
 
@@ -19,6 +17,5 @@ main function do
 	() ys mutable list<i32>
 	xs ys move
 	ys 5 list.push_last call unwrap
-
 	"ownership ok" io.write_line call
 end

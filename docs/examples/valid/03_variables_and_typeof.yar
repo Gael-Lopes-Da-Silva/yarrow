@@ -1,9 +1,7 @@
 # mutable / const / static bindings, coercion on declare, and typeof.
-
 "std.io" io require
 
 main function do
-	# Literal u8 coerces to i32 at the declaration site.
 	42 answer mutable i32
 	100 answer set
 

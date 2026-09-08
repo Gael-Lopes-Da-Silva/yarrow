@@ -1,5 +1,4 @@
 # Local module imported by valid/12_modules.yar as "helpers.greet".
-
 hello public function
 	string
 do
