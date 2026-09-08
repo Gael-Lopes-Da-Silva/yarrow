@@ -3,10 +3,9 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 14: require sorting on by default (`--no-sort-requires` to keep
-//! source order); `--max-width` below [`MIN_MAX_WIDTH`] is rejected by the
-//! driver and clamped in the library. Shared [`run_fmt`] for `yarrow-fmt` /
-//! `yarrow fmt`.
+//! Stage 15: [`format_range`] expands a byte span to top-level item boundaries
+//! and returns one contiguous edit from a full-document format. Shared
+//! [`run_fmt`] for `yarrow-fmt` / `yarrow fmt`.
 
 mod blank;
 mod comment;
@@ -18,6 +17,7 @@ mod layout;
 mod paths;
 mod phrase;
 mod print;
+mod range;
 mod require;
 
 pub use blank::apply_blank_lines;
@@ -29,6 +29,7 @@ pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
 pub use layout::{LayoutKind, layout_kind, reorder_toplevel_indices, reorder_toplevel_items};
 pub use paths::collect_yar_paths;
 pub use print::apply_construct_layout;
+pub use range::{ByteRange, FormatRangeEdit, format_range};
 pub use require::{is_std_path, sort_toplevel_requires};
 
 use std::fmt;

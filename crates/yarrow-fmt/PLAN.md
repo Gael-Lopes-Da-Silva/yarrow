@@ -77,6 +77,10 @@ pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, Forma
 
 pub struct FmtInput { /* options, check, stdin, paths */ }
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
+
+pub struct ByteRange { pub start: usize, pub end: usize }
+pub struct FormatRangeEdit { pub range: ByteRange, pub new_text: String, pub expanded: bool }
+pub fn format_range(source: &str, span: ByteRange, options: &FormatOptions) -> Result<FormatRangeEdit, FormatError>;
 ```
 
 CLI (`yarrow-fmt` and `yarrow fmt`):
@@ -117,6 +121,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 | LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
 | File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
 | Defaults polish               | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent       |
+| Range / span format API       | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)           |
 
 **Gates:** `yarrow fmt --check docs/examples/valid` exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -124,7 +129,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: stabilize defaults, unblock LSP range format, widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
+Focus: widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
 
 ### Stage 13 - File layout reorder (opt-in) ✅
 
@@ -170,7 +175,7 @@ Stage 10 left require sorting opt-in. Width is already configurable; tabs are no
 
 ---
 
-### Stage 15 - Range / span format API
+### Stage 15 - Range / span format API ✅
 
 Unblocks [`yarrow-lsp` Stage 17](../yarrow-lsp/PLAN.md) (`rangeFormatting` / optional on-type). Full-document format stays the source of truth; do not ship a second pretty-printer.
 
@@ -182,6 +187,8 @@ Unblocks [`yarrow-lsp` Stage 17](../yarrow-lsp/PLAN.md) (`rangeFormatting` / opt
 4. Keep the API usable without writing files; binary / `yarrow fmt` need not expose range mode in this stage.
 
 **Gate:** fixture with a messy contiguous region; range format yields edits confined to (or documented expansion of) that region and matches full-doc format for the rewritten slice. Second call on the result is a no-op. `cargo fmt && cargo check && cargo clippy` green.
+
+**Notes:** `ByteRange` + `FormatRangeEdit` (`range`, `new_text`, `expanded`, `apply` / `is_noop`); `format_range` runs full `format_source`, expands to enclosing top-level items (leading comments after the last blank; fills holes for one contiguous cover); require runs expand together when `sort_requires`; `reorder_layout` or hygiene-shifted buffers fall back to whole-file replace. Replacement text is the matching item cover in the formatted buffer (identity by require path / type / implement target / function name). No CLI range mode. Fixture `fixtures/stage15_range.yar`; example `examples/stage15_gate.rs`.
 
 ---
 
