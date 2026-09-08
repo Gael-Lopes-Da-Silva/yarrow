@@ -88,7 +88,7 @@ Exit codes (align with CLI): `0` ok / already formatted (`--check`), `1` parse/f
 
 | Piece              | Status | Notes                                                                 |
 | ------------------ | ------ | --------------------------------------------------------------------- |
-| `yarrow-fmt` crate | ✅     | Stage 6: construct layout reprint (require/types/functions/vars/containers/calls) |
+| `yarrow-fmt` crate | ✅     | Stage 7: control flow / defer / unsafe / handle layout |
 | Style guide        | ✅     | Authoritative layout doc                                              |
 | Core tokenize      | ✅     | Stage 1: `TokenKind::Comment` (`#` … EOL); parser skips; whitespace not emitted |
 | Core parse         | ✅     | Enough structure to reprint once trivia exists                        |
@@ -197,7 +197,7 @@ Map these style-guide sections into printer rules:
 
 ---
 
-### Stage 7 - Control flow, defer, unsafe, errors
+### Stage 7 - Control flow, defer, unsafe, errors ✅
 
 Layout from style-guide **Control flow**, **Defer**, **Unsafe**, **Errors**:
 
@@ -209,6 +209,8 @@ Layout from style-guide **Control flow**, **Defer**, **Unsafe**, **Errors**:
 6. `call unwrap` / `call handle … end` spacing.
 
 **Gate:** fixtures derived from the guide’s `match` / `defer` / `unsafe` / `handle` examples format stably and idempotently.
+
+**Notes:** Extends `apply_construct_layout`: `call handle` merge + short `handle … fallback end`; multi-expr one-line `defer`; match blanks only when cases are multi-line. Parser: drain ops before `defer`/`unsafe` (statement order); bare `match` span no longer merges `Span::default()`. Indent: one-line defer/handle stay at opener depth; `fallback` line painted inside handle. Fixture `fixtures/stage7_control_flow.yar`. Width wrap still Stage 8; comment spacing Stage 9.
 
 ---
 

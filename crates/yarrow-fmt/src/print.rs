@@ -1,9 +1,9 @@
-//! Construct layout from `docs/STYLE_GUIDE.md` (Stage 6).
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–7).
 //!
 //! Reprints the AST into preferred forms for requires, types, functions,
-//! variables, containers, and short calls. Own-line comments between
-//! constructs are preserved from the original source by line gap; trailing
-//! comment spacing is left to Stage 9.
+//! variables, containers, short calls, control flow, defer, unsafe, and
+//! handle/unwrap. Own-line comments between constructs are preserved from
+//! the original source by line gap; trailing comment spacing is left to Stage 9.
 
 use yarrow_core::parser::ast::{
     BinOp, EnumDecl, ErrorDecl, Expr, Field, Function, Implement, MatchCase, MatchCaseKind,
@@ -15,7 +15,7 @@ use yarrow_core::{SourceFile, Span};
 use crate::FormatOptions;
 use crate::ir::FormatIr;
 
-/// Reprint the program with Stage 6 construct layout.
+/// Reprint the program with Stage 6–7 construct layout.
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
@@ -374,7 +374,14 @@ impl<'a> Printer<'a> {
 
     fn print_body(&mut self, stmts: &[Stmt]) {
         let mut i = 0;
-        let mut prev_end_line = self.last_emitted_line;
+        // Do not inherit blanks from source gaps above the block opener
+        // (`do` / `if` / `case` / `handle` / …).
+        self.pending_blank = false;
+        let mut prev_end_line = stmts
+            .first()
+            .map(|s| s.span.line.saturating_sub(1))
+            .unwrap_or(self.last_emitted_line);
+        self.last_emitted_line = prev_end_line;
         while i < stmts.len() {
             match &stmts[i].kind {
                 StmtKind::Expr(_) => {
@@ -387,10 +394,29 @@ impl<'a> Printer<'a> {
                         self.pending_blank = true;
                     }
                     self.emit_gap_comments(stmts[start].span.line);
-                    self.print_expr_phrase(&stmts[start..i]);
-                    if let Some(last) = stmts.get(i.saturating_sub(1)) {
-                        prev_end_line = end_line(self.file, last.span);
-                        self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+
+                    // Stage 7: attach `handle` / bare `return` to the preceding
+                    // stack phrase (`call handle …`, `value return`).
+                    match stmts.get(i).map(|s| &s.kind) {
+                        Some(StmtKind::Handle { body, fallback }) => {
+                            self.print_call_handle(&stmts[start..i], body, fallback.as_ref());
+                            prev_end_line = end_line(self.file, stmts[i].span);
+                            self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+                            i += 1;
+                        }
+                        Some(StmtKind::Return { value: None }) => {
+                            self.print_expr_phrase_with_return(&stmts[start..i]);
+                            prev_end_line = end_line(self.file, stmts[i].span);
+                            self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+                            i += 1;
+                        }
+                        _ => {
+                            self.print_expr_phrase(&stmts[start..i]);
+                            if let Some(last) = stmts.get(i.saturating_sub(1)) {
+                                prev_end_line = end_line(self.file, last.span);
+                                self.last_emitted_line = prev_end_line.max(self.last_emitted_line);
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -417,8 +443,109 @@ impl<'a> Printer<'a> {
     /// Stage 6 calls: keep `name call` with prior args on one line when under
     /// `max_width`. Otherwise preserve original line grouping.
     fn print_expr_phrase(&mut self, stmts: &[Stmt]) {
+        let lines = Self::merge_call_phrase_lines(stmts, self.depth, self.max_width);
+        for (line_no, tokens) in lines {
+            if had_blank_between(self.file, self.last_emitted_line, line_no) {
+                self.pending_blank = true;
+            }
+            self.emit_gap_comments(line_no);
+            if !tokens.is_empty() {
+                self.write_tokens_line(&tokens);
+                self.last_emitted_line = line_no.max(self.last_emitted_line);
+            }
+        }
+    }
+
+    /// Same as [`print_expr_phrase`], then append bare `return` on the last line.
+    fn print_expr_phrase_with_return(&mut self, stmts: &[Stmt]) {
+        let mut lines = Self::merge_call_phrase_lines(stmts, self.depth, self.max_width);
+        if let Some((_, last)) = lines.last_mut() {
+            last.push("return".into());
+        } else {
+            lines.push((1, vec!["return".into()]));
+        }
+        for (line_no, tokens) in lines {
+            if had_blank_between(self.file, self.last_emitted_line, line_no) {
+                self.pending_blank = true;
+            }
+            self.emit_gap_comments(line_no);
+            if !tokens.is_empty() {
+                self.write_tokens_line(&tokens);
+                self.last_emitted_line = line_no.max(self.last_emitted_line);
+            }
+        }
+    }
+
+    /// `call handle` / short `call handle <fb> fallback end` (Stage 7).
+    fn print_call_handle(&mut self, call_stmts: &[Stmt], body: &[Stmt], fallback: Option<&Expr>) {
+        let mut lines = Self::merge_call_phrase_lines(call_stmts, self.depth, self.max_width);
+        if lines.is_empty() {
+            lines.push((1, Vec::new()));
+        }
+        if let Some((_, last)) = lines.last_mut() {
+            last.push("handle".into());
+        }
+
+        // Short form: empty handler body + fallback fits on one line.
+        if body.is_empty()
+            && let Some(fb) = fallback
+        {
+            let mut fb_tokens = phrase_tokens(fb);
+            fb_tokens.retain(|t| !t.is_empty());
+            fb_tokens.push("fallback".into());
+            fb_tokens.push("end".into());
+            if let Some((_, last)) = lines.last_mut() {
+                let mut probe = last.clone();
+                probe.extend(fb_tokens.iter().cloned());
+                if self.depth + probe.join(" ").len() <= self.max_width {
+                    last.extend(fb_tokens);
+                    for (line_no, tokens) in lines {
+                        if had_blank_between(self.file, self.last_emitted_line, line_no) {
+                            self.pending_blank = true;
+                        }
+                        self.emit_gap_comments(line_no);
+                        if !tokens.is_empty() {
+                            self.write_tokens_line(&tokens);
+                            self.last_emitted_line = line_no.max(self.last_emitted_line);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        for (line_no, tokens) in &lines {
+            if had_blank_between(self.file, self.last_emitted_line, *line_no) {
+                self.pending_blank = true;
+            }
+            self.emit_gap_comments(*line_no);
+            if !tokens.is_empty() {
+                self.write_tokens_line(tokens);
+                self.last_emitted_line = (*line_no).max(self.last_emitted_line);
+            }
+        }
+
+        self.depth += 1;
+        self.print_body(body);
+        if let Some(fb) = fallback {
+            let mut tokens = phrase_tokens(fb);
+            tokens.retain(|t| !t.is_empty());
+            tokens.push("fallback".into());
+            self.write_tokens_line(&tokens);
+        }
+        self.depth -= 1;
+        self.write_indent();
+        self.out.push_str("end");
+        self.finish_line();
+    }
+
+    fn merge_call_phrase_lines(
+        stmts: &[Stmt],
+        depth: usize,
+        max_width: usize,
+    ) -> Vec<(usize, Vec<String>)> {
         if stmts.is_empty() {
-            return;
+            return Vec::new();
         }
 
         let words: Vec<(usize, Vec<String>)> = stmts
@@ -428,11 +555,12 @@ impl<'a> Printer<'a> {
                     StmtKind::Expr(e) => e,
                     _ => unreachable!(),
                 };
-                (s.span.line.max(1), expr_tokens(expr))
+                let mut tokens = expr_tokens(expr);
+                tokens.retain(|t| !t.is_empty());
+                (s.span.line.max(1), tokens)
             })
             .collect();
 
-        // Group tokens that shared an original source line.
         let mut lines: Vec<(usize, Vec<String>)> = Vec::new();
         let mut cur_line = 0usize;
         for (line, tokens) in &words {
@@ -445,8 +573,7 @@ impl<'a> Printer<'a> {
             }
         }
 
-        let indent_cols = self.depth;
-        // Pull preceding arg lines into a call/unwrap line while under width.
+        let indent_cols = depth;
         let mut i = 0;
         while i < lines.len() {
             if is_call_tail(&lines[i].1) {
@@ -456,7 +583,7 @@ impl<'a> Printer<'a> {
                     for (_, line) in &lines[start..=i] {
                         merged.extend(line.iter().cloned());
                     }
-                    if indent_cols + merged.join(" ").len() > self.max_width {
+                    if indent_cols + merged.join(" ").len() > max_width {
                         break;
                     }
                     start -= 1;
@@ -474,17 +601,7 @@ impl<'a> Printer<'a> {
             }
             i += 1;
         }
-
-        for (line_no, tokens) in lines {
-            if had_blank_between(self.file, self.last_emitted_line, line_no) {
-                self.pending_blank = true;
-            }
-            self.emit_gap_comments(line_no);
-            if !tokens.is_empty() {
-                self.write_tokens_line(&tokens);
-                self.last_emitted_line = line_no.max(self.last_emitted_line);
-            }
-        }
+        lines
     }
 
     fn print_var_decl(
@@ -579,6 +696,7 @@ impl<'a> Printer<'a> {
         self.depth -= 1;
 
         if !else_branch.is_empty() {
+            self.flush_pending_blank();
             self.write_indent();
             self.out.push_str("else");
             self.finish_line();
@@ -621,13 +739,25 @@ impl<'a> Printer<'a> {
         let lines = phrase_lines(value);
         if lines.len() > 1 {
             for line in &lines[..lines.len() - 1] {
-                self.write_tokens_line(line);
+                let filtered: Vec<_> = line.iter().filter(|t| !t.is_empty()).cloned().collect();
+                if !filtered.is_empty() {
+                    self.write_tokens_line(&filtered);
+                }
             }
-            let mut last = lines.last().cloned().unwrap_or_default();
+            let mut last: Vec<_> = lines
+                .last()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|t| !t.is_empty())
+                .collect();
             last.push("match".into());
             self.write_tokens_line(&last);
         } else {
-            let mut tokens = phrase_tokens(value);
+            let mut tokens: Vec<_> = phrase_tokens(value)
+                .into_iter()
+                .filter(|t| !t.is_empty())
+                .collect();
             tokens.push("match".into());
             self.write_tokens_line(&tokens);
         }
@@ -635,14 +765,24 @@ impl<'a> Printer<'a> {
         self.depth += 1;
         for (i, case) in cases.iter().enumerate() {
             if i > 0 {
-                self.pending_blank = true;
+                // Style guide: blank between multi-line cases; single-line stay tight.
+                self.pending_blank = match_case_is_multiline(self.file, &cases[i - 1])
+                    || match_case_is_multiline(self.file, case);
             }
             self.print_match_case(case);
         }
         if !else_branch.is_empty() {
             if !cases.is_empty() {
-                self.pending_blank = true;
+                let last_multi = cases
+                    .last()
+                    .is_some_and(|c| match_case_is_multiline(self.file, c));
+                let else_multi = else_branch.len() > 1
+                    || else_branch
+                        .first()
+                        .is_some_and(|s| end_line(self.file, s.span) > s.span.line);
+                self.pending_blank = last_multi || else_multi;
             }
+            self.flush_pending_blank();
             self.write_indent();
             self.out.push_str("else");
             self.finish_line();
@@ -690,11 +830,16 @@ impl<'a> Printer<'a> {
     }
 
     fn print_defer(&mut self, body: &[Stmt]) {
-        // One-line when a single short phrase; else block form (Stage 7 gate).
-        if body.len() == 1
-            && let StmtKind::Expr(expr) = &body[0].kind
-        {
-            let mut tokens = expr_tokens(expr);
+        // One-line when the body is only stack phrases and fits under width.
+        if !body.is_empty() && body.iter().all(|s| matches!(s.kind, StmtKind::Expr(_))) {
+            let mut tokens: Vec<String> = body
+                .iter()
+                .flat_map(|s| match &s.kind {
+                    StmtKind::Expr(e) => expr_tokens(e),
+                    _ => unreachable!(),
+                })
+                .filter(|t| !t.is_empty())
+                .collect();
             let joined = tokens.join(" ");
             if self.depth + "defer ".len() + joined.len() + " end".len() <= self.max_width {
                 let mut line = vec!["defer".into()];
@@ -729,8 +874,7 @@ impl<'a> Printer<'a> {
     }
 
     fn print_handle(&mut self, body: &[Stmt], fallback: Option<&Expr>) {
-        // Caller prints the expression + `handle`; here body is the handle block.
-        // When Handle appears as its own stmt, print `handle` … `end`.
+        // Standalone `handle` (no preceding call phrase in this stmt list).
         self.write_indent();
         self.out.push_str("handle");
         self.finish_line();
@@ -738,6 +882,7 @@ impl<'a> Printer<'a> {
         self.print_body(body);
         if let Some(fb) = fallback {
             let mut tokens = phrase_tokens(fb);
+            tokens.retain(|t| !t.is_empty());
             tokens.push("fallback".into());
             self.write_tokens_line(&tokens);
         }
@@ -771,6 +916,35 @@ fn end_line(file: &SourceFile, span: Span) -> usize {
         return span.line;
     }
     file.location(span.hi.saturating_sub(1)).line
+}
+
+fn match_case_is_multiline(file: &SourceFile, case: &MatchCase) -> bool {
+    if case.body.is_empty() {
+        return false;
+    }
+    if case.body.len() > 1 {
+        return true;
+    }
+    let body = &case.body[0];
+    let body_end = end_line(file, body.span);
+    if body_end > body.span.line {
+        return true;
+    }
+    // Single-line body: multi-line case when the body sits below the case head.
+    let head_line = match &case.kind {
+        MatchCaseKind::Condition(expr) => condition_head_line(expr),
+        MatchCaseKind::Type(ty) => ty.location.line.max(1),
+    };
+    body.span.line > head_line
+}
+
+fn condition_head_line(expr: &Expr) -> usize {
+    match expr {
+        Expr::Seq(elems) if !elems.is_empty() => {
+            elems.iter().map(|(_, s)| s.line.max(1)).min().unwrap_or(1)
+        }
+        _ => 1,
+    }
 }
 
 fn visibility_word(v: Visibility) -> &'static str {
