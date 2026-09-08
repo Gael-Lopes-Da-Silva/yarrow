@@ -3,10 +3,11 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 8: construct layout plus soft line-width wrap for stack phrases,
+//! Stage 9: construct layout (including comment spacing), soft line-width wrap,
 //! then indent and blank-line passes.
 
 mod blank;
+mod comment;
 mod hygiene;
 mod indent;
 mod ir;
@@ -14,6 +15,7 @@ mod phrase;
 mod print;
 
 pub use blank::apply_blank_lines;
+pub use comment::{normalize_comment, trailing_suffix};
 pub use hygiene::apply_source_hygiene;
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
@@ -95,9 +97,9 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 8: hygiene, construct layout reprint (including width wrap), tab
-/// indent / `end` alignment, then blank-line rules. Parse failures surface as
-/// [`FormatError::Parse`].
+/// Stage 9: hygiene, construct layout reprint (width wrap + comment spacing),
+/// tab indent / `end` alignment, then blank-line rules. Parse failures surface
+/// as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
 }

@@ -36,7 +36,7 @@ pub struct AttachedComment {
 
 /// Comments keyed by the span of the non-comment token they attach to.
 ///
-/// Attachment rules (Stage 2 baseline; Stage 9 refines spacing):
+/// Attachment rules (Stage 2; Stage 9 uses these for trailing reattach):
 /// - Same line as the previous code token → trailing on that token.
 /// - Otherwise → leading on the next code token.
 /// - No following code token → [`TriviaMap::file_trailing`].
@@ -117,6 +117,11 @@ impl TriviaMap {
             .get(&anchor)
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    /// All attached comments (every anchor), for line-based trailing lookup.
+    pub fn all_attached(&self) -> impl Iterator<Item = &AttachedComment> {
+        self.by_anchor.values().flat_map(|v| v.iter())
     }
 
     /// Leading comments for `anchor`.
