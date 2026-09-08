@@ -2,7 +2,6 @@
 # `join` takes left, right, then separator (top of stack) and yields left~sep~right.
 # `concat` is the two-argument form (same as `~`).
 # `compare` returns -1 / 0 / 1 (lexicographic).
-
 len public function
 	string
 do

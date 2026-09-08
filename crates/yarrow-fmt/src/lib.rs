@@ -3,9 +3,9 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 15: [`format_range`] expands a byte span to top-level item boundaries
-//! and returns one contiguous edit from a full-document format. Shared
-//! [`run_fmt`] for `yarrow-fmt` / `yarrow fmt`.
+//! Stage 16: corpus gate is `docs/examples/valid` and `lib/std` via
+//! `scripts/fmt-check.sh` / CI. Shared [`run_fmt`] for `yarrow-fmt` /
+//! `yarrow fmt`; [`format_range`] for span edits.
 
 mod blank;
 mod comment;

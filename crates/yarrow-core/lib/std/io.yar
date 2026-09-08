@@ -1,5 +1,4 @@
 # Console output. Thin wrappers over host `print_*` helpers.
-
 write public function
 	string
 do

@@ -2,7 +2,6 @@
 # word access. Every function here is unsafe: callers must be inside an
 # `unsafe` block. The implementation wraps the compiler-level primitives
 # (`@alloc`/`@free`/`@load`/`@store`) inside explicit `unsafe` regions.
-
 allocate public unsafe function
 	i64
 do
