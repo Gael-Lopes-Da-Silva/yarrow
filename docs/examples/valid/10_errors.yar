@@ -1,4 +1,5 @@
 # Custom error type, fallible return |T Err|, unwrap, and handle + fallback.
+
 "std.io" io require
 
 AppError error

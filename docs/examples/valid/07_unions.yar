@@ -1,4 +1,5 @@
 # Named union: store either member, match with Type case, autoderef in arms.
+
 "std.io" io require
 
 Value union

@@ -28,7 +28,7 @@ pub fn apply_indent(ir: &FormatIr, options: &FormatOptions) -> String {
         return String::from("\n");
     }
 
-    let max_width = options.max_width.max(1);
+    let max_width = options.effective_max_width();
     let mut levels: Vec<Option<usize>> = vec![None; line_count + 1];
     for item in &ir.program.items {
         paint_stmt(item, 0, max_width, file, &mut levels);

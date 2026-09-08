@@ -1,12 +1,12 @@
-//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–13).
+//! Construct layout from `docs/STYLE_GUIDE.md` (Stages 6–14).
 //!
 //! Reprints the AST into preferred forms for requires, types, functions,
 //! variables, containers, calls, control flow, defer, unsafe, and
 //! handle/unwrap, with soft wrap at `max_width`. Own-line comments are
 //! preserved by line gap with `# ` spacing; trailing comments are reattached
-//! from trivia with one space before `#`. Optional top-level require sorting
-//! ([`FormatOptions::sort_requires`]) and file-layout reorder
-//! ([`FormatOptions::reorder_layout`]) are opt-in.
+//! from trivia with one space before `#`. Top-level require sorting
+//! ([`FormatOptions::sort_requires`], default on) and file-layout reorder
+//! ([`FormatOptions::reorder_layout`], opt-in) apply when enabled.
 
 use std::collections::HashSet;
 
@@ -24,7 +24,7 @@ use crate::layout::reorder_toplevel_indices;
 use crate::phrase::{expr_tokens, layout_expr_stmts, wrap_tokens};
 use crate::require::{require_group_blank, require_sort_key};
 
-/// Reprint the program with Stage 6–13 construct layout.
+/// Reprint the program with Stage 6–14 construct layout.
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
@@ -32,7 +32,7 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
     let mut p = Printer {
         file: &ir.file,
         trivia: &ir.trivia,
-        max_width: options.max_width.max(1),
+        max_width: options.effective_max_width(),
         out: String::with_capacity(ir.file.source.len().saturating_add(64)),
         depth: 0,
         last_emitted_line: 0,
@@ -136,8 +136,9 @@ impl<'a> Printer<'a> {
 
     /// Print a consecutive top-level require run. When `sort` is true, reorder
     /// std then local (alphabetical within each) and insert a blank between
-    /// those groups. Own-line comments immediately above a require move with it;
-    /// comments separated by a blank above the first require stay at block top.
+    /// those groups. Own-line comments between requires move with the following
+    /// require. Comments above the first require stay at block top unless a
+    /// blank separates a trailing comment that documents that require.
     fn print_require_run(&mut self, group: &[Stmt], blank_before: bool, sort: bool) {
         if group.is_empty() {
             return;
@@ -172,6 +173,8 @@ impl<'a> Printer<'a> {
             let mut leads = Vec::new();
             if idx == 0 {
                 if let Some(blank) = last_blank {
+                    // Blank separates file/block header comments (stay put) from
+                    // comments that document the first require (move with it).
                     for (line, comment) in gap {
                         if line < blank {
                             pre_group.push(comment);
@@ -180,7 +183,9 @@ impl<'a> Printer<'a> {
                         }
                     }
                 } else {
-                    leads.extend(gap.into_iter().map(|(_, c)| c));
+                    // No blank: treat the whole gap as block header so sorting
+                    // does not pull file comments under a reordered require.
+                    pre_group.extend(gap.into_iter().map(|(_, c)| c));
                 }
             } else {
                 leads.extend(gap.into_iter().map(|(_, c)| c));
@@ -203,7 +208,7 @@ impl<'a> Printer<'a> {
             self.out.push('\n');
             self.at_line_start = true;
         }
-        // Split used a blank above the first require; keep that separation.
+        // Keep a blank after block-header comments before the require group.
         if !pre_group.is_empty() {
             self.pending_blank = true;
         }
@@ -267,6 +272,8 @@ impl<'a> Printer<'a> {
             let mut leads = Vec::new();
             if idx == 0 {
                 if let Some(blank) = last_blank {
+                    // Blank separates file header comments from comments that
+                    // document the first top-level item.
                     for (line, comment) in gap {
                         if line < blank {
                             pre_group.push(comment);
@@ -275,7 +282,9 @@ impl<'a> Printer<'a> {
                         }
                     }
                 } else {
-                    leads.extend(gap.into_iter().map(|(_, c)| c));
+                    // No blank: keep the gap as a file header so reorder/sort
+                    // does not bury it under a moved item.
+                    pre_group.extend(gap.into_iter().map(|(_, c)| c));
                 }
             } else {
                 leads.extend(gap.into_iter().map(|(_, c)| c));

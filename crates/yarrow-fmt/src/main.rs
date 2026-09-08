@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use yarrow_fmt::{FmtInput, FormatOptions, run_fmt};
+use yarrow_fmt::{
+    DEFAULT_MAX_WIDTH, FmtInput, FormatOptions, resolve_sort_requires_flags, run_fmt,
+};
 
 /// Exit: 0 ok / already formatted; 1 would change (`--check`) or format failure; 2 usage / I/O.
 #[derive(Debug, Parser)]
@@ -22,13 +24,17 @@ struct Args {
     #[arg(long)]
     stdin: bool,
 
-    /// Soft wrap width in columns (default 100).
-    #[arg(long, value_name = "N", default_value_t = 100)]
+    /// Soft wrap width in columns (default 100; minimum 20).
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_MAX_WIDTH)]
     max_width: usize,
 
-    /// Sort top-level requires (std first, then local; alphabetical within groups).
-    #[arg(long)]
+    /// Force-on top-level require sorting (default is already on).
+    #[arg(long = "sort-requires", overrides_with = "no_sort_requires")]
     sort_requires: bool,
+
+    /// Keep top-level require source order.
+    #[arg(long = "no-sort-requires", overrides_with = "sort_requires")]
+    no_sort_requires: bool,
 
     /// Reorder top-level items to style-guide file layout (high churn; opt-in).
     #[arg(long)]
@@ -46,7 +52,10 @@ fn main() -> ExitCode {
         FmtInput {
             options: FormatOptions {
                 max_width: args.max_width,
-                sort_requires: args.sort_requires,
+                sort_requires: resolve_sort_requires_flags(
+                    args.sort_requires,
+                    args.no_sort_requires,
+                ),
                 reorder_layout: args.reorder_layout,
             },
             check: args.check,

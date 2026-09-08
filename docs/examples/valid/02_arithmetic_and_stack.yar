@@ -1,5 +1,6 @@
 # Literals, arithmetic, comparisons, and stack words.
 # Demonstrates postfix evaluation and drop / dup / swap.
+
 "std.io" io require
 
 main function do
