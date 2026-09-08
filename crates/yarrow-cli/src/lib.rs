@@ -42,12 +42,18 @@ where
     };
 
     match (cli.cmd, cli.file) {
-        (Some(Cmd::Run { file, target, main }), None) => {
-            commands::run_file(&file, target, &main, &cli.global)
-        }
+        (
+            Some(Cmd::Run {
+                file,
+                target,
+                main,
+                program_args,
+            }),
+            None,
+        ) => commands::run_file(&file, target, &main, &program_args, &cli.global),
         (None, Some(file)) => {
             // `yarrow <file>` is sugar for `yarrow run --target jit <file>`.
-            commands::run_file(&file, TargetKind::Jit, "main", &cli.global)
+            commands::run_file(&file, TargetKind::Jit, "main", &[], &cli.global)
         }
         (
             Some(Cmd::Compile {
@@ -60,9 +66,14 @@ where
             None,
         ) => commands::compile_file(&file, target, emit, &main, output.as_deref(), &cli.global),
         (Some(Cmd::Check { file, main }), None) => commands::check_file(&file, &main, &cli.global),
-        (Some(Cmd::Interpret { file, main }), None) => {
-            commands::interpret_file(&file, &main, &cli.global)
-        }
+        (
+            Some(Cmd::Interpret {
+                file,
+                main,
+                program_args,
+            }),
+            None,
+        ) => commands::interpret_file(&file, &main, &program_args, &cli.global),
         (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
         (Some(Cmd::Explain { code }), None) => commands::explain_code(&code, &cli.global),
         (Some(Cmd::Version), None) => {
@@ -81,7 +92,7 @@ where
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar>\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar>"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]"
             );
             ExitCode::from(2)
         }

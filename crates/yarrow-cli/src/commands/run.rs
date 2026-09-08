@@ -1,5 +1,6 @@
 //! Implementation of the `run` subcommand.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -13,19 +14,35 @@ use crate::diagnostics::{render_batch, render_diag};
 
 /// Compile and execute `file`, printing any return value from the entry (JIT)
 /// or running the linked native binary (`--target object`).
+///
+/// `program_args` are values after `--`. Native object runs forward them as OS
+/// argv; JIT rejects non-empty args until core exposes an argv API.
 pub fn run_file(
     file: &Path,
     target: TargetKind,
     entry_name: &str,
+    program_args: &[OsString],
     global: &GlobalArgs,
 ) -> ExitCode {
     match target {
-        TargetKind::Jit => run_jit(file, entry_name, global),
-        TargetKind::Object => run_object(file, entry_name, global),
+        TargetKind::Jit => run_jit(file, entry_name, program_args, global),
+        TargetKind::Object => run_object(file, entry_name, program_args, global),
     }
 }
 
-fn run_jit(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
+fn run_jit(
+    file: &Path,
+    entry_name: &str,
+    program_args: &[OsString],
+    global: &GlobalArgs,
+) -> ExitCode {
+    if !program_args.is_empty() {
+        eprintln!(
+            "error: program arguments are not supported with --target jit (no language argv API yet); use --target object to forward OS argv"
+        );
+        return ExitCode::from(2);
+    }
+
     let path = file.to_string_lossy().into_owned();
     let color = global.color.to_core();
 
@@ -70,7 +87,12 @@ fn run_jit(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
     }
 }
 
-fn run_object(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
+fn run_object(
+    file: &Path,
+    entry_name: &str,
+    program_args: &[OsString],
+    global: &GlobalArgs,
+) -> ExitCode {
     let path = file.to_string_lossy().into_owned();
     let color = global.color.to_core();
 
@@ -112,10 +134,14 @@ fn run_object(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
     };
 
     if global.verbose {
-        eprintln!("exec {}", exe.path.display());
+        eprintln!(
+            "exec {} with {} program arg(s)",
+            exe.path.display(),
+            program_args.len()
+        );
     }
 
-    let status = match Command::new(&exe.path).status() {
+    let status = match Command::new(&exe.path).args(program_args).status() {
         Ok(status) => status,
         Err(e) => {
             eprintln!("error: failed to execute {}: {e}", exe.path.display());

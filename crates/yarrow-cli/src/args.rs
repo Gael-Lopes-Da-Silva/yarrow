@@ -1,5 +1,7 @@
 //! Clap argument definitions for the Yarrow CLI.
 
+use std::ffi::OsString;
+
 use clap::{Parser, Subcommand};
 
 /// Yarrow language compiler and runner.
@@ -99,6 +101,11 @@ pub enum Cmd {
     ///
     /// This is also the default when you pass a file directly:
     /// `yarrow file.yar` is sugar for `yarrow run file.yar`.
+    ///
+    /// Program arguments go after `--` (for example
+    /// `yarrow run --target object file.yar -- arg1 arg2`). With
+    /// `--target object` they are the child process argv. JIT has no
+    /// language-level argv API yet; non-empty args are rejected.
     Run {
         /// Source file to compile and run.
         #[arg(value_name = "FILE")]
@@ -111,6 +118,10 @@ pub enum Cmd {
         /// Top-level entry function name (default `main`).
         #[arg(long, value_name = "NAME", default_value = "main")]
         main: String,
+
+        /// Arguments forwarded to the program (after `--`).
+        #[arg(last = true, value_name = "ARGS")]
+        program_args: Vec<OsString>,
     },
 
     /// Check + codegen without running the entry.
@@ -156,6 +167,9 @@ pub enum Cmd {
     ///
     /// Executes the entry (`main` or `--main`) on the stack VM. There is no
     /// `--target` on this command; use `run` / `compile` for JIT or object.
+    ///
+    /// Program arguments after `--` are accepted by clap but rejected until
+    /// core exposes an interpret argv API.
     Interpret {
         /// Source file to interpret.
         #[arg(value_name = "FILE")]
@@ -164,6 +178,10 @@ pub enum Cmd {
         /// Top-level entry function name (default `main`).
         #[arg(long, value_name = "NAME", default_value = "main")]
         main: String,
+
+        /// Arguments forwarded to the program (after `--`).
+        #[arg(last = true, value_name = "ARGS")]
+        program_args: Vec<OsString>,
     },
 
     /// Print the long form of a diagnostic code.
