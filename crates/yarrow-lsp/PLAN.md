@@ -107,7 +107,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 0: stdio hello via `tower-lsp-server`       |
+| `yarrow-lsp` crate | ✅     | Stage 1: full-text document sync + `DocumentStore` |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ⚠      | `CheckedProgram` is AST-only today                |
@@ -132,7 +132,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 1 - Document sync
+### Stage 1 - Document sync ✅
 
 1. `textDocument/didOpen`, `didChange` (full or incremental; full is fine first), `didClose`.
 2. In-memory `DocumentStore`: URI → `{ version, text }`.
@@ -140,6 +140,8 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 4. Ignore non-`.yar` unless opened with that language id.
 
 **Gate:** open a buffer, apply a change, close it; store reflects text. No diagnostics required yet.
+
+**Done:** `TextDocumentSyncKind::FULL` + `open_close`; `DocumentStore` in `document.rs`; track language id `yarrow` or `.yar` path. Scripted open → change → close (and ignore non-yarrow) succeeds.
 
 ---
 
