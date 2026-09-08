@@ -1,9 +1,10 @@
-//! Same-file `textDocument/definition` via AST declarations + token fallback.
+//! Same-file + `require` cross-file `textDocument/definition`.
 
-use tower_lsp_server::ls_types::{GotoDefinitionResponse, Location, Position, Uri};
+use tower_lsp_server::ls_types::{GotoDefinitionResponse, Location, Position, Range, Uri};
 use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
 use yarrow_core::{Program, SourceFile, Span, TokenKind, Tokenizer};
 
+use crate::modules::{self, item_name_span};
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Resolve definition at `position` in `text`, or `None` if unresolved / parse failure.
@@ -22,6 +23,28 @@ pub fn goto_definition(
     let name = identifier_at(&file.source, offset)?;
     let decls = collect_decls(&file, &program);
     let decl = resolve(&decls, &name, offset)?;
+
+    if let Some(require_path) = &decl.require_path
+        && let Some(target) = modules::resolve_require_file(path, require_path)
+        && let Some(target_uri) = Uri::from_file_path(&target.path)
+    {
+        let range = match &target.item {
+            Some(item) => std::fs::read_to_string(&target.path)
+                .ok()
+                .and_then(|target_text| {
+                    let target_file =
+                        SourceFile::new(target.path.to_string_lossy().into_owned(), target_text);
+                    let target_map = PositionMap::from_file(&target_file, encoding);
+                    item_name_span(&target.path, item).map(|span| target_map.range(span))
+                })
+                .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0))),
+            None => Range::new(Position::new(0, 0), Position::new(0, 0)),
+        };
+        return Some(GotoDefinitionResponse::Scalar(Location::new(
+            target_uri, range,
+        )));
+    }
+
     let range = map.range(decl.name_span);
     Some(GotoDefinitionResponse::Scalar(Location::new(
         uri.clone(),
@@ -30,14 +53,16 @@ pub fn goto_definition(
 }
 
 #[derive(Debug, Clone)]
-struct Decl {
-    name: String,
-    name_span: Span,
+pub(crate) struct Decl {
+    pub name: String,
+    pub name_span: Span,
     /// Region where this declaration is visible.
-    scope: Span,
+    pub scope: Span,
+    /// When set, this decl is a `require` binding (`path` string from the AST).
+    pub require_path: Option<String>,
 }
 
-fn identifier_at(source: &str, offset: usize) -> Option<String> {
+pub(crate) fn identifier_at(source: &str, offset: usize) -> Option<String> {
     let mut tokenizer = Tokenizer::new(source.to_string());
     let tokens = tokenizer.tokenize().ok()?;
     let token = tokens
@@ -56,7 +81,7 @@ fn identifier_at(source: &str, offset: usize) -> Option<String> {
     Some(token.lexeme.clone())
 }
 
-fn collect_decls(file: &SourceFile, program: &Program) -> Vec<Decl> {
+pub(crate) fn collect_decls(file: &SourceFile, program: &Program) -> Vec<Decl> {
     let source = file.source.as_str();
     let file_scope = Span::new(0, source.len());
     let mut out = Vec::new();
@@ -69,34 +94,34 @@ fn collect_decls(file: &SourceFile, program: &Program) -> Vec<Decl> {
 fn collect_stmt(source: &str, stmt: &Stmt, scope: Span, out: &mut Vec<Decl>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            push_named(source, stmt.span, scope, &f.name, out);
+            push_named(source, stmt.span, scope, &f.name, None, out);
             collect_function_body(source, f, stmt.span, out);
         }
         StmtKind::Struct(s) => {
-            push_named(source, stmt.span, scope, &s.name, out);
+            push_named(source, stmt.span, scope, &s.name, None, out);
             for field in &s.fields {
-                push_named(source, stmt.span, stmt.span, &field.name, out);
+                push_named(source, stmt.span, stmt.span, &field.name, None, out);
             }
         }
         StmtKind::Enum(e) => {
-            push_named(source, stmt.span, scope, &e.name, out);
+            push_named(source, stmt.span, scope, &e.name, None, out);
             for member in &e.members {
-                push_named(source, stmt.span, stmt.span, &member.name, out);
+                push_named(source, stmt.span, stmt.span, &member.name, None, out);
             }
         }
         StmtKind::Union(u) => {
-            push_named(source, stmt.span, scope, &u.name, out);
+            push_named(source, stmt.span, scope, &u.name, None, out);
         }
         StmtKind::Error(err) => {
-            push_named(source, stmt.span, scope, &err.name, out);
+            push_named(source, stmt.span, scope, &err.name, None, out);
             for member in &err.members {
-                push_named(source, stmt.span, stmt.span, member, out);
+                push_named(source, stmt.span, stmt.span, member, None, out);
             }
         }
         StmtKind::Implement(imp) => {
-            push_named(source, stmt.span, scope, &imp.target, out);
+            push_named(source, stmt.span, scope, &imp.target, None, out);
             for f in &imp.functions {
-                push_named(source, stmt.span, scope, &f.name, out);
+                push_named(source, stmt.span, scope, &f.name, None, out);
                 collect_function_body(source, f, stmt.span, out);
             }
         }
@@ -104,10 +129,10 @@ fn collect_stmt(source: &str, stmt: &Stmt, scope: Span, out: &mut Vec<Decl>) {
             let name = alias
                 .as_deref()
                 .unwrap_or_else(|| path.rsplit('.').next().unwrap_or(path));
-            push_named(source, stmt.span, scope, name, out);
+            push_named(source, stmt.span, scope, name, Some(path.clone()), out);
         }
         StmtKind::VarDecl { name, .. } => {
-            push_named(source, stmt.span, scope, name, out);
+            push_named(source, stmt.span, scope, name, None, out);
         }
         StmtKind::If {
             then_branch,
@@ -163,12 +188,20 @@ fn collect_function_body(
     }
 }
 
-fn push_named(source: &str, item_span: Span, scope: Span, name: &str, out: &mut Vec<Decl>) {
+fn push_named(
+    source: &str,
+    item_span: Span,
+    scope: Span,
+    name: &str,
+    require_path: Option<String>,
+    out: &mut Vec<Decl>,
+) {
     if let Some(name_span) = name_span_in(source, item_span, name) {
         out.push(Decl {
             name: name.to_string(),
             name_span,
             scope,
+            require_path,
         });
     }
 }
@@ -184,7 +217,7 @@ fn name_span_in(source: &str, span: Span, name: &str) -> Option<Span> {
     Some(Span::new(lo, hi))
 }
 
-fn resolve<'a>(decls: &'a [Decl], name: &str, offset: usize) -> Option<&'a Decl> {
+pub(crate) fn resolve<'a>(decls: &'a [Decl], name: &str, offset: usize) -> Option<&'a Decl> {
     decls
         .iter()
         .filter(|d| d.name == name && d.scope.lo <= offset && offset < d.scope.hi)
