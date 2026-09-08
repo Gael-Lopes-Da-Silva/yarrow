@@ -1,16 +1,22 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 0 only
-//! implements the initialize / shutdown handshake.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 1 adds
+//! full-text document sync and an in-memory [`DocumentStore`].
+
+mod document;
 
 use std::fmt;
+use std::sync::Mutex;
 
 use tower_lsp_server::jsonrpc::Result as LspResult;
 use tower_lsp_server::ls_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    ServerInfo,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
+
+pub use document::{Document, DocumentStore, LANGUAGE_ID};
 
 /// Errors from starting or running the language server.
 #[derive(Debug, thiserror::Error)]
@@ -52,11 +58,15 @@ where
 
 struct Backend {
     client: Client,
+    documents: Mutex<DocumentStore>,
 }
 
 impl Backend {
     fn new(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            documents: Mutex::new(DocumentStore::default()),
+        }
     }
 }
 
@@ -68,9 +78,17 @@ impl fmt::Debug for Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> LspResult<InitializeResult> {
-        // Keep capabilities empty until Stage 1 (document sync).
         Ok(InitializeResult {
-            capabilities: ServerCapabilities::default(),
+            capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
             server_info: Some(ServerInfo {
                 name: "yarrow-lsp".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
@@ -87,5 +105,110 @@ impl LanguageServer for Backend {
 
     async fn shutdown(&self) -> LspResult<()> {
         Ok(())
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let doc = params.text_document;
+        if !document::should_track(&doc.uri, &doc.language_id) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("didOpen ignored (not yarrow): {}", doc.uri.as_str()),
+                )
+                .await;
+            return;
+        }
+
+        let uri_str = doc.uri.as_str().to_string();
+        let version = doc.version;
+        let len = doc.text.len();
+        {
+            let Ok(mut store) = self.documents.lock() else {
+                return;
+            };
+            store.open(doc.uri, version, doc.text);
+        }
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("didOpen {uri_str} v{version} ({len} bytes)"),
+            )
+            .await;
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        let uri_str = uri.as_str().to_string();
+
+        // Full sync: take the last change that replaces the whole document.
+        let Some(text) = params
+            .content_changes
+            .into_iter()
+            .rev()
+            .find(|change| change.range.is_none())
+            .map(|change| change.text)
+        else {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("didChange {uri_str}: expected full-text change"),
+                )
+                .await;
+            return;
+        };
+
+        let len = text.len();
+        let updated = {
+            let Ok(mut store) = self.documents.lock() else {
+                return;
+            };
+            store.set_text(&uri, version, text)
+        };
+
+        if updated {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("didChange {uri_str} v{version} ({len} bytes)"),
+                )
+                .await;
+        } else {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("didChange ignored (not open): {uri_str}"),
+                )
+                .await;
+        }
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri;
+        let uri_str = uri.as_str().to_string();
+        let (closed, remaining) = {
+            let Ok(mut store) = self.documents.lock() else {
+                return;
+            };
+            let closed = store.close(&uri);
+            (closed, store.len())
+        };
+
+        if closed {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("didClose {uri_str} (store len {remaining})"),
+                )
+                .await;
+        } else {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("didClose ignored (not open): {uri_str}"),
+                )
+                .await;
+        }
     }
 }
