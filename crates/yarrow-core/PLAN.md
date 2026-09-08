@@ -44,7 +44,7 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 | Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
 | Std/runtime | `std.fs` has no host I/O; `std.io` / `std.string` Stage 22 wrappers landed |
 | Projects    | Single-file + `require` only; no multi-root project graph                                          |
-| Formatter   | Comments skipped in tokenize; `yarrow-fmt` needs trivia (see `yarrow-fmt` Stage 1)                 |
+| Formatter   | `Comment` tokens landed (yarrow-fmt Stage 1); whitespace still rebuilt by printer |
 | LSP         | No typed-at-span / require-path index API yet; server uses `check_source` + AST (see `yarrow-lsp`) |
 
 ---

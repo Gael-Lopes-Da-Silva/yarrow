@@ -1438,57 +1438,95 @@ impl Parser {
         }
     }
 
-    /// True if tokens starting at `offset` from current form a function head
-    /// (`[public|private] [unsafe] function`).
-    fn peek_is_function_head(&self, offset: usize) -> bool {
-        let kind_at = |i: usize| {
-            self.tokens
-                .get(self.current + i)
-                .map(|t| t.kind)
-                .unwrap_or(TokenKind::Eof)
-        };
-        let mut i = offset;
-        if matches!(kind_at(i), TokenKind::Public | TokenKind::Private) {
+    /// Index of the next non-comment token at or after `from` (Eof if none).
+    fn next_significant_index(&self, from: usize) -> usize {
+        let mut i = from;
+        while self
+            .tokens
+            .get(i)
+            .is_some_and(|t| t.kind == TokenKind::Comment)
+        {
             i += 1;
         }
-        if kind_at(i) == TokenKind::Unsafe {
-            i += 1;
+        i
+    }
+
+    /// Kind of the `offset`-th significant token from `current` (0 = peek).
+    fn significant_kind_at(&self, offset: usize) -> TokenKind {
+        let mut i = self.next_significant_index(self.current);
+        for _ in 0..offset {
+            if self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::Eof) {
+                return TokenKind::Eof;
+            }
+            i = self.next_significant_index(i + 1);
         }
-        kind_at(i) == TokenKind::Function
-    }
-
-    fn peek_kind(&self) -> TokenKind {
-        self.tokens[self.current].kind
-    }
-
-    fn peek_next_kind(&self) -> TokenKind {
         self.tokens
-            .get(self.current + 1)
+            .get(i)
             .map(|t| t.kind)
             .unwrap_or(TokenKind::Eof)
     }
 
+    /// True if tokens starting at significant `offset` from current form a
+    /// function head (`[public|private] [unsafe] function`).
+    fn peek_is_function_head(&self, offset: usize) -> bool {
+        let mut i = offset;
+        if matches!(
+            self.significant_kind_at(i),
+            TokenKind::Public | TokenKind::Private
+        ) {
+            i += 1;
+        }
+        if self.significant_kind_at(i) == TokenKind::Unsafe {
+            i += 1;
+        }
+        self.significant_kind_at(i) == TokenKind::Function
+    }
+
+    fn peek_kind(&self) -> TokenKind {
+        self.significant_kind_at(0)
+    }
+
+    fn peek_next_kind(&self) -> TokenKind {
+        self.significant_kind_at(1)
+    }
+
     fn peek_lexeme(&self) -> String {
-        self.tokens[self.current].lexeme.clone()
+        let i = self.next_significant_index(self.current);
+        self.tokens
+            .get(i)
+            .map(|t| t.lexeme.clone())
+            .unwrap_or_default()
     }
 
     fn peek_location(&self) -> Location {
-        self.tokens[self.current].location
+        let i = self.next_significant_index(self.current);
+        self.tokens
+            .get(i)
+            .map(|t| t.location)
+            .unwrap_or_default()
     }
 
     fn peek_span(&self) -> Span {
-        self.tokens[self.current].span()
+        let i = self.next_significant_index(self.current);
+        self.tokens
+            .get(i)
+            .map(|t| t.span())
+            .unwrap_or_default()
     }
 
     fn prev_span(&self) -> Span {
-        if self.current == 0 {
-            self.tokens[0].span()
-        } else {
-            self.tokens[self.current - 1].span()
+        let mut i = self.current;
+        while i > 0 {
+            i -= 1;
+            if self.tokens[i].kind != TokenKind::Comment {
+                return self.tokens[i].span();
+            }
         }
+        self.tokens[0].span()
     }
 
     fn advance(&mut self) -> &Token {
+        self.current = self.next_significant_index(self.current);
         if self.current >= self.tokens.len() {
             return self.tokens.last().unwrap();
         }
