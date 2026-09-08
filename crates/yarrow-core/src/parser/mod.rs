@@ -201,7 +201,9 @@ impl Parser {
                     let span = stack_span.merge(start).merge(end);
                     stmts.push(Stmt::new(StmtKind::Function(func), span));
                 } else {
-                    // `unsafe ... end`: an unsafe block.
+                    // `unsafe ... end`: flush pending stack phrases first so
+                    // earlier statements keep source order (same as `handle`).
+                    push_drained_exprs(stmts, drain_ops(ops, op_spans));
                     let start = self.peek_span();
                     self.advance();
                     let body = self.body(&[TokenKind::End])?;
@@ -313,6 +315,9 @@ impl Parser {
             }
 
             TokenKind::Defer => {
+                // Flush pending stack phrases before the block so statements
+                // written above `defer` stay above it in the AST (same as `handle`).
+                push_drained_exprs(stmts, drain_ops(ops, op_spans));
                 let start = self.peek_span();
                 self.advance();
                 let body = self.body(&[TokenKind::End])?;
@@ -514,8 +519,7 @@ impl Parser {
     }
 
     fn parse_match(&mut self, ops: &mut Vec<Expr>, op_spans: &mut Vec<Span>) -> ParseResult<Stmt> {
-        let (value, value_span) =
-            drain_ops(ops, op_spans).unwrap_or_else(|| (Expr::variable(""), Span::default()));
+        let drained = drain_ops(ops, op_spans);
         let start = self.peek_span();
         self.advance();
 
@@ -581,13 +585,19 @@ impl Parser {
         }
 
         let end = self.prev_span();
+        // Bare `match` (no subject): do not merge Span::default() (lo==0 would
+        // stretch the match span to the start of the file).
+        let (value, span) = match drained {
+            Some((expr, value_span)) => (expr, value_span.merge(start).merge(end)),
+            None => (Expr::variable(""), start.merge(end)),
+        };
         Ok(Stmt::new(
             StmtKind::Match {
                 value,
                 cases,
                 else_branch,
             },
-            value_span.merge(start).merge(end),
+            span,
         ))
     }
 

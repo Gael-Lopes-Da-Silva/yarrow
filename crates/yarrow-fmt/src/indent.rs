@@ -107,6 +107,12 @@ fn line_starts_with_word(line: &str, word: &str) -> bool {
     first_word(line) == Some(word)
 }
 
+fn line_has_word(line: &str, word: &str) -> bool {
+    trim_leading_indent(line)
+        .split_whitespace()
+        .any(|w| w == word)
+}
+
 fn find_word_line(
     file: &SourceFile,
     from: usize,
@@ -151,7 +157,25 @@ fn paint_stmt(stmt: &Stmt, depth: usize, file: &SourceFile, levels: &mut [Option
         StmtKind::For { body, .. } => paint_simple_block(stmt.span, body, depth, file, levels),
         StmtKind::Defer { body } => paint_simple_block(stmt.span, body, depth, file, levels),
         StmtKind::Unsafe { body } => paint_simple_block(stmt.span, body, depth, file, levels),
-        StmtKind::Handle { body, .. } => paint_simple_block(stmt.span, body, depth, file, levels),
+        StmtKind::Handle { body, fallback } => {
+            paint_simple_block(stmt.span, body, depth, file, levels);
+            if fallback.is_some() {
+                let start = stmt.span.line.max(1);
+                let end = end_line(file, stmt.span);
+                if start != end {
+                    let from = start.saturating_add(1);
+                    let to = end.saturating_sub(1).min(levels.len().saturating_sub(1));
+                    if from <= to {
+                        for line in from..=to {
+                            if line_has_word(file.line_text(line), "fallback") {
+                                set_level(levels, line, depth + 1);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         StmtKind::Struct(decl) => paint_struct(decl, stmt.span, depth, file, levels),
         StmtKind::Implement(impls) => paint_implement(impls, stmt.span, depth, file, levels),
         StmtKind::Enum(decl) => paint_enum(decl, stmt.span, depth, file, levels),
@@ -341,9 +365,17 @@ fn paint_simple_block(
     let end = end_line(file, span);
     set_level(levels, start, depth);
     set_level(levels, end, depth);
+    // One-line forms (`defer … end`, `call handle … fallback end`) keep the
+    // whole phrase at `depth`; body spans must not deepen that line.
+    if start == end {
+        return;
+    }
     for stmt in body {
         paint_stmt(stmt, depth + 1, file, levels);
     }
+    // Re-assert opener / `end` after body paint (shared-line fallback, etc.).
+    set_level(levels, start, depth);
+    set_level(levels, end, depth);
 }
 
 fn paint_struct(

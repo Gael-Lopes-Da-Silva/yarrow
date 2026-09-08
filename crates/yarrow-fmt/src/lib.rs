@@ -3,8 +3,8 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 6: construct layout (requires, types, functions, variables,
-//! containers, short calls), then indent and blank-line passes.
+//! Stage 7: construct layout including control flow, defer, unsafe, and
+//! handle/unwrap, then indent and blank-line passes.
 
 mod blank;
 mod hygiene;
@@ -94,7 +94,7 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 
 /// Format a Yarrow source string.
 ///
-/// Stage 6: hygiene, construct layout reprint, tab indent / `end` alignment,
+/// Stage 7: hygiene, construct layout reprint, tab indent / `end` alignment,
 /// then blank-line rules. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     format_source_at(source, "<input>", options)
