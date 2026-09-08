@@ -20,7 +20,7 @@ Flags (binary and `yarrow lsp`):
 | `--stdio` | Transport (default; only transport in v1) |
 | `-L` / `--search-path DIR` | Extra module search root (repeatable) |
 | `--main NAME` | Entry function name (default `main`) |
-| `--no-format` | Do not advertise document formatting |
+| `--no-format` | Do not advertise document / range formatting |
 | `--no-inlay` | Do not advertise inlay hints |
 | `--log-level off\|error\|warn\|info\|debug` | stderr process logs (default `info`) |
 
@@ -64,3 +64,7 @@ After a successful check, `textDocument/inlayHint` places type annotations after
 ## Workspace symbols
 
 `workspace/symbol` searches top-level functions, types, and `implement` methods in open `.yar` buffers and one-hop resolved `require` files (no full project crawl). Matching is case-insensitive substring (prefix matches sort first); results are capped at 100. Empty query returns a bounded list. Closed / unchecked trees stay invisible.
+
+## Range formatting
+
+`textDocument/rangeFormatting` formats via `yarrow_fmt::format_range`: the selection expands to enclosing top-level item boundaries (same style as full-document format). Parse failure returns null (buffer unchanged). A second request on an already-formatted cover yields empty edits. Disabled with `--no-format` / init `format: false` (omits the capability). On-type formatting is not advertised: mid-edit parse failures and top-level expansion are unsafe for keystroke triggers.

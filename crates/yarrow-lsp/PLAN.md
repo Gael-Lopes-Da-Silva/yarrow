@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–16)
+### Landed (v1, Stages 0–17)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
@@ -31,7 +31,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Navigation: go-to-definition, find references (same file + `require` cross-file)
 - Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
 - Completions: keywords + in-scope / imported names + `std.*` require paths
-- Document formatting via `yarrow-fmt`
+- Document formatting via `yarrow-fmt` (full document + range; on-type deferred)
 - Code actions / hover that surface `explain_code` for diagnostic codes
 - `LspConfig`, init options, `yarrow lsp` CLI wrapper
 - Signature help at postfix `name call` sites
@@ -40,9 +40,8 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next, Stages 17+)
+### In scope (next, Stages 18+)
 
-- Range / on-type formatting
 - Pull diagnostics (LSP 3.17) alongside push
 - TCP transport and a reusable protocol test harness
 - Thin VS Code / Zed extension packaging (server stays editor-agnostic)
@@ -120,7 +119,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 16: workspace symbols                    |
+| `yarrow-lsp` crate | ✅     | Stage 17: range formatting                    |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -130,9 +129,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–15)
+## Landed (Stages 0–16)
 
-Stages 0–15 are complete. Historical stage write-ups for 0–14 were removed; git history keeps them. Stage 15 remains below for context until the next plan collapse.
+Stages 0–16 are complete. Historical stage write-ups for 0–15 were removed; git history keeps them. Stage 16 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -152,26 +151,11 @@ Stages 0–15 are complete. Historical stage write-ups for 0–14 were removed; 
 | 13 | Inlay hints from `TypeIndex` probes |
 | 14 | Semantic tokens (full document) from tokenizer + AST decls |
 | 15 | File-local rename (`prepareRename` + `rename`) |
+| 16 | Workspace symbols (`workspace/symbol` over open + requires) |
 
 ---
 
 ## Stages
-
-### Stage 15 - Rename (file-local first) ✅
-
-Safe rename for identifiers with a clear edit set; never silent cross-module breakage.
-
-1. Advertise `renameProvider` (prepareRename optional but preferred: return the identifier range or error).
-2. File-local: reuse references binding (Stage 7); produce `WorkspaceEdit` text edits for every occurrence bound to the same decl in the current document.
-3. Reject rename when the name is unresolved, when it would collide with an existing binding in scope, or when the identifier is a keyword / not a renameable decl.
-4. Cross-file: only when the binding is a `require` alias or imported item **and** every edit target has a real `file://` path already used by definition; otherwise return an error explaining the limit. No speculative edits into unchecked files.
-5. Do not rename string module paths unless the user is clearly on the path literal and policy is documented; default is identifier rename only.
-
-**Gate:** rename a local function used twice in one file updates both sites; prepareRename on whitespace / unknown ident fails cleanly. Cross-file either edits the known module file correctly or returns a clear error (no partial silent skip). Scripted gate preferred.
-
-**Done:** `prepareRename` + `rename` for local function/variable/type/property and explicit require aliases; binding-accurate same-file identifier edits only; reject keywords, collisions, unresolved names, and implicit / cross-module require renames with `invalid_params` (no partial skip). Scripted gate: local function used twice gets three edits; whitespace / unknown prepareRename null.
-
----
 
 ### Stage 16 - Workspace symbols ✅
 
@@ -189,7 +173,7 @@ Quick-open style search without a full project indexer.
 
 ---
 
-### Stage 17 - Range format and on-type format
+### Stage 17 - Range format and on-type format ✅
 
 Narrow formatting after full-document format is solid (Stage 8).
 
@@ -200,6 +184,8 @@ Narrow formatting after full-document format is solid (Stage 8).
 5. Honor existing `format` enable flag from `LspConfig`; when format is disabled, omit these capabilities too.
 
 **Gate:** range format on a messy contiguous region in a parseable buffer yields edits confined to (or documented expansion of) that region and matching `format_source` for the rewritten slice. Idempotent second request yields empty. On-type either lands with one safe trigger or is explicitly deferred in the Done notes with reason.
+
+**Done:** `textDocument/rangeFormatting` via `yarrow_fmt::format_range` (expands to enclosing top-level item cover; same style as full-doc). Parse failure → null. Idempotent second request → empty edits. `--no-format` / init `format: false` omits range formatting too. On-type deferred: mid-edit buffers often fail to parse, and top-level expansion is too aggressive for a keystroke.
 
 ---
 
@@ -264,7 +250,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | semanticTokens                         | 14 ✅    | tokens + AST                       |
 | rename                                 | 15 ✅    | references / resolve               |
 | workspaceSymbol                        | 16 ✅        | open buffers + require ASTs        |
-| rangeFormatting / onTypeFormatting     | 17       | `yarrow-fmt`                       |
+| rangeFormatting / onTypeFormatting     | 17 ✅        | `yarrow-fmt` (`format_range`; on-type deferred) |
 | textDocument/diagnostic (pull)         | 18       | same as publish                    |
 | TCP + test harness                     | 19       | transport only                     |
 | editor extensions                      | 20       | packaging                          |
