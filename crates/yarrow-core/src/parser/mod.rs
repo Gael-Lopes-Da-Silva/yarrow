@@ -75,6 +75,22 @@ impl Parser {
     /// Parse a program. On syntax failure returns every recovered diagnostic
     /// (capped), not only the first.
     pub fn parse(&mut self) -> Result<Program, DiagnosticBatch> {
+        let (program, errors) = self.parse_recovering();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(program)
+    }
+
+    /// Parse with recovery: always returns the statements recovered so far plus
+    /// any syntax diagnostics (capped). Callers that need a clean AST should use
+    /// [`Self::parse`] instead.
+    ///
+    /// Used by tooling (e.g. `yarrow-fmt` best-effort hygiene) that must not
+    /// invent a second parser. The recovered program may omit or skew broken
+    /// regions; do not treat it as authoritative for rewrite without extra
+    /// checks.
+    pub fn parse_recovering(&mut self) -> (Program, DiagnosticBatch) {
         let items = match self.body(&[TokenKind::Eof]) {
             Ok(items) => items,
             Err(e) => {
@@ -82,10 +98,7 @@ impl Parser {
                 Vec::new()
             }
         };
-        if !self.errors.is_empty() {
-            return Err(self.errors.take());
-        }
-        Ok(Program { items })
+        (Program { items }, self.errors.take())
     }
 
     pub fn with_error_limit(tokens: Vec<Token>, error_limit: usize) -> Self {

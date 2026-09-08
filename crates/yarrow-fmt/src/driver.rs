@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::{
-    FormatError, FormatOptions, MIN_MAX_WIDTH, collect_yar_paths, format_source, load_and_format,
-    write_formatted,
+    FormatError, FormatOptions, MIN_MAX_WIDTH, collect_yar_paths, format_source,
+    format_source_best_effort, load_and_format, write_formatted,
 };
 
 /// Inputs for one formatter invocation.
@@ -17,6 +17,8 @@ pub struct FmtInput {
     pub check: bool,
     /// Read stdin and write formatted text to stdout (no PATH args).
     pub stdin: bool,
+    /// On parse failure, apply source hygiene instead of exiting with an error.
+    pub best_effort: bool,
     /// Files or directories (directories recurse for `*.yar`).
     pub paths: Vec<PathBuf>,
 }
@@ -28,7 +30,7 @@ pub struct FmtInput {
 /// (for example `yarrow-fmt` or `yarrow fmt`).
 ///
 /// Rejects `--max-width` / `options.max_width` below [`MIN_MAX_WIDTH`] with
-/// exit `2`. Library callers of [`format_source`] clamp instead.
+/// exit `2`. Library callers of [`crate::format_source`] clamp instead.
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
     if input.options.max_width < MIN_MAX_WIDTH {
         eprintln!(
@@ -43,7 +45,7 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
             eprintln!("{program}: --stdin does not take PATH arguments");
             return ExitCode::from(2);
         }
-        return run_stdin(program, &input.options, input.check);
+        return run_stdin(program, &input.options, input.check, input.best_effort);
     }
 
     if input.paths.is_empty() {
@@ -69,7 +71,7 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
     let mut had_io_err = false;
 
     for path in &files {
-        match load_and_format(path, &input.options) {
+        match load_and_format(path, &input.options, input.best_effort) {
             Ok((original, formatted)) => {
                 if formatted == original {
                     continue;
@@ -104,21 +106,34 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
     }
 }
 
-fn run_stdin(program: &str, options: &FormatOptions, check: bool) -> ExitCode {
+fn run_stdin(program: &str, options: &FormatOptions, check: bool, best_effort: bool) -> ExitCode {
     let mut raw = String::new();
     if let Err(err) = io::stdin().read_to_string(&mut raw) {
         eprintln!("{program}: failed to read stdin: {err}");
         return ExitCode::from(2);
     }
 
-    let formatted = match format_source(&raw, options) {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("{program}: {err}");
-            return match err {
-                FormatError::Io { .. } | FormatError::NotUtf8 { .. } => ExitCode::from(2),
-                FormatError::Parse(_) => ExitCode::from(1),
-            };
+    let formatted = if best_effort {
+        match format_source_best_effort(&raw, options) {
+            Ok(out) => out.text,
+            Err(err) => {
+                eprintln!("{program}: {err}");
+                return match err {
+                    FormatError::Io { .. } | FormatError::NotUtf8 { .. } => ExitCode::from(2),
+                    FormatError::Parse(_) => ExitCode::from(1),
+                };
+            }
+        }
+    } else {
+        match format_source(&raw, options) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!("{program}: {err}");
+                return match err {
+                    FormatError::Io { .. } | FormatError::NotUtf8 { .. } => ExitCode::from(2),
+                    FormatError::Parse(_) => ExitCode::from(1),
+                };
+            }
         }
     };
 

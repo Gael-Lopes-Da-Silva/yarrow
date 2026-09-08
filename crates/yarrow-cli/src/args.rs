@@ -221,6 +221,10 @@ pub enum Cmd {
         #[arg(long)]
         reorder_layout: bool,
 
+        /// On parse failure, apply LF / trailing-WS / final-newline hygiene only.
+        #[arg(long)]
+        best_effort: bool,
+
         /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
         #[arg(value_name = "PATH")]
         paths: Vec<std::path::PathBuf>,

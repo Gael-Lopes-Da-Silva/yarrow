@@ -52,9 +52,10 @@ Mechanical rewrite of parseable source:
 ```text
 source (.yar)
   → comment tokens (yarrow-core; whitespace rebuilt in printer)
-  → parse (yarrow-core Parser / Session::parse_source)
+  → parse / parse_recovering (yarrow-core)
   → format IR (AST + TriviaMap)
   → printer (STYLE_GUIDE rules: construct → phrase wrap → indent → blanks → hygiene)
+    or hygiene-only when parse incomplete (`format_source_best_effort`)
   → UTF-8 string / write back
 ```
 
@@ -72,10 +73,13 @@ pub const DEFAULT_MAX_WIDTH: usize = 100;
 
 pub enum FormatError { /* Io | NotUtf8 | Parse */ }
 
+pub struct FormattedSource { pub text: String, pub best_effort: bool }
+
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError>;
+pub fn format_source_best_effort(source: &str, options: &FormatOptions) -> Result<FormattedSource, FormatError>;
 pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, FormatError>;
 
-pub struct FmtInput { /* options, check, stdin, paths */ }
+pub struct FmtInput { /* options, check, stdin, best_effort, paths */ }
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
 
 pub struct ByteRange { pub start: usize, pub end: usize }
@@ -94,6 +98,7 @@ CLI (`yarrow-fmt` and `yarrow fmt`):
 | `--sort-requires`     | Force-on require sorting (default already on)  |
 | `--no-sort-requires`  | Keep top-level require source order            |
 | `--reorder-layout`    | Opt-in top-level file-layout reorder           |
+| `--best-effort`       | On parse failure, hygiene only (leave broken text) |
 | paths / dirs          | `.yar` files; recurse directories               |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
@@ -118,11 +123,12 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 | Shared driver                 | `run_fmt` / `FmtInput` for binary and CLI                             |
 | `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
 | Corpus gate                   | `docs/examples/valid/**` + `lib/std/**`; CI `fmt-check` (Stage 16)    |
-| LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
+| LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source_best_effort` |
 | File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
 | Defaults polish               | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent       |
 | Range / span format API       | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)           |
 | Stdlib + CI `--check`         | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`  |
+| Best-effort incomplete parse  | Stage 17: hygiene subset + `Parser::parse_recovering`                 |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -130,7 +136,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: best-effort format on partial parse (needs core recovery). Do not invent layout rules absent from the style guide.
+Focus: backlog only (naming lints, ignore regions, parallel fmt) when need appears. Do not invent layout rules absent from the style guide.
 
 ### Stage 13 - File layout reorder (opt-in) ✅
 
@@ -208,7 +214,7 @@ Stage 12 gated `docs/examples/valid`. Widen the always-green surface and make CI
 
 ---
 
-### Stage 17 - Best-effort format on partial parse
+### Stage 17 - Best-effort format on partial parse ✅
 
 Today v1 requires a successful parse. Editors often want hygiene / indent on broken buffers.
 
@@ -218,6 +224,8 @@ Today v1 requires a successful parse. Editors often want hygiene / indent on bro
 4. Idempotence applies only to the fully-parsed subset; document limits.
 
 **Gate:** one deliberately broken fixture gets LF / trailing-WS / final-newline cleanup without deleting the broken region; a fully valid file still fully formats. If core recovery is unavailable, Done notes say blocked and this stage stays open. `cargo fmt && cargo check && cargo clippy` green for whatever landed.
+
+**Notes:** Core already recovered internally but discarded the AST; Stage 17 exposes `Parser::parse_recovering` / `Session::parse_source_recovering` and `FormatIr::parse_recovering`. Safe incomplete subset is **hygiene only** (`FormattedSource { best_effort: true }`); construct / indent / blanks stay fail-closed because recovered spans are not yet trustworthy for rewrite. `format_source` remains strict; `format_source_best_effort` + CLI `--best-effort`; LSP full-doc format uses best-effort so editors get LF / trailing-WS cleanup on broken buffers. Fixture `fixtures/stage17_broken.yar`; example `examples/stage17_gate.rs`. Future: selective construct reprint of recovered regions once error spans are mapped reliably.
 
 ---
 

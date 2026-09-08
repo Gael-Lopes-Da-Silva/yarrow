@@ -124,7 +124,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
 | Cross-file resolve | ⚠      | Works via `require` paths; no project index API    |
-| `yarrow-fmt`       | ✅     | Full-doc `format_source`; `format_range` (fmt Stage 15) |
+| `yarrow-fmt`       | ✅     | Full-doc `format_source_best_effort`; `format_range` (fmt Stage 15/17) |
 | CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                    |
 
 ---

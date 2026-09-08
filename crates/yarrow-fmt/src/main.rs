@@ -40,6 +40,10 @@ struct Args {
     #[arg(long)]
     reorder_layout: bool,
 
+    /// On parse failure, apply LF / trailing-WS / final-newline hygiene only.
+    #[arg(long)]
+    best_effort: bool,
+
     /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
@@ -60,6 +64,7 @@ fn main() -> ExitCode {
             },
             check: args.check,
             stdin: args.stdin,
+            best_effort: args.best_effort,
             paths: args.paths,
         },
     )

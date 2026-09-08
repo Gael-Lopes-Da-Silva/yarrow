@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use yarrow_core::{
-    CompileOptions, Parser, Program, Session, SessionDiagnostics, SourceFile, Span, Token,
-    TokenKind,
+    CompileOptions, DiagnosticBatch, Parser, Program, Session, SessionDiagnostics, SourceFile,
+    Span, Token, TokenKind,
 };
 
 /// A line comment from the tokenizer (`#` through EOL, exclusive of `\n`).
@@ -170,17 +170,47 @@ impl FormatIr {
         source: impl Into<String>,
         path: impl Into<String>,
     ) -> Result<Self, SessionDiagnostics> {
+        match Self::parse_recovering(source, path)? {
+            FormatIrParse::Complete(ir) => Ok(ir),
+            FormatIrParse::Partial { file, batch, .. } => Err(SessionDiagnostics { file, batch }),
+        }
+    }
+
+    /// Like [`Self::parse`], but keeps a recovered AST when syntax errors were
+    /// collected ([`Parser::parse_recovering`]). Tokenize failure is still `Err`.
+    pub fn parse_recovering(
+        source: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<FormatIrParse, SessionDiagnostics> {
         let opts = CompileOptions::new(path);
         let session = Session::new(opts);
         let (file, tokens) = session.tokenize_source(source.into())?;
         let trivia = TriviaMap::from_tokens(&tokens);
-        match Parser::with_error_limit(tokens, session.options.error_limit).parse() {
-            Ok(program) => Ok(Self {
-                file,
-                program,
-                trivia,
-            }),
-            Err(batch) => Err(SessionDiagnostics { file, batch }),
+        let (program, batch) =
+            Parser::with_error_limit(tokens, session.options.error_limit).parse_recovering();
+        let ir = Self {
+            file: file.clone(),
+            program,
+            trivia,
+        };
+        if batch.is_empty() {
+            Ok(FormatIrParse::Complete(ir))
+        } else {
+            Ok(FormatIrParse::Partial { ir, file, batch })
         }
     }
+}
+
+/// Outcome of [`FormatIr::parse_recovering`].
+#[derive(Debug, Clone)]
+pub enum FormatIrParse {
+    /// Clean parse; safe for full construct reprint.
+    Complete(FormatIr),
+    /// Recovered AST plus diagnostics. Tooling may inspect `ir` but must not
+    /// treat it as authoritative for rewrite (Stage 17: hygiene only).
+    Partial {
+        ir: FormatIr,
+        file: SourceFile,
+        batch: DiagnosticBatch,
+    },
 }
