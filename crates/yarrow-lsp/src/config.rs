@@ -1,0 +1,97 @@
+//! Process defaults and LSP `initializationOptions` for analysis.
+
+use std::path::PathBuf;
+
+use serde::Deserialize;
+use yarrow_core::{CompileOptions, DEFAULT_ENTRY_NAME, Session};
+
+/// Runtime configuration shared by diagnostics, navigation, and formatting.
+#[derive(Debug, Clone)]
+pub struct LspConfig {
+    /// Extra module lookup roots (`-L` / init `searchPaths` / workspace folders).
+    pub search_paths: Vec<PathBuf>,
+    /// Top-level entry name (default `main`).
+    pub entry_name: String,
+    /// When false, do not advertise or serve `textDocument/formatting`.
+    pub format_enable: bool,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            search_paths: Vec::new(),
+            entry_name: DEFAULT_ENTRY_NAME.to_string(),
+            format_enable: true,
+        }
+    }
+}
+
+impl LspConfig {
+    /// Build [`CompileOptions`] for a document path.
+    pub fn compile_options(&self, source_path: impl Into<String>) -> CompileOptions {
+        let mut opts = CompileOptions::new(source_path);
+        opts.module_search_paths = self.search_paths.clone();
+        opts.entry_name = self.entry_name.clone();
+        opts
+    }
+
+    /// Session configured with this crate's search paths and entry name.
+    pub fn session(&self, source_path: impl Into<String>) -> Session {
+        Session::new(self.compile_options(source_path))
+    }
+
+    /// Merge client init options and workspace folder roots into this config.
+    pub fn apply_initialize(
+        &mut self,
+        init: Option<&InitializationOptions>,
+        workspace_folders: &[PathBuf],
+    ) {
+        if let Some(init) = init {
+            if let Some(paths) = &init.search_paths {
+                for p in paths {
+                    self.push_search_path(PathBuf::from(p));
+                }
+            }
+            if let Some(name) = &init.entry_name
+                && !name.is_empty()
+            {
+                self.entry_name = name.clone();
+            }
+            if let Some(fmt) = init.format {
+                self.format_enable = fmt;
+            }
+        }
+        for folder in workspace_folders {
+            self.push_search_path(folder.clone());
+        }
+    }
+
+    fn push_search_path(&mut self, path: PathBuf) {
+        if !self.search_paths.iter().any(|e| e == &path) {
+            self.search_paths.push(path);
+        }
+    }
+}
+
+/// JSON shape under `InitializeParams.initialization_options` (camelCase).
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializationOptions {
+    /// Extra module search directories (`-L` equivalent).
+    #[serde(default)]
+    pub search_paths: Option<Vec<String>>,
+    /// Entry function name (default `main`).
+    #[serde(default)]
+    pub entry_name: Option<String>,
+    /// Enable document formatting (default true).
+    #[serde(default)]
+    pub format: Option<bool>,
+}
+
+impl InitializationOptions {
+    /// Parse from the opaque `initializationOptions` value, or `None` if absent / invalid.
+    pub fn from_value(value: Option<&serde_json::Value>) -> Option<Self> {
+        let value = value?;
+        serde_json::from_value(value.clone()).ok()
+    }
+}

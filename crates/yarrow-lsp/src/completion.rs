@@ -4,8 +4,9 @@ use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionResponse, Position,
 };
 use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
-use yarrow_core::{CompileOptions, Program, Session, SourceFile, Span};
+use yarrow_core::{Program, SourceFile, Span};
 
+use crate::config::LspConfig;
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Grammar / tokenizer keywords offered as completions.
@@ -80,6 +81,7 @@ pub fn completions(
     text: &str,
     encoding: PositionEncoding,
     position: Position,
+    config: &LspConfig,
 ) -> Option<CompletionResponse> {
     let file = SourceFile::new(path.to_string(), text.to_string());
     let map = PositionMap::from_file(&file, encoding);
@@ -104,8 +106,7 @@ pub fn completions(
         }
     }
 
-    let opts = CompileOptions::new(path.to_string());
-    let session = Session::new(opts);
+    let session = config.session(path);
     if let Ok((parsed_file, program)) = session.parse_source(text.to_string()) {
         let decls = collect_names(&parsed_file, &program);
         for name in visible_names(&decls, offset) {

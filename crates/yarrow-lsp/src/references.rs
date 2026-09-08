@@ -8,6 +8,7 @@
 use tower_lsp_server::ls_types::{Location, Position, Uri};
 use yarrow_core::{TokenKind, Tokenizer};
 
+use crate::config::LspConfig;
 use crate::definition::{collect_decls, identifier_at, resolve};
 use crate::position::{PositionEncoding, PositionMap};
 
@@ -19,9 +20,9 @@ pub fn find_references(
     encoding: PositionEncoding,
     position: Position,
     include_declaration: bool,
+    config: &LspConfig,
 ) -> Option<Vec<Location>> {
-    let opts = yarrow_core::CompileOptions::new(path.to_string());
-    let session = yarrow_core::Session::new(opts);
+    let session = config.session(path);
     let (file, program) = session.parse_source(text.to_string()).ok()?;
     let map = PositionMap::from_file(&file, encoding);
     let offset = map.offset(position)?;

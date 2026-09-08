@@ -4,6 +4,7 @@ use tower_lsp_server::ls_types::{DocumentSymbol, Range, SymbolKind};
 use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
 use yarrow_core::{Program, SourceFile, Span};
 
+use crate::config::LspConfig;
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Parse `text` and return hierarchical document symbols, or `None` on parse failure.
@@ -11,9 +12,9 @@ pub fn document_symbols(
     path: &str,
     text: &str,
     encoding: PositionEncoding,
+    config: &LspConfig,
 ) -> Option<Vec<DocumentSymbol>> {
-    let opts = yarrow_core::CompileOptions::new(path.to_string());
-    let session = yarrow_core::Session::new(opts);
+    let session = config.session(path);
     let (file, program) = session.parse_source(text.to_string()).ok()?;
     Some(program_symbols(&file, &program, encoding))
 }

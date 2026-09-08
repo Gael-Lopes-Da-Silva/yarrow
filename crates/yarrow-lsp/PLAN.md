@@ -107,13 +107,13 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 | Piece              | Status | Notes                                             |
 | ------------------ | ------ | ------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 9: typed hover via `type_at`                |
+| `yarrow-lsp` crate | ✅     | Stage 10: flags + `yarrow lsp` wrapper            |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans           |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)         |
 | Cross-file resolve | ⚠      | Works inside compile via `require`; no index API  |
 | `yarrow-fmt`       | ✅     | `format_source` used for `textDocument/formatting` |
-| CLI `yarrow lsp`   | ⬜     | Thin wrapper after Stage 10                       |
+| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                   |
 
 ---
 
@@ -245,7 +245,7 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 
 ---
 
-### Stage 10 - Binary polish + `yarrow lsp` wrapper
+### Stage 10 - Binary polish + `yarrow lsp` wrapper ✅
 
 1. Stable CLI flags if any (`--stdio` default; maybe log level to stderr).
 2. Init options: search paths (`-L` equivalent), entry name default, format enable.
@@ -253,6 +253,8 @@ No background whole-workspace crawl in v1. Open documents + transitive `require`
 4. Short editor setup note (command path) in this file’s notes or `docs/` only if the user asks for docs; otherwise README blurb in crate is enough.
 
 **Gate:** `yarrow lsp` (or `cargo run -p yarrow_lsp`) initializes against a real editor or scripted client. `cargo fmt && cargo check && cargo clippy` green.
+
+**Done:** `LspConfig` + `initializationOptions` (`searchPaths` / `entryName` / `format`) merged with workspace folders; binary and `yarrow lsp` share `--stdio`, `-L`, `--main`, `--no-format`, `--log-level`; `run_stdio_with` / `run_stdio_blocking`; crate README for editor command. Scripted gate: `yarrow lsp --help` lists flags; initialize handshake via `yarrow lsp` succeeds.
 
 ---
 

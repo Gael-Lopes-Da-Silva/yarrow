@@ -4,11 +4,9 @@ use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString, Range,
     Uri,
 };
-use yarrow_core::{
-    CompileOptions, Diagnostic as CoreDiagnostic, DiagnosticBatch, Session, SessionDiagnostics,
-    Severity,
-};
+use yarrow_core::{Diagnostic as CoreDiagnostic, DiagnosticBatch, SessionDiagnostics, Severity};
 
+use crate::config::LspConfig;
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Convert a document URI into a filesystem path for `CompileOptions::source_path`.
@@ -19,10 +17,14 @@ pub fn uri_to_source_path(uri: &Uri) -> String {
 }
 
 /// Check `text` and build LSP diagnostics (errors and warnings).
-pub fn check_document(uri: &Uri, text: &str, encoding: PositionEncoding) -> Vec<Diagnostic> {
+pub fn check_document(
+    uri: &Uri,
+    text: &str,
+    encoding: PositionEncoding,
+    config: &LspConfig,
+) -> Vec<Diagnostic> {
     let path = uri_to_source_path(uri);
-    let opts = CompileOptions::new(path);
-    let session = Session::new(opts);
+    let session = config.session(path);
     match session.check_source(text.to_string()) {
         Ok(checked) => {
             let map = PositionMap::from_file(&checked.file, encoding);

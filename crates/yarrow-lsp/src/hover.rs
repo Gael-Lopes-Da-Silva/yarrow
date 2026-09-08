@@ -4,10 +4,9 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 use yarrow_core::parser::ast::{
     Function, Mutability, ParamModifier, Primitive, Stmt, StmtKind, Type, TypeKind,
 };
-use yarrow_core::{
-    CompileOptions, Program, Session, SourceFile, Span, TokenKind, Tokenizer, explain_code,
-};
+use yarrow_core::{Program, SourceFile, Span, TokenKind, Tokenizer, explain_code};
 
+use crate::config::LspConfig;
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Hover at `position` in `text`, or `None` if unresolved / empty / parse failure.
@@ -16,9 +15,9 @@ pub fn hover(
     text: &str,
     encoding: PositionEncoding,
     position: Position,
+    config: &LspConfig,
 ) -> Option<Hover> {
-    let opts = CompileOptions::new(path.to_string());
-    let session = Session::new(opts);
+    let session = config.session(path);
     let (file, program) = session.parse_source(text.to_string()).ok()?;
     let map = PositionMap::from_file(&file, encoding);
     let offset = map.offset(position)?;

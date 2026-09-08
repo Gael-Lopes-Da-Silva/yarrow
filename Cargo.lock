@@ -1124,6 +1124,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "yarrow_core",
+ "yarrow_lsp",
 ]
 
 [[package]]
@@ -1155,6 +1156,9 @@ dependencies = [
 name = "yarrow_lsp"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tower-lsp-server",

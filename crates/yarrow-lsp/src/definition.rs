@@ -4,6 +4,7 @@ use tower_lsp_server::ls_types::{GotoDefinitionResponse, Location, Position, Ran
 use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
 use yarrow_core::{Program, SourceFile, Span, TokenKind, Tokenizer};
 
+use crate::config::LspConfig;
 use crate::modules::{self, item_name_span};
 use crate::position::{PositionEncoding, PositionMap};
 
@@ -14,9 +15,9 @@ pub fn goto_definition(
     text: &str,
     encoding: PositionEncoding,
     position: Position,
+    config: &LspConfig,
 ) -> Option<GotoDefinitionResponse> {
-    let opts = yarrow_core::CompileOptions::new(path.to_string());
-    let session = yarrow_core::Session::new(opts);
+    let session = config.session(path);
     let (file, program) = session.parse_source(text.to_string()).ok()?;
     let map = PositionMap::from_file(&file, encoding);
     let offset = map.offset(position)?;
@@ -25,7 +26,8 @@ pub fn goto_definition(
     let decl = resolve(&decls, &name, offset)?;
 
     if let Some(require_path) = &decl.require_path
-        && let Some(target) = modules::resolve_require_file(path, require_path)
+        && let Some(target) =
+            modules::resolve_require_file(path, require_path, &config.search_paths)
         && let Some(target_uri) = Uri::from_file_path(&target.path)
     {
         let range = match &target.item {

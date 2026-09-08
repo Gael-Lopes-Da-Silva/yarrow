@@ -34,6 +34,7 @@ src/main.rs  →  yarrow_cli::run
 | `check`     | Semantic check only                                          |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit` |
+| `lsp`       | Language server stdio (`yarrow_lsp::run_stdio_blocking`)     |
 | `dump`      | `--emit tokens\|ast\|ir`                                     |
 | `explain`   | Long form for a diagnostic code                              |
 | `version`   | Crate version (`-V` too)                                     |
@@ -83,13 +84,13 @@ Interactive loop on `EvalContext`. Line-oriented: snippets without top-level `fu
 
 ### Stage 12 - Tooling subcommands (thin wrappers) ✅
 
-Evaluated readiness; wired nothing that is not ready.
-
 1. `yarrow fmt` omitted: [`yarrow-fmt/PLAN.md`](../yarrow-fmt/PLAN.md) is still pre–Stage 11 (API stub identity-format only). Wire in-process when that stage lands (see that plan’s Stage 12).
-2. `yarrow lsp` omitted: [`yarrow-lsp/PLAN.md`](../yarrow-lsp/PLAN.md) is still pre–Stage 10. Wire `yarrow_lsp::run_stdio` when that stage lands.
+2. `yarrow lsp` wired: in-process `yarrow_lsp::run_stdio_blocking` with `--stdio`, `-L`, `--main`, `--no-format`, `--log-level` (see [`yarrow-lsp` Stage 10](../yarrow-lsp/PLAN.md)).
 3. `yarrow clean` skipped: no documented build-dir / artifact manifest; default `stem.o` / bare `stem` in cwd is not enough to clean safely.
 
-**Gate:** `yarrow --help` lists no `fmt` / `lsp` / `clean` stubs. `cargo fmt && cargo check && cargo clippy` green.
+**Gate:** `yarrow --help` lists `lsp` (not `fmt` / `clean`). `cargo fmt && cargo check && cargo clippy` green.
+
+**Done:** `Cmd::Lsp` → `commands::run_lsp`; shared flags with the `yarrow_lsp` binary.
 
 ---
 
@@ -98,7 +99,6 @@ Evaluated readiness; wired nothing that is not ready.
 | Item                      | Notes                                                    |
 | ------------------------- | -------------------------------------------------------- |
 | `yarrow fmt` wrapper      | After `yarrow-fmt` Stage 11+; in-process `format_*`      |
-| `yarrow lsp` wrapper      | After `yarrow-lsp` Stage 10+; `run_stdio`                |
 | `yarrow clean`            | Only if a build-artifact convention is documented        |
 | `test` subcommand         | Needs a language-level test story                        |
 | ICE exit `101`            | Optional once core distinguishes ICE                     |
