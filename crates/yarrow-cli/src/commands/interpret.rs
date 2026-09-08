@@ -1,5 +1,6 @@
 //! Implementation of the `interpret` subcommand.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -10,7 +11,22 @@ use crate::commands::print_run_result;
 use crate::diagnostics::render_batch;
 
 /// Check and interpret `file`, printing any return value from the entry.
-pub fn interpret_file(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
+///
+/// Non-empty `program_args` (after `--`) are rejected until core exposes an
+/// interpret argv API.
+pub fn interpret_file(
+    file: &Path,
+    entry_name: &str,
+    program_args: &[OsString],
+    global: &GlobalArgs,
+) -> ExitCode {
+    if !program_args.is_empty() {
+        eprintln!(
+            "error: program arguments are not supported with interpret (no language argv API yet)"
+        );
+        return ExitCode::from(2);
+    }
+
     let path = file.to_string_lossy().into_owned();
     let color = global.color.to_core();
 

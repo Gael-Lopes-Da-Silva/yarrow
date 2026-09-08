@@ -29,10 +29,10 @@ src/main.rs  →  yarrow_cli::run
 
 | Command     | Behavior                                                     |
 | ----------- | ------------------------------------------------------------ |
-| `run`       | `--target jit` (default) or `object` (link + exec); `--main` |
+| `run`       | `--target jit` (default) or `object` (link + exec); `--main`; args after `--` |
 | `compile`   | Codegen only; `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
 | `check`     | Semantic check only                                          |
-| `interpret` | Stack VM via `interpret_source`; `--main`; no `--target`     |
+| `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `dump`      | `--emit tokens\|ast\|ir`                                     |
 | `explain`   | Long form for a diagnostic code                              |
 | `version`   | Crate version (`-V` too)                                     |
@@ -43,7 +43,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–9 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–10 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -68,15 +68,11 @@ Driver polish and optional tools. Prefer core Stages 20–23 before a heavy `rep
 
 **Gate:** `yarrow compile --target object --emit exe -o /tmp/hello docs/examples/valid/01_hello.yar` produces a runnable file; `--help` documents `--emit`.
 
-### Stage 10 - Program arguments
+### Stage 10 - Program arguments ✅
 
-Forward argv after `--` to the program for `run` / `interpret` (and document that native `object` sees OS argv once/if core exposes it).
+`run` / `interpret` take `ARGS` after `--` (`last = true`). `run --target object` forwards them as OS argv to the child. JIT / interpret reject non-empty args (exit `2`) until core exposes a language argv API. Native `object` sees OS argv regardless of language-level argv.
 
-1. Clap: `run` / `interpret` accept trailing args after `--`.
-2. JIT / interpret: only wire through when core has an argv API; until then, reject with exit `2` and a clear message **or** ignore with a verbose note (prefer reject).
-3. `run --target object`: pass args to `Command` (OS argv) even before a language-level argv API exists.
-
-**Gate:** `yarrow run --target object -- docs/examples/valid/01_hello.yar` still works with no program args. With args, the child receives them (`ps`/`/proc` or a tiny future example). Missing core argv support does not break no-arg runs.
+**Gate:** `yarrow run --target object docs/examples/valid/01_hello.yar --` still works with no program args. With args, the child receives them (`strace`/`/proc`). Missing core argv support does not break no-arg runs.
 
 ### Stage 11 - `repl` (blocked on core interpret depth)
 
