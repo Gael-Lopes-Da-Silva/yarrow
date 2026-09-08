@@ -42,3 +42,7 @@ Workspace folders from `initialize` are appended as search paths. Client init op
 ## Code actions
 
 On a diagnostic whose code is in the `yarrow explain` catalog, the server offers **Explain Exxx** (no edits). Choosing it runs workspace command `yarrow.explain` with the code; the server shows the same long-form text as `yarrow explain`. Hover over a labeled span also appends that explain section.
+
+## Signature help
+
+On a postfix call site (`name call` or `a.b call`), `textDocument/signatureHelp` returns the callee signature (AST, enriched with `type_at` when check succeeds). Trigger character is space. Outside a resolved call site the response is null.

@@ -120,7 +120,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | v1 complete (Stages 0–11); next is Stage 12        |
+| `yarrow-lsp` crate | ✅     | Stage 12: signature help                       |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -153,7 +153,7 @@ Stages 0–11 are complete. Historical stage write-ups were removed; git history
 
 ## Stages
 
-### Stage 12 - Signature help
+### Stage 12 - Signature help ✅
 
 Call-site parameter / stack-effect hints so editors can show a signature popup while typing arguments.
 
@@ -164,6 +164,8 @@ Call-site parameter / stack-effect hints so editors can show a signature popup w
 5. Return null on non-call positions or unresolved callees.
 
 **Gate:** in `docs/examples/valid/04_functions.yar` (or equivalent), signature help inside a known `demo call` (or similar) returns a non-empty label matching the callee. Outside a call returns null. `cargo fmt && cargo check && cargo clippy` green for `yarrow_lsp`.
+
+**Done:** `textDocument/signatureHelp` for postfix `name call` / `a.b call` (token path through `call`); resolve local / nested / implement functions; AST label + params, prefer `type_at` signature when present; no `activeParameter` guess. Trigger/retrigger: space. Scripted gate on `04_functions.yar`: help on `demo call` includes `demo`; whitespace null.
 
 ---
 
@@ -295,7 +297,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | references                             | 7 ✅     | binding / name index               |
 | formatting                             | 8 ✅     | `yarrow-fmt`                       |
 | codeAction / explain                   | 11 ✅    | `explain_code`                     |
-| signatureHelp                          | 12       | AST + `type_at`                    |
+| signatureHelp                          | 12 ✅    | AST + `type_at`                    |
 | inlayHint                              | 13       | `type_at`                          |
 | semanticTokens                         | 14       | tokens + AST                       |
 | rename                                 | 15       | references / resolve               |
