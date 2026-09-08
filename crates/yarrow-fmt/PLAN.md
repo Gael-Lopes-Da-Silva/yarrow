@@ -62,8 +62,9 @@ Public surface:
 
 ```rust
 pub struct FormatOptions {
-    pub max_width: usize,      // default 100
-    pub sort_requires: bool,   // default false (opt-in; Stage 14 may flip)
+    pub max_width: usize,       // default 100
+    pub sort_requires: bool,    // default false (opt-in)
+    pub reorder_layout: bool,   // default false (opt-in; Stage 13)
 }
 
 pub enum FormatError { /* Io | NotUtf8 | Parse */ }
@@ -77,14 +78,15 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
 
 CLI (`yarrow-fmt` and `yarrow fmt`):
 
-| Mode             | Behavior                                       |
-| ---------------- | ---------------------------------------------- |
-| default          | Format files in place                          |
-| `--check`        | Exit non-zero if any file would change         |
-| `--stdin`        | Read stdin, write formatted stdout             |
-| `--max-width N`  | Soft wrap width (default 100)                  |
-| `--sort-requires`| Opt-in require sorting                         |
-| paths / dirs     | `.yar` files; recurse directories               |
+| Mode               | Behavior                                       |
+| ------------------ | ---------------------------------------------- |
+| default            | Format files in place                          |
+| `--check`          | Exit non-zero if any file would change         |
+| `--stdin`          | Read stdin, write formatted stdout             |
+| `--max-width N`    | Soft wrap width (default 100)                  |
+| `--sort-requires`  | Opt-in require sorting                         |
+| `--reorder-layout` | Opt-in top-level file-layout reorder           |
+| paths / dirs       | `.yar` files; recurse directories               |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
 
@@ -109,6 +111,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 | `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
 | Corpus gate                   | `docs/examples/valid/**` bootstrapped; `--check` exits `0`            |
 | LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source`    |
+| File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
 
 **Gates:** `yarrow fmt --check docs/examples/valid` exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -118,7 +121,7 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 
 Focus: opt-in layout reorder, stabilize defaults, unblock LSP range format, widen the corpus gate, then (if core allows) best-effort invalid input. Do not invent layout rules absent from the style guide.
 
-### Stage 13 - File layout reorder (opt-in)
+### Stage 13 - File layout reorder (opt-in) ✅
 
 Style-guide **File layout**. High churn; keep **opt-in** so default format stays diff-quiet.
 
@@ -141,6 +144,8 @@ Tasks:
 5. Document that visibility (`public` / private helpers) is inferred from existing AST flags / keywords, not guessed from names.
 
 **Gate:** fixture with shuffled types / implements / helpers / `main` reorders to the guide sequence when the option is enabled; disabled path preserves order. Idempotent either way. `cargo fmt && cargo check && cargo clippy` green.
+
+**Notes:** `layout` module (`layout_kind`, `reorder_toplevel_indices`); construct layout attaches leading comments in source order then emits guide order; matching `implement` follows its type; orphan implements after types; `Other` before `main`. CLI `--reorder-layout` on `yarrow-fmt` and `yarrow fmt`. Fixture `fixtures/stage13_layout.yar`. Default remains off.
 
 ---
 
@@ -209,7 +214,7 @@ Today v1 requires a successful parse. Editors often want hygiene / indent on bro
 | Blank lines                            | Landed (5)                                  |
 | Comments                               | Landed (1, 9)                               |
 | Naming                                 | Out of scope (core / lint)                  |
-| File layout (order)                    | Stage 13 (opt-in)                           |
+| File layout (order)                    | Stage 13 ✅ (opt-in)                        |
 | Modules and `require`                  | Landed (6, 10); default sort Stage 14       |
 | Visibility                             | Landed (print as written); Stage 13 order   |
 | Types / Functions / Variables          | Landed (6)                                  |

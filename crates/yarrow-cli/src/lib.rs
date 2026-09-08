@@ -81,10 +81,18 @@ where
                 stdin,
                 max_width,
                 sort_requires,
+                reorder_layout,
                 paths,
             }),
             None,
-        ) => commands::run_fmt_command(paths, check, stdin, max_width, sort_requires),
+        ) => commands::run_fmt_command(
+            paths,
+            check,
+            stdin,
+            max_width,
+            sort_requires,
+            reorder_layout,
+        ),
         (
             Some(Cmd::Lsp {
                 stdio,

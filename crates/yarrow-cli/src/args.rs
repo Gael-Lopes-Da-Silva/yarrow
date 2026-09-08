@@ -213,6 +213,10 @@ pub enum Cmd {
         #[arg(long)]
         sort_requires: bool,
 
+        /// Reorder top-level items to style-guide file layout (high churn; opt-in).
+        #[arg(long)]
+        reorder_layout: bool,
+
         /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
         #[arg(value_name = "PATH")]
         paths: Vec<std::path::PathBuf>,
