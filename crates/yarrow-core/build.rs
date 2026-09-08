@@ -1,7 +1,8 @@
 //! Build script for `yarrow-core`.
 //!
 //! - Embeds the std library under `lib/std/` into the binary.
-//! - Builds / records the AOT host-runtime static archive for [`linkable_archive`].
+//! - Builds / records AOT runtime static archives for the host and, when the
+//!   Rust target is installed, the Stage 26 cross triple(s).
 
 use std::env;
 use std::fs;
@@ -10,7 +11,7 @@ use std::process::Command;
 
 fn main() {
     embed_std_modules();
-    record_aot_runtime_archive();
+    record_aot_runtime_archives();
 }
 
 fn embed_std_modules() {
@@ -34,7 +35,7 @@ fn embed_std_modules() {
     fs::write(Path::new(&out_dir).join("std_modules.rs"), out).unwrap();
 }
 
-fn record_aot_runtime_archive() {
+fn record_aot_runtime_archives() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let aot_manifest = manifest.join("../yarrow-runtime/aot/Cargo.toml");
     println!("cargo:rerun-if-changed={}", aot_manifest.display());
@@ -44,46 +45,111 @@ fn record_aot_runtime_archive() {
     );
     println!("cargo:rerun-if-env-changed=PROFILE");
     println!("cargo:rerun-if-env-changed=TARGET");
+    println!("cargo:rerun-if-env-changed=YARROW_BUILD_CROSS_AOT");
 
-    let target = env::var("TARGET").unwrap();
+    let host_target = env::var("TARGET").unwrap();
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    // Nested cargo build in a private target dir avoids locking the parent
-    // target/ (which would deadlock under the outer cargo).
-    let aot_target = PathBuf::from(env::var("OUT_DIR").unwrap()).join("aot-target");
+    let aot_target_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("aot-target");
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let mut cmd = Command::new(&cargo);
+
+    // Always build the archive matching the crate TARGET (usually the host).
+    let host_archive = build_aot_archive(&cargo, &aot_manifest, &aot_target_dir, &profile, None)
+        .unwrap_or_else(|e| panic!("{e}"));
+    println!(
+        "cargo:rustc-env=YARROW_RUNTIME_AOT_ARCHIVE={}",
+        host_archive.display()
+    );
+
+    // Optional cross archives: other linux-gnu arch when that Rust target exists.
+    let mut table = format!("{host_target}={}", host_archive.display());
+    let cross_enabled = env::var_os("YARROW_BUILD_CROSS_AOT").is_some_and(|v| v != "0");
+    if cross_enabled {
+        for cross in cross_triples_for(&host_target) {
+            match build_aot_archive(
+                &cargo,
+                &aot_manifest,
+                &aot_target_dir,
+                &profile,
+                Some(cross),
+            ) {
+                Ok(path) => {
+                    table.push(';');
+                    table.push_str(cross);
+                    table.push('=');
+                    table.push_str(&path.display().to_string());
+                    println!("cargo:warning=built AOT runtime archive for {cross}");
+                }
+                Err(msg) => {
+                    // Soft-fail: object emit for the triple still works; link needs an override.
+                    println!("cargo:warning=skipping AOT archive for {cross}: {msg}");
+                }
+            }
+        }
+    }
+    println!("cargo:rustc-env=YARROW_RUNTIME_AOT_ARCHIVE_TABLE={table}");
+}
+
+fn cross_triples_for(host: &str) -> Vec<&'static str> {
+    // Stage 26: one additional linux-gnu arch.
+    if host.starts_with("x86_64-") && host.contains("linux") && host.contains("gnu") {
+        vec!["aarch64-unknown-linux-gnu"]
+    } else if host.starts_with("aarch64-") && host.contains("linux") && host.contains("gnu") {
+        vec!["x86_64-unknown-linux-gnu"]
+    } else {
+        Vec::new()
+    }
+}
+
+fn build_aot_archive(
+    cargo: &str,
+    aot_manifest: &Path,
+    aot_target_dir: &Path,
+    profile: &str,
+    target: Option<&str>,
+) -> Result<PathBuf, String> {
+    let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
-        .arg(&aot_manifest)
+        .arg(aot_manifest)
         .arg("--target-dir")
-        .arg(&aot_target);
+        .arg(aot_target_dir);
     if profile == "release" {
         cmd.arg("--release");
     }
-    let status = cmd.status().unwrap_or_else(|e| {
-        panic!("failed to spawn `{cargo}` to build yarrow_runtime_aot: {e}");
-    });
+    if let Some(t) = target {
+        cmd.arg("--target").arg(t);
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to spawn `{cargo}` to build yarrow_runtime_aot: {e}"))?;
     if !status.success() {
-        panic!("building yarrow_runtime_aot failed with {status}");
+        return Err(format!(
+            "building yarrow_runtime_aot{} failed with {status}",
+            target.map(|t| format!(" for {t}")).unwrap_or_default()
+        ));
     }
 
-    let profile_dir = aot_target.join(if profile == "release" {
+    let profile_name = if profile == "release" {
         "release"
     } else {
         "debug"
-    });
-    let archive = if target.contains("windows") {
+    };
+    let profile_dir = if let Some(t) = target {
+        aot_target_dir.join(t).join(profile_name)
+    } else {
+        aot_target_dir.join(profile_name)
+    };
+    let archive = if target.is_some_and(|t| t.contains("windows"))
+        || (target.is_none() && env::var("TARGET").is_ok_and(|t| t.contains("windows")))
+    {
         profile_dir.join("yarrow_runtime_aot.lib")
     } else {
         profile_dir.join("libyarrow_runtime_aot.a")
     };
     if !archive.is_file() {
-        panic!("expected AOT archive at {}", archive.display());
+        return Err(format!("expected AOT archive at {}", archive.display()));
     }
-    println!(
-        "cargo:rustc-env=YARROW_RUNTIME_AOT_ARCHIVE={}",
-        archive.display()
-    );
+    Ok(archive)
 }
 
 /// Recursively collect `*.yar` files under `dir`, recording each as

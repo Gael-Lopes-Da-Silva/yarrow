@@ -80,13 +80,15 @@ first.",
         code: "E394",
         title: "system linker or CRT missing",
         body: "\
-Native executable emit links the program object with the host runtime archive \
-using a system linker (`ld` / `lld`). Yarrow does not drive `cc` / `gcc` / \
-`clang` to compile CRT or user code.
+Native executable emit links the program object with the runtime archive for \
+the selected target using a system linker (`ld` / `lld`). Yarrow does not drive \
+`cc` / `gcc` / `clang` to compile CRT or user code.
 
-Install binutils `ld` or LLVM `lld`, and ensure host libc CRT objects are \
-visible (on NixOS, a stdenv with glibc). Path discovery may use \
-`cc -print-file-name` when present; that is lookup only.",
+Install binutils `ld` or LLVM `lld`, and ensure libc CRT objects for the target \
+are visible (on NixOS, a stdenv with glibc). Path discovery may use \
+`cc -print-file-name` when present; that is lookup only. For a non-host triple, \
+set `YARROW_AOT_SYSROOT` or `YARROW_AOT_CRT_DIR`, or install a matching cross \
+toolchain (see docs/RUNTIME.md).",
     },
     ExplainEntry {
         code: "E395",
@@ -100,8 +102,22 @@ do not fall back to JIT for `--target object`.",
         code: "E396",
         title: "runtime archive unavailable",
         body: "\
-AOT link needs `libyarrow_runtime_aot` (the Stage 16 static archive). Rebuild \
-`yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` points at a non-empty archive.",
+AOT link needs `libyarrow_runtime_aot` for the selected target triple. Rebuild \
+`yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` (host) or the Stage 26 archive \
+table points at a non-empty archive, or set \
+`YARROW_RUNTIME_AOT_ARCHIVE_<triple_with_underscores>` to an archive built with \
+`cargo build -p yarrow_runtime_aot --target <triple>` (same ABI as the host \
+runtime; see docs/RUNTIME.md).",
+    },
+    ExplainEntry {
+        code: "E397",
+        title: "unsupported or invalid AOT target",
+        body: "\
+Object / executable emit accepts the host linux-gnu triple and the Stage 26 \
+cross triple (the other of `x86_64-unknown-linux-gnu` / \
+`aarch64-unknown-linux-gnu`). Mach-O, Windows, musl, and other triples are not \
+supported yet. JIT requires the host triple. Set `CompileOptions::target` to a \
+supported value or leave it unset for the host.",
     },
     ExplainEntry {
         code: "W401",

@@ -32,7 +32,7 @@ Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **
 | Implementation | `yarrow_runtime` (rlib)              | Heap, `@print_*`, regions, `HOST_FNS`                                                |
 | JIT            | `runtime::install_runtime`           | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
 | AOT archive    | `yarrow_runtime_aot` (`staticlib`)   | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
-| Library access | `yarrow_core::linkable_archive()`    | Reads `libyarrow_runtime_aot.a` (path from build) for AOT link                       |
+| Library access | `yarrow_core::linkable_archive` / `linkable_archive_for` | Reads `libyarrow_runtime_aot.a` (host or per-triple; see Stage 26) for AOT link |
 | Executable     | `Session::compile_executable_source` | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)               |
 
 Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Cranelift process `main`) + runtime `.a` are linked by `compile_executable_source`. No C CRT source and no `cc` compile step; CRT object paths may be discovered with `cc -print-file-name` when present.
@@ -82,7 +82,7 @@ Exit mapping (process `main` trampoline):
 - integer (including bool / enum) → value as exit status
 - fallible envelope → `1` on error tag, else `0`
 
-**Link:** `Session::compile_executable_source` links program `.o` + `libyarrow_runtime_aot.a` with `ld`/`lld` (not `cc`). Diagnostics: `E394` linker/CRT missing, `E395` link failed, `E396` runtime archive unavailable. Host support is linux-gnu for now.
+**Link:** `Session::compile_executable_source` links program `.o` + `libyarrow_runtime_aot.a` with `ld`/`lld` (not `cc`). Diagnostics: `E394` linker/CRT missing, `E395` link failed, `E396` runtime archive unavailable, `E397` unsupported target. Default target is the host linux-gnu triple; see [Cross-compile triples](#cross-compile-triples-stage-26).
 
 ### AOT debug info and optimization (Stage 25)
 
@@ -96,6 +96,56 @@ Object and executable products honor two [`CompileOptions`](../../crates/yarrow-
 DWARF includes a compilation unit for the source path, `DW_TAG_subprogram` entries for defined functions (Yarrow names plus process `main`), and coarse line mappings at function entries when spans exist. Inspect with `llvm-dwarfdump` or `readelf --debug-dump=info`.
 
 JIT uses the same `opt_level` (default stays debug-friendly `None`). JIT does not emit DWARF.
+
+### Cross-compile triples (Stage 26)
+
+Object emit and executable link take an optional [`CompileOptions::target`](../../crates/yarrow-core/src/session.rs) ([`TargetTriple`](../../crates/yarrow-core/src/target.rs)). `None` means the host.
+
+| Triple | Role |
+| ------ | ---- |
+| Host (`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`) | Default object / executable path |
+| The other of those two | First cross target: object emit always; link when archive + CRT are available |
+
+Unsupported triples (musl, Mach-O, Windows, …) fail with `E397` (no panic). JIT rejects a non-host `target` with `E397`. Object emit for aarch64 requires the `arm64` feature on `cranelift-codegen` (enabled by `yarrow_core`).
+
+**Session example** (non-host object; no CLI flag yet):
+
+```rust
+use yarrow_core::{CompileOptions, ExecutionMode, Session, TargetTriple};
+
+let mut opts = CompileOptions::new("hello.yar");
+opts.mode = ExecutionMode::Object;
+opts.target = Some(TargetTriple::parse("aarch64-unknown-linux-gnu").expect("supported"));
+let session = Session::new(opts);
+let artifact = session.compile_object_source(source)?;
+// artifact.target is aarch64-unknown-linux-gnu; bytes are AArch64 ELF
+```
+
+Inspect: `readelf -h hello.o` should show `Machine: AArch64` when targeting aarch64 from an x86_64 host (or the reverse).
+
+**Runtime archive layout** (same ABI / `HOST_FNS` as the host runtime; do not invent a second runtime):
+
+| How | Path / env |
+| --- | ---------- |
+| Host (always) | Built by `yarrow-core`’s `build.rs` → `YARROW_RUNTIME_AOT_ARCHIVE` |
+| Optional cross at build | Set `YARROW_BUILD_CROSS_AOT=1` when building `yarrow-core` after installing the Rust target (`rustup target add …` or Nix equivalent). Successful builds appear in `YARROW_RUNTIME_AOT_ARCHIVE_TABLE` as `triple=path;…` |
+| Manual / CI override | `YARROW_RUNTIME_AOT_ARCHIVE_<triple_with_underscores>` → `libyarrow_runtime_aot.a` from `cargo build -p yarrow_runtime_aot --target <triple>` |
+
+Example override for aarch64:
+
+```bash
+cargo build -p yarrow_runtime_aot --target aarch64-unknown-linux-gnu
+export YARROW_RUNTIME_AOT_ARCHIVE_aarch64_unknown_linux_gnu=$PWD/target/aarch64-unknown-linux-gnu/debug/libyarrow_runtime_aot.a
+```
+
+**CRT / linker for cross executables:** host `ld` must support the target’s `-m` emulation (`elf_x86_64` / `aarch64linux`). CRT objects come from the usual `cc -print-file-name` path on the host, or for a non-host triple:
+
+| Env | Meaning |
+| --- | ------- |
+| `YARROW_AOT_CRT_DIR` | Directory containing `Scrt1.o` / `crti.o` / … for the target |
+| `YARROW_AOT_SYSROOT` | Sysroot searched under `usr/lib`, `lib`, and multiarch subdirs |
+
+Missing archive → `E396`. Missing CRT / linker → `E394`. Broader matrices (musl, Mach-O, Windows) stay later.
 
 The language model is stack-based regardless of backend. JIT and object backends lower each function to Cranelift IR with an explicit compile-time operand stack that becomes SSA values. The interpreter keeps an explicit runtime operand stack instead.
 

@@ -17,6 +17,7 @@ use crate::compiler::dwarf::{self, DebugFnInfo};
 use crate::diagnostics::Span;
 use crate::runtime;
 use crate::session::OptLevel;
+use crate::target::TargetTriple;
 
 use super::types::CResult;
 
@@ -37,19 +38,27 @@ impl CodeModule {
         Ok(Self::Jit(Box::new(JITModule::new(jb))))
     }
 
-    pub(crate) fn new_object(module_name: &str, opt_level: OptLevel) -> CResult<Self> {
-        Self::new_object_module(module_name, opt_level).map(Self::Object)
+    pub(crate) fn new_object(
+        module_name: &str,
+        opt_level: OptLevel,
+        target: &TargetTriple,
+    ) -> CResult<Self> {
+        Self::new_object_module(module_name, opt_level, target).map(Self::Object)
     }
 
     /// Cranelift module used only as a semantic-analysis vehicle (Stage 24).
     ///
     /// Same ISA / declare surface as object emit, but never finished into bytes
     /// and never backed by a JIT linker (`install_runtime` is skipped).
-    pub(crate) fn new_check(opt_level: OptLevel) -> CResult<Self> {
-        Self::new_object_module("yarrow.check", opt_level).map(Self::Object)
+    pub(crate) fn new_check(opt_level: OptLevel, target: &TargetTriple) -> CResult<Self> {
+        Self::new_object_module("yarrow.check", opt_level, target).map(Self::Object)
     }
 
-    fn new_object_module(module_name: &str, opt_level: OptLevel) -> CResult<Box<ObjectModule>> {
+    fn new_object_module(
+        module_name: &str,
+        opt_level: OptLevel,
+        target: &TargetTriple,
+    ) -> CResult<Box<ObjectModule>> {
         let mut flag_builder = settings::builder();
         // Match JITBuilder defaults except PIC: object files need position-independent code.
         flag_builder
@@ -61,11 +70,14 @@ impl CodeModule {
         flag_builder
             .set("opt_level", opt_level.as_cranelift())
             .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
-        let isa_builder = cranelift_native::builder().map_err(|msg| {
+        let isa_builder = target.isa_builder().map_err(|e| {
             CompileError::new(
-                format!("host machine is not supported: {msg}"),
+                format!("unsupported AOT target '{}': {e}", target.as_str()),
                 Span::default(),
-                "E350",
+                "E397",
+            )
+            .with_help(
+                "use a supported linux-gnu triple (see CompileOptions::target / docs/RUNTIME.md)",
             )
         })?;
         let isa = isa_builder

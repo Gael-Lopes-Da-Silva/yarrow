@@ -1140,6 +1140,7 @@ dependencies = [
  "gimli",
  "half",
  "object",
+ "target-lexicon",
  "yarrow_runtime",
 ]
 
