@@ -3,14 +3,19 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 0: public API stubs. `format_source` currently returns the input unchanged.
+//! Stage 2: `format_source` tokenizes, parses, and builds a format IR
+//! (AST + comment trivia). Reprinting lands in later stages; successful
+//! format still returns the input unchanged until then.
+
+mod ir;
+
+pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, TriviaMap};
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-// Path dependency for Stages 1+ (tokenize / parse). Unused in the Stage 0 stub.
-use yarrow_core as _;
+use yarrow_core::{ColorChoice, SessionDiagnostics, render_batch};
 
 /// Options controlling layout. More fields land in later stages.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +35,8 @@ impl Default for FormatOptions {
 pub enum FormatError {
     /// Filesystem read/write failure.
     Io { path: PathBuf, source: io::Error },
-    // Later stages: parse diagnostics from `yarrow_core`.
+    /// Tokenize or parse failure from `yarrow_core` (no fmt-only syntax errors).
+    Parse(SessionDiagnostics),
 }
 
 impl fmt::Display for FormatError {
@@ -38,6 +44,13 @@ impl fmt::Display for FormatError {
         match self {
             FormatError::Io { path, source } => {
                 write!(f, "I/O error for {}: {source}", path.display())
+            }
+            FormatError::Parse(diag) => {
+                write!(
+                    f,
+                    "{}",
+                    render_batch(&diag.batch, &diag.file, ColorChoice::Never)
+                )
             }
         }
     }
@@ -47,14 +60,29 @@ impl std::error::Error for FormatError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             FormatError::Io { source, .. } => Some(source),
+            FormatError::Parse(_) => None,
         }
     }
 }
 
+impl From<SessionDiagnostics> for FormatError {
+    fn from(diag: SessionDiagnostics) -> Self {
+        FormatError::Parse(diag)
+    }
+}
+
+/// Build a format IR from source text (`path` is for diagnostics only).
+pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError> {
+    FormatIr::parse(source.to_string(), path).map_err(FormatError::from)
+}
+
 /// Format a Yarrow source string.
 ///
-/// Stage 0 stub: returns `source` unchanged. Later stages parse and reprint.
-pub fn format_source(source: &str, _options: &FormatOptions) -> Result<String, FormatError> {
+/// Stage 2: parses and builds IR; returns `source` unchanged on success.
+/// Parse failures surface as [`FormatError::Parse`].
+pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
+    let _ir = build_format_ir(source, "<input>")?;
+    let _ = options;
     Ok(source.to_string())
 }
 
@@ -64,5 +92,8 @@ pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, Forma
         path: path.to_path_buf(),
         source,
     })?;
-    format_source(&source, options)
+    let path_str = path.to_string_lossy();
+    let _ir = build_format_ir(&source, &path_str)?;
+    let _ = options;
+    Ok(source)
 }

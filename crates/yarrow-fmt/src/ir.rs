@@ -1,0 +1,181 @@
+//! Format IR: parsed AST plus comment trivia attached by source span.
+//!
+//! Stage 2 preference: AST + trivia map (not a full CST). The printer
+//! (later stages) walks [`FormatIr::program`] and consults
+//! [`FormatIr::trivia`] for comment placement.
+
+use std::collections::HashMap;
+
+use yarrow_core::{
+    CompileOptions, Parser, Program, Session, SessionDiagnostics, SourceFile, Span, Token,
+    TokenKind,
+};
+
+/// A line comment from the tokenizer (`#` through EOL, exclusive of `\n`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub lexeme: String,
+    pub span: Span,
+}
+
+/// How a comment relates to its anchor token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentAttach {
+    /// Own-line / preceding comment; printer places it above the anchor.
+    Leading,
+    /// Same-line comment after the anchor token.
+    Trailing,
+}
+
+/// One comment tied to a non-comment token span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedComment {
+    pub comment: Comment,
+    pub attach: CommentAttach,
+}
+
+/// Comments keyed by the span of the non-comment token they attach to.
+///
+/// Attachment rules (Stage 2 baseline; Stage 9 refines spacing):
+/// - Same line as the previous code token → trailing on that token.
+/// - Otherwise → leading on the next code token.
+/// - No following code token → [`TriviaMap::file_trailing`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriviaMap {
+    by_anchor: HashMap<Span, Vec<AttachedComment>>,
+    /// Comments after the last non-comment token (EOF-only files, etc.).
+    file_trailing: Vec<Comment>,
+}
+
+impl TriviaMap {
+    pub fn from_tokens(tokens: &[Token]) -> Self {
+        let code_indices: Vec<usize> = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind != TokenKind::Comment && t.kind != TokenKind::Eof)
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut map = Self::default();
+        let mut next_code = 0usize;
+
+        for (i, tok) in tokens.iter().enumerate() {
+            if tok.kind == TokenKind::Eof {
+                break;
+            }
+            if tok.kind != TokenKind::Comment {
+                if next_code < code_indices.len() && code_indices[next_code] == i {
+                    next_code += 1;
+                }
+                continue;
+            }
+
+            let comment = Comment {
+                lexeme: tok.lexeme.clone(),
+                span: tok.span(),
+            };
+
+            let prev = next_code.checked_sub(1).map(|ci| &tokens[code_indices[ci]]);
+            let next = code_indices.get(next_code).map(|&ci| &tokens[ci]);
+
+            if let Some(prev) = prev
+                && prev.location.line == tok.location.line
+            {
+                map.push_attached(
+                    prev.span(),
+                    AttachedComment {
+                        comment,
+                        attach: CommentAttach::Trailing,
+                    },
+                );
+                continue;
+            }
+
+            if let Some(next) = next {
+                map.push_attached(
+                    next.span(),
+                    AttachedComment {
+                        comment,
+                        attach: CommentAttach::Leading,
+                    },
+                );
+            } else {
+                map.file_trailing.push(comment);
+            }
+        }
+
+        map
+    }
+
+    fn push_attached(&mut self, anchor: Span, attached: AttachedComment) {
+        self.by_anchor.entry(anchor).or_default().push(attached);
+    }
+
+    /// Comments attached to `anchor` (leading and trailing), in source order.
+    pub fn attached_to(&self, anchor: Span) -> &[AttachedComment] {
+        self.by_anchor
+            .get(&anchor)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Leading comments for `anchor`.
+    pub fn leading(&self, anchor: Span) -> impl Iterator<Item = &Comment> {
+        self.attached_to(anchor)
+            .iter()
+            .filter(|a| a.attach == CommentAttach::Leading)
+            .map(|a| &a.comment)
+    }
+
+    /// Trailing comments for `anchor`.
+    pub fn trailing(&self, anchor: Span) -> impl Iterator<Item = &Comment> {
+        self.attached_to(anchor)
+            .iter()
+            .filter(|a| a.attach == CommentAttach::Trailing)
+            .map(|a| &a.comment)
+    }
+
+    pub fn file_trailing(&self) -> &[Comment] {
+        &self.file_trailing
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_anchor.is_empty() && self.file_trailing.is_empty()
+    }
+
+    pub fn comment_count(&self) -> usize {
+        self.by_anchor.values().map(|v| v.len()).sum::<usize>() + self.file_trailing.len()
+    }
+}
+
+/// Parsed program plus comment trivia for formatting.
+#[derive(Debug, Clone)]
+pub struct FormatIr {
+    pub file: SourceFile,
+    pub program: Program,
+    pub trivia: TriviaMap,
+}
+
+impl FormatIr {
+    /// Tokenize, attach comment trivia, then parse into a format IR.
+    ///
+    /// Does not type-check or run the program. On tokenize/parse failure,
+    /// returns the same diagnostic batch shape as [`Session::parse_source`].
+    pub fn parse(
+        source: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<Self, SessionDiagnostics> {
+        let opts = CompileOptions::new(path);
+        let session = Session::new(opts);
+        let (file, tokens) = session.tokenize_source(source.into())?;
+        let trivia = TriviaMap::from_tokens(&tokens);
+        match Parser::with_error_limit(tokens, session.options.error_limit).parse() {
+            Ok(program) => Ok(Self {
+                file,
+                program,
+                trivia,
+            }),
+            Err(batch) => Err(SessionDiagnostics { file, batch }),
+        }
+    }
+}
