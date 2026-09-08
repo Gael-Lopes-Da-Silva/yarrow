@@ -10,7 +10,7 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 
 | Backend      | Role                                                                |
 | ------------ | ------------------------------------------------------------------- |
-| `check`      | Type / ownership / stack / region analysis; no machine code         |
+| `check`      | Type / ownership / stack / region analysis; CLIF lower without JIT/object product |
 | `jit`        | Cranelift in-process machine code; driver may run `main`            |
 | `object`     | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
 | `executable` | Object emit + system `ld`/`lld` link with the runtime archive       |

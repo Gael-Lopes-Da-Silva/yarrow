@@ -40,7 +40,7 @@ Phases A–D (Stages 0–19) are complete. Historical stage write-ups were remov
 | Area        | Gap                                                                                                |
 | ----------- | -------------------------------------------------------------------------------------------------- |
 | AOT         | linux-gnu host only; no DWARF, `-O` tiers, or cross-compile                                        |
-| Backends    | Check still lowers via Cranelift; interpret covers Stage 21 subset (not full JIT parity)           |
+| Backends    | Check lowers CLIF for analysis without JIT/object product; interpret covers Stage 21 subset (not full JIT parity) |
 | Warnings    | (Stage 20) unused binding / require / dead-stack; more lints later                                 |
 | Std/runtime | `std.io` / `std.string` / `std.fs` Stage 22–23 host wrappers landed          |
 | Projects    | Single-file + `require` only; no multi-root project graph                                          |
@@ -116,7 +116,7 @@ Replace the `std.fs` stub with real host file operations (read/write/open as doc
 - Example: `docs/examples/valid/15_fs.yar` (JIT); interpret still lacks structs/errors
 - `@fs_read` is a typed builtin (string handle); other `fs_*` use the generic host path
 
-### Stage 24 - Check without full codegen (optional stretch)
+### Stage 24 - Check without full codegen ✅
 
 Today check-only still rides Cranelift as an analysis vehicle. If Stage 20–23 do not need it, skip or defer.
 
@@ -124,6 +124,12 @@ Today check-only still rides Cranelift as an analysis vehicle. If Stage 20–23 
 2. Keep `ExecutionMode::Check` behavior and diagnostics identical for the corpus.
 
 **Gate:** `check_source` on the valid corpus matches today’s success/failure set with no JIT install.
+
+**Notes:**
+
+- `Compiler::new_check` / `LowerKind::Check`: object ISA module, no JIT `install_runtime`
+- Skips `define_function`, `define_data`, and product finalize; still lowers CLIF for types / ownership / stack / regions
+- `check_source` and `ExecutionMode::Check` use this path; diagnostics unchanged vs prior check-on-JIT
 
 ---
 

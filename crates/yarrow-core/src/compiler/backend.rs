@@ -33,6 +33,18 @@ impl CodeModule {
     }
 
     pub(crate) fn new_object(module_name: &str) -> CResult<Self> {
+        Self::new_object_module(module_name).map(Self::Object)
+    }
+
+    /// Cranelift module used only as a semantic-analysis vehicle (Stage 24).
+    ///
+    /// Same ISA / declare surface as object emit, but never finished into bytes
+    /// and never backed by a JIT linker (`install_runtime` is skipped).
+    pub(crate) fn new_check() -> CResult<Self> {
+        Self::new_object_module("yarrow.check").map(Self::Object)
+    }
+
+    fn new_object_module(module_name: &str) -> CResult<Box<ObjectModule>> {
         let mut flag_builder = settings::builder();
         // Match JITBuilder defaults except PIC: object files need position-independent code.
         flag_builder
@@ -53,7 +65,7 @@ impl CodeModule {
             .map_err(|e| CompileError::new(e.to_string(), Span::default(), "E350"))?;
         let builder = ObjectBuilder::new(isa, module_name, default_libcall_names())
             .map_err(|e| CompileError::new(format!("{e:?}"), Span::default(), "E350"))?;
-        Ok(Self::Object(Box::new(ObjectModule::new(builder))))
+        Ok(Box::new(ObjectModule::new(builder)))
     }
 
     pub(crate) fn is_object(&self) -> bool {

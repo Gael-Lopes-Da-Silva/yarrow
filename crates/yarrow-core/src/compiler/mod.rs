@@ -288,8 +288,8 @@ pub struct Compiler {
     /// Cranelift IR text captured after each function is lowered.
     ir_dump: String,
     /// When true, run full type / ownership / stack checks and lower to CLIF
-    /// for analysis, but do not `define_function` or finalize a JIT module.
-    /// Used by `ExecutionMode::Check` (Stage 13a).
+    /// for analysis, but do not `define_function` / `define_data` or finalize
+    /// a product module. Used by `ExecutionMode::Check` (Stage 13a / 24).
     check_only: bool,
     /// Top-level entry function name (default `main`). See session `CompileOptions::entry_name`.
     entry_name: String,
@@ -306,6 +306,14 @@ impl Compiler {
     /// Host runtime symbols are declared as imports; linking them is CLI-side.
     pub fn new_object(module_name: &str) -> CResult<Self> {
         Self::with_module(CodeModule::new_object(module_name)?)
+    }
+
+    /// Check-only backend: Cranelift object ISA as an analysis vehicle, with no
+    /// JIT linker and no object/JIT product (Stage 24).
+    pub fn new_check() -> CResult<Self> {
+        let mut c = Self::with_module(CodeModule::new_check()?)?;
+        c.check_only = true;
+        Ok(c)
     }
 
     fn with_module(module: CodeModule) -> CResult<Self> {
@@ -382,7 +390,7 @@ impl Compiler {
         self.ir_dump.clone()
     }
 
-    /// Check-only mode: semantic analysis without installing JIT code.
+    /// Check-only mode: semantic analysis without a JIT or object product.
     pub fn set_check_only(&mut self, check_only: bool) {
         self.check_only = check_only;
     }
@@ -1159,10 +1167,13 @@ impl Compiler {
                 .declare_data(&name, Linkage::Local, false, false)?;
             let bytes = decode_string_literal(s)
                 .map_err(|m| CompileError::new(m, Span::default(), "E363"))?;
-            let mut desc = DataDescription::new();
-            desc.set_align(1);
-            desc.define(bytes.into_boxed_slice());
-            self.module.define_data(id, &desc)?;
+            // Check-only: declare the symbol for CLIF GVs; skip module data.
+            if !self.check_only {
+                let mut desc = DataDescription::new();
+                desc.set_align(1);
+                desc.define(bytes.into_boxed_slice());
+                self.module.define_data(id, &desc)?;
+            }
             self.string_ids.insert(s.to_string(), id);
         }
         Ok(())
@@ -1185,10 +1196,12 @@ impl Compiler {
             let data_id = self
                 .module
                 .declare_data(&name, Linkage::Local, false, false)?;
-            let mut desc = DataDescription::new();
-            desc.set_align(8);
-            desc.define(bytes.into_boxed_slice());
-            self.module.define_data(data_id, &desc)?;
+            if !self.check_only {
+                let mut desc = DataDescription::new();
+                desc.set_align(8);
+                desc.define(bytes.into_boxed_slice());
+                self.module.define_data(data_id, &desc)?;
+            }
             self.struct_desc_ids.insert(id, data_id);
         }
         Ok(())
@@ -1209,10 +1222,12 @@ impl Compiler {
             let data_id = self
                 .module
                 .declare_data(&name, Linkage::Local, false, false)?;
-            let mut desc = DataDescription::new();
-            desc.set_align(8);
-            desc.define(bytes.into_boxed_slice());
-            self.module.define_data(data_id, &desc)?;
+            if !self.check_only {
+                let mut desc = DataDescription::new();
+                desc.set_align(8);
+                desc.define(bytes.into_boxed_slice());
+                self.module.define_data(data_id, &desc)?;
+            }
             self.union_desc_ids.insert(id, data_id);
         }
         Ok(())
@@ -1914,11 +1929,14 @@ impl Compiler {
         }
         // Object emit: keep the Yarrow entry local under a private symbol so
         // it does not clash with process `main`. Process `main` calls it.
-        let (link_name, linkage) = if self.module.is_object() && name == self.entry_name.as_str() {
-            (crate::entry::USER_ENTRY_LINK_SYMBOL, Linkage::Local)
-        } else {
-            (name, Linkage::Export)
-        };
+        // Check-only reuses the object ISA but never emits, so keep the
+        // source name for clearer analysis dumps.
+        let (link_name, linkage) =
+            if self.module.is_object() && !self.check_only && name == self.entry_name.as_str() {
+                (crate::entry::USER_ENTRY_LINK_SYMBOL, Linkage::Local)
+            } else {
+                (name, Linkage::Export)
+            };
         let id = self.module.declare_function(link_name, linkage, &sig)?;
         self.sigs.insert(name.to_string(), sig);
         self.sig_tys

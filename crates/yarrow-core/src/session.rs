@@ -12,7 +12,7 @@ use crate::tokenizer::{Token, Tokenizer};
 /// `Check` / `Jit` (13a), `Interpret` (13b), and `Object` emit (13c) are landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
-    /// Full type / ownership / stack / region checks; no JIT install.
+    /// Full type / ownership / stack / region checks; no JIT / object product.
     Check,
     /// Cranelift in-process machine code (default for `run` / `compile`).
     #[default]
@@ -148,16 +148,17 @@ impl Session {
         }
     }
 
-    /// Type-check / ownership-check source without installing JIT code.
+    /// Type-check / ownership-check source without a JIT or object product.
     ///
-    /// Uses the same semantic pipeline as JIT compile, but skips
-    /// `define_function` / module finalize (`ExecutionMode::Check`).
+    /// Same semantic pipeline as JIT compile (CLIF lowering for analysis), but
+    /// uses an object ISA module with no `define_function` / `define_data` /
+    /// finalize (`ExecutionMode::Check`, Stage 24).
     /// On success, [`CheckedProgram::warnings`] may contain Stage 20 warnings;
     /// they do not turn the result into `Err`.
     pub fn check_source(&self, source: String) -> Result<CheckedProgram, SessionDiagnostics> {
         let (file, program) = self.parse_source(source)?;
         self.require_main_if_needed(&file, &program)?;
-        let mut compiler = self.lower(&file, &program, LowerKind::Jit { check_only: true })?;
+        let mut compiler = self.lower(&file, &program, LowerKind::Check)?;
         let warnings = compiler.take_warnings();
         Ok(CheckedProgram {
             file,
@@ -196,8 +197,12 @@ impl Session {
 
         let (file, program) = self.parse_source(source)?;
         self.require_main_if_needed(&file, &program)?;
-        let check_only = matches!(self.options.mode, ExecutionMode::Check);
-        let compiler = self.lower(&file, &program, LowerKind::Jit { check_only })?;
+        let kind = if matches!(self.options.mode, ExecutionMode::Check) {
+            LowerKind::Check
+        } else {
+            LowerKind::Jit
+        };
+        let compiler = self.lower(&file, &program, kind)?;
         Ok(SessionArtifact { file, compiler })
     }
 
@@ -382,7 +387,8 @@ impl Session {
     ) -> Result<Compiler, SessionDiagnostics> {
         let path = self.options.source_path.clone();
         let mut compiler = match &kind {
-            LowerKind::Jit { .. } => Compiler::new(),
+            LowerKind::Jit => Compiler::new(),
+            LowerKind::Check => Compiler::new_check(),
             LowerKind::Object { module_name } => Compiler::new_object(module_name),
         }
         .map_err(|e| SessionDiagnostics {
@@ -392,9 +398,6 @@ impl Session {
         compiler.set_error_limit(self.options.error_limit);
         compiler.set_source_path(path);
         compiler.set_entry_name(self.options.entry_name.clone());
-        if let LowerKind::Jit { check_only } = kind {
-            compiler.set_check_only(check_only);
-        }
         if let Some(dir) = Path::new(&self.options.source_path).parent()
             && !dir.as_os_str().is_empty()
         {
@@ -416,8 +419,12 @@ impl Session {
 }
 
 enum LowerKind {
-    Jit { check_only: bool },
-    Object { module_name: String },
+    Jit,
+    /// Semantic analysis via Cranelift without JIT install or object emit.
+    Check,
+    Object {
+        module_name: String,
+    },
 }
 
 fn object_module_name(source_path: &str) -> String {
