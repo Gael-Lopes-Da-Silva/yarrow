@@ -34,6 +34,8 @@ Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`
 | [`valid/14_io_and_string.yar`](valid/14_io_and_string.yar)                 | `std.io` write helpers, `std.string` len / join / concat / compare               |
 | [`valid/15_fs.yar`](valid/15_fs.yar)                                       | `std.fs` open / write / read / close on a temp file                              |
 
+Interpreter (Stage 32): `01`–`07`, `10`, `12`, `13` interpret with stdout matching JIT. Gate: `cargo run -p yarrow_core --example check_interpret`. Regions / unsafe / remaining files stay `E393`.
+
 ## Invalid programs
 
 | File                                                                                     | Expected rejection                 |
