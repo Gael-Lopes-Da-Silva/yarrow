@@ -113,7 +113,7 @@ From the grammar:
 
 `dup` copies copy types. For non-copy values, duplicate access goes through borrows, not bitwise duplication of ownership.
 
-Parameter modifier `copy` deep-copies into the callee’s local stack; without it, parameters are moved in declaration order.
+Parameter modifier `copy` deep-copies heap values (`string`, `list`, `hashmap`, structs, unions, arrays) into the callee’s local stack; without it, parameters are moved in declaration order. On scalars, enums, and pointers, `copy` has no effect (warning `W405`).
 
 ---
 

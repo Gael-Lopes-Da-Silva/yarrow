@@ -5,14 +5,14 @@
 sqrt public function
 	f64
 do
-	n mutable f64
+	n const f64
 	n 0.0 == if
 		0.0
 	else
 		n 2.0 / guess mutable f64
 		0 i mutable i64
 		i 32 < for
-			n guess / guess + 2.0 / next mutable f64
+			n guess / guess + 2.0 / next const f64
 			next guess set
 			i 1 + i set
 		end

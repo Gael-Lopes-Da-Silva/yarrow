@@ -160,6 +160,39 @@ A value was left on the operand stack and discarded at scope exit (return or \
 falling off the end of a function). Consume it with an operator, `pop` / \
 `drop`, a call, or a binding, or avoid pushing it.",
     },
+    ExplainEntry {
+        code: "W404",
+        title: "never-written mutable",
+        body: "\
+A `mutable` binding of a scalar or enum type was read but never reassigned with \
+`set` or `move`. Prefer `const` unless the binding will be written. Containers, \
+structs, and pointers are not covered: they may mutate without rebinding the name.",
+    },
+    ExplainEntry {
+        code: "W405",
+        title: "redundant copy",
+        body: "\
+A function parameter is marked `copy`, but the parameter type is not heap-backed \
+(`string`, `list`, `hashmap`, struct, union, or array). `copy` deep-copies those \
+heap values into the callee; on scalars, enums, and pointers it has no effect. \
+Omit `copy` unless the parameter needs a deep copy.",
+    },
+    ExplainEntry {
+        code: "W406",
+        title: "ambiguous require path",
+        body: "\
+A dotted `require` path names both a nested module file and a function in the \
+parent module. The function wins (item import). Rename one of them, or require \
+the parent module and call the function through that scope.",
+    },
+    ExplainEntry {
+        code: "W407",
+        title: "unreachable code",
+        body: "\
+A statement appears after divergent control flow (`return`, or both branches of \
+an `if` that return, or `loop.break` / `loop.continue`). It can never run. Remove \
+it or move it before the divergent statement.",
+    },
 ];
 
 /// Normalize a user-supplied code (`e308`, `308`, `E308`, `w401`) to catalog form.

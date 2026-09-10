@@ -163,7 +163,7 @@ my_function private function do
 	# Call form: <args...> <fn> call
 	add function
 		i32
-		i32 copy
+		i32
 	do
 		+ return
 	end with i32

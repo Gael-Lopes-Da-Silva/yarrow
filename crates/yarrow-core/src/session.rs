@@ -238,7 +238,8 @@ impl Session {
     /// Same semantic pipeline as JIT compile (CLIF lowering for analysis), but
     /// uses an object ISA module with no `define_function` / `define_data` /
     /// finalize (`ExecutionMode::Check`, Stage 24).
-    /// On success, [`CheckedProgram::warnings`] may contain Stage 20 warnings;
+    /// On success, [`CheckedProgram::warnings`] may contain Stage 20 / 31 warnings;
+    /// they do not fail the check.
     /// they do not turn the result into `Err`.
     pub fn check_source(&self, source: String) -> Result<CheckedProgram, SessionDiagnostics> {
         let (file, program) = self.parse_source(source)?;
