@@ -82,12 +82,18 @@ struct RequireWarn {
     used: bool,
 }
 
-/// Stage 20: local binding usage for unused-`const` / `mutable` warnings.
+/// Stage 20 / 31: local binding usage for unused and never-written warnings.
 #[derive(Debug, Clone)]
 struct VarWarnInfo {
     span: Span,
     mutability: Mutability,
+    /// True when the binding was read, written, or moved from.
     used: bool,
+    /// True when the binding was the target of `set` or `move` (Stage 31).
+    written: bool,
+    /// True when mutation for this type only happens via `set` / `move`
+    /// (scalars and enums). Heap / pointer bindings may mutate otherwise.
+    set_only: bool,
 }
 
 /// Compile-time ownership of a value on the operand stack (or in a variable).
@@ -166,6 +172,8 @@ struct FnState {
     /// compile-time stack). Reset after each compound statement whose merge
     /// block stays live.
     terminated: bool,
+    /// Stage 31: already emitted W407 for the current terminated region.
+    unreachable_warned: bool,
     /// A statement in this body already failed; remaining statements are still
     /// type-checked for more diagnostics, but IR is abandoned.
     had_error: bool,
@@ -628,6 +636,75 @@ impl Compiler {
                     .with_help(format!("remove `{name}`, or use its value")),
             );
         }
+
+        // Stage 31: `mutable` that is read but never `set` / `move`d into, for
+        // scalar and enum bindings where mutation only happens via those forms
+        // (containers / structs / pointers may mutate without `set`).
+        let mut never_written: Vec<(String, Span)> = st
+            .var_warns
+            .iter()
+            .filter(|(name, info)| {
+                *name != "self"
+                    && info.used
+                    && !info.written
+                    && matches!(info.mutability, Mutability::Mutable)
+                    && info.set_only
+            })
+            .map(|(name, info)| (name.clone(), info.span))
+            .collect();
+        never_written.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, span) in never_written {
+            self.report_warning(
+                Diagnostic::warning(
+                    "W404",
+                    format!("`mutable` `{name}` is never written; prefer `const`"),
+                )
+                .with_primary(span, "never reassigned")
+                .with_help(format!(
+                    "change `{name}` to `const`, or assign with `{name} set`"
+                )),
+            );
+        }
+    }
+
+    fn warn_redundant_copy(&mut self, f: &Function) {
+        for p in &f.params {
+            if !matches!(p.modifier, Some(ParamModifier::Copy)) {
+                continue;
+            }
+            let Ok(ty) = self.resolve_ty(&p.ty) else {
+                continue;
+            };
+            if self.is_heap(ty) {
+                continue;
+            }
+            let span = Span::from_location(p.ty.location);
+            self.report_warning(
+                Diagnostic::warning(
+                    "W405",
+                    format!(
+                        "`copy` has no effect on parameter type {}",
+                        self.format_ty(ty)
+                    ),
+                )
+                .with_primary(span, "redundant `copy`")
+                .with_help(
+                    "`copy` deep-copies heap parameters; omit it for scalars, enums, and pointers",
+                ),
+            );
+        }
+    }
+
+    fn warn_unreachable(&mut self, st: &mut FnState) {
+        if !st.terminated || st.unreachable_warned || st.had_error {
+            return;
+        }
+        st.unreachable_warned = true;
+        self.report_warning(
+            Diagnostic::warning("W407", "unreachable code".to_string())
+                .with_primary(st.current_span, "after divergent control flow")
+                .with_help("remove this statement, or move it before the `return` / break"),
+        );
     }
 
     fn warn_dead_stack(&mut self, st: &FnState, stack: &[Slot]) {
@@ -1039,7 +1116,7 @@ impl Compiler {
     }
 
     fn record_require_warn(&mut self, path: &str, alias: &Option<String>, span: Span) {
-        let Ok((module_path, item)) = self.resolve_require(path) else {
+        let Ok((module_path, item, _)) = self.resolve_require(path) else {
             return;
         };
         self.require_warns.push(RequireWarn {
@@ -1103,7 +1180,23 @@ impl Compiler {
         from_module: Option<&str>,
         out: &mut Vec<RequiredModule>,
     ) -> CResult<()> {
-        let (module_path, item) = self.resolve_require(path)?;
+        let (module_path, item, ambiguous) = self.resolve_require(path)?;
+        if ambiguous {
+            let item_name = item.as_deref().unwrap_or("?");
+            let parent = module_path.as_str();
+            self.report_warning(
+                Diagnostic::warning(
+                    "W406",
+                    format!(
+                        "`{path}` is both a module and function `{item_name}` of `{parent}`; importing the function"
+                    ),
+                )
+                .with_primary(span, "ambiguous require path")
+                .with_help(format!(
+                    "import `{parent}` and call `{item_name}`, or rename the nested module / function so the path is unique"
+                )),
+            );
+        }
         if let Some(existing_item) = self.loaded.get(&module_path) {
             // Already loaded. If the previous import was only an item and this
             // one imports the whole module, widen the existing entry.
@@ -1167,9 +1260,9 @@ impl Compiler {
 
     /// Resolve a `require` path per rule 1 of the spec: `a.b.c` first tries
     /// module `a.b`; if it defines a function `c`, only `c` is imported.
-    /// Otherwise the full path is a module file. Warns (function wins) when
-    /// both a module file and the function exist.
-    fn resolve_require(&self, path: &str) -> CResult<(String, Option<String>)> {
+    /// Otherwise the full path is a module file. When both a module file and
+    /// the function exist, the function wins and the caller should emit W406.
+    fn resolve_require(&self, path: &str) -> CResult<(String, Option<String>, bool)> {
         if let Some((parent, last)) = path.rsplit_once('.')
             && let Some(parent_source) = self.loader.try_load(parent)
         {
@@ -1180,16 +1273,11 @@ impl Compiler {
                 .iter()
                 .any(|i| matches!(&i.kind, StmtKind::Function(f) if f.name == last))
             {
-                if self.loader.try_load(path).is_some() {
-                    eprintln!(
-                        "warning: '{}' is both a module and function '{}' of '{}'; importing the function",
-                        path, last, parent
-                    );
-                }
-                return Ok((parent.to_string(), Some(last.to_string())));
+                let ambiguous = self.loader.try_load(path).is_some();
+                return Ok((parent.to_string(), Some(last.to_string()), ambiguous));
             }
         }
-        Ok((path.to_string(), None))
+        Ok((path.to_string(), None, false))
     }
 
     /// Expose a loaded module's functions under their alias or plain names.
@@ -2269,6 +2357,7 @@ impl Compiler {
             registered_descs: std::collections::HashSet::new(),
             registered_unions: std::collections::HashSet::new(),
             terminated: false,
+            unreachable_warned: false,
             had_error: false,
             local_funcs,
             current_span: Span::default(),
@@ -2358,6 +2447,8 @@ impl Compiler {
             st.vars.insert("self".to_string(), (var, *t, own));
         }
 
+        self.warn_redundant_copy(f);
+
         self.compile_body(&mut b, &mut st, &mut stack, &f.body)?;
 
         if !st.had_error {
@@ -2385,7 +2476,18 @@ impl Compiler {
             self.module.clear_context(&mut ctx);
             return Ok(());
         } else if st.terminated {
-            // The block is dead; nothing left to emit.
+            // Dead block after `return` / break (may hold unreachable stmts for
+            // W407); Cranelift still requires a terminator.
+            if let Some(block) = b.current_block() {
+                let has_terminator = b
+                    .func
+                    .layout
+                    .last_inst(block)
+                    .is_some_and(|inst| b.func.dfg.insts[inst].opcode().is_terminator());
+                if !has_terminator {
+                    b.ins().trap(TrapCode::unwrap_user(2));
+                }
+            }
         } else if st.error_value.is_some() {
             let vals = self.pop_return_values(&mut b, &mut st, &mut stack)?;
             if !st.had_error {
@@ -2457,6 +2559,8 @@ impl Compiler {
                 st.had_error = true;
                 break;
             }
+            st.current_span = s.span;
+            self.warn_unreachable(st);
             match self.compile_stmt(b, st, stack, s) {
                 Ok(()) => {}
                 Err(e) => {
@@ -2483,6 +2587,7 @@ impl Compiler {
             StmtKind::Expr(e) => {
                 if self.emit_loop_control(b, st, e)? {
                     // `loop.break` / `loop.continue` terminate this block.
+                    st.terminated = true;
                 } else {
                     self.compile_expr(b, st, stack, e)?;
                 }
@@ -2747,6 +2852,8 @@ impl Compiler {
                             span: s.span,
                             mutability: *mutability,
                             used: false,
+                            written: false,
+                            set_only: Self::is_set_only_mutable(t),
                         },
                     );
                 }
@@ -2760,6 +2867,7 @@ impl Compiler {
                     self.require_not_moved_var(st, name)?;
                     if let Some(info) = st.var_warns.get_mut(name) {
                         info.used = true;
+                        info.written = true;
                     }
                     let (var, t, _old_own) = st.vars.get(name).cloned().ok_or_else(|| {
                         CompileError::new(
@@ -3759,6 +3867,32 @@ impl Compiler {
         )
     }
 
+    /// Scalar / enum bindings where the only safe mutation form is `set` or
+    /// `move` (Stage 31 W404). Pointers, structs, and containers can change
+    /// without rebinding the name.
+    fn is_set_only_mutable(ty: Ty) -> bool {
+        matches!(
+            ty,
+            Ty::Bool
+                | Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::I128
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::U64
+                | Ty::U128
+                | Ty::Rune
+                | Ty::F16
+                | Ty::F32
+                | Ty::F64
+                | Ty::F128
+                | Ty::Enum(_)
+        )
+    }
+
     /// Register a freshly-created heap handle as owned by the function.
     fn claim(&mut self, st: &mut FnState, value: Value, ty: Ty) {
         if self.is_heap(ty) {
@@ -4083,6 +4217,7 @@ impl Compiler {
         b.switch_to_block(then_blk);
         *stack = pre.clone();
         st.terminated = false;
+        st.unreachable_warned = false;
         self.compile_body(b, st, stack, then_branch)?;
         let then_terminated = st.terminated;
         let then_stack = stack.clone();
@@ -4115,6 +4250,7 @@ impl Compiler {
         b.switch_to_block(else_blk);
         *stack = pre.clone();
         st.terminated = false;
+        st.unreachable_warned = false;
         self.compile_body(b, st, stack, else_branch)?;
         let else_terminated = st.terminated;
         let else_stack = stack.clone();
@@ -4171,6 +4307,7 @@ impl Compiler {
 
         b.switch_to_block(merge);
         st.terminated = false;
+        st.unreachable_warned = false;
         *stack = pre;
         for (i, ty) in merge_tys.iter().enumerate() {
             stack.push(Slot {
@@ -4373,6 +4510,8 @@ impl Compiler {
 
             b.switch_to_block(body_blks[i]);
             *stack = sub_stack.clone();
+            st.terminated = false;
+            st.unreachable_warned = false;
             let mut case_ref: Option<Slot> = None;
             if let Some(mt) = case_member {
                 // Push the active member as a borrow reference: same physical
@@ -4429,6 +4568,8 @@ impl Compiler {
 
         b.switch_to_block(else_blk);
         *stack = sub_stack.clone();
+        st.terminated = false;
+        st.unreachable_warned = false;
         self.compile_body(b, st, stack, else_branch)?;
         if stack.len() < sub_stack.len() {
             return Err(CompileError::new(
@@ -6165,9 +6306,8 @@ impl Compiler {
         })?;
         if let Some(info) = st.var_warns.get_mut(target) {
             info.used = true;
+            info.written = true;
         }
-        // Type-check the transfer (exact type match or a valid coercion).
-        coerce(b, src.value, src.ty, ty, self.ptr_type, st.current_span)?;
         // Drop the value the target currently owns (the runtime guards double
         // frees), then rebind it to the source's storage.
         if self.is_heap(ty) {

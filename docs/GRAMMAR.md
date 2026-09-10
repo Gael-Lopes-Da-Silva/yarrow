@@ -178,7 +178,7 @@ my_function private function do
 	# Call form: <args...> <fn> call
 	add function
 		i32          # first param: moved in; implicit coercion allowed
-		i32 copy     # second param: deep-copied into the local stack
+		i32          # second param (use `T copy` only for heap deep-copy)
 	do
 		# Stack on entry: [<i32>, <i32>]  (deep → shallow)
 		+

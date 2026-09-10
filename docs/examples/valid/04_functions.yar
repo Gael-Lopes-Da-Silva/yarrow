@@ -1,11 +1,11 @@
-# Nested function, parameter move vs copy, and call.
+# Nested function, parameters, and call.
 
 "std.io" io require
 
 demo function do
 	add function
 		i32
-		i32 copy
+		i32
 	do
 		+ return
 	end with i32

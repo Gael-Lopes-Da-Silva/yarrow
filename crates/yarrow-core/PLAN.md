@@ -25,7 +25,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | ----------- | ---------------------------------------------------------------------------------------------------------- |
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                      |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
-| Warnings    | `W401` / `W402` / `W403` (unused binding / require / dead stack); `CheckedProgram::warnings`               |
+| Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings` |
 | Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30) |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel`; cross triple object emit (`x86_64` / `aarch64` linux-gnu) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
@@ -44,7 +44,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | AOT         | Cross link needs matching archive + CRT / linker emulation; musl / Mach-O / Windows later (Stages 33–34)     |
 | Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity (Stage 32) |
-| Warnings    | Only unused / dead-stack; more lints later (Stage 31)                                                         |
+| Warnings    | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later |
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
 | LSP assist  | Typed-at-span via `type_at`; no require-path index API yet (navigation stays LSP AST)                      |
@@ -54,7 +54,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 ## Next (Phase G)
 
-Focus: library APIs that unblock LSP hover (Stage 30 done), then lints and interpreter corpus growth, then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
+Focus: interpreter corpus growth (Stage 32), then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
@@ -84,7 +84,7 @@ Unblocks [`yarrow-lsp` Stage 9](../yarrow-lsp/PLAN.md) typed hover / inlay. Toda
 
 ---
 
-### Stage 31 - Richer warning / lint catalog
+### Stage 31 - Richer warning / lint catalog ✅
 
 Extend beyond `W401`–`W403` without turning warnings into hard errors.
 
@@ -94,6 +94,8 @@ Extend beyond `W401`–`W403` without turning warnings into hard errors.
 4. Document codes in the diagnostics explain table / RUNTIME warnings blurb if one exists; do not invent style-guide-only nits that belong in `yarrow-fmt`.
 
 **Gate:** new warning fixtures check successfully and surface the new codes via `CheckedProgram::warnings`. Existing `valid/**` / `invalid/**` gates unchanged. `cargo clippy` green.
+
+**Done:** `W404` never-written scalar/`enum` `mutable`; `W405` redundant `copy` on non-heap params; `W406` require item-vs-module ambiguity (replaces `eprintln`); `W407` unreachable after divergent flow. Fixtures `02`–`04` plus `examples/check_warnings` gate. Empty `match` arm left for a later lint pass.
 
 ### Stage 32 - Interpreter corpus toward JIT parity
 

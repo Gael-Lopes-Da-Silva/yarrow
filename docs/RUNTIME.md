@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stage-30).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stage-30), [Warnings](#warnings-stage-20--31).
 
 ## Execution model
 
@@ -349,7 +349,7 @@ Built-in and std error members (e.g. `error.OUT_OF_MEMORY`) are comparable tags 
 
 1. **Std**: dotted path matches an embedded `std.*` module (from `lib/std/**/*.yar` at build time).
 2. **User**: under each search path, `"a.b.c"` → `a/b/c.yar`. The CLI adds the source file’s directory.
-3. **Item import**: parent-first: `"a.b.c" require` may mean function `c` in module `a.b` rather than a nested module file; function wins over module when ambiguous (with a warning).
+3. **Item import**: parent-first: `"a.b.c" require` may mean function `c` in module `a.b` rather than a nested module file; function wins over module when ambiguous (`W406`).
 
 Imported modules are parsed and compiled into the **same** JIT module as the program, so `require` imports code, not only symbols.
 
@@ -405,6 +405,22 @@ After a successful `Session::check_source`, [`CheckedProgram`](../crates/yarrow-
 | `TypeProbe::signature` | Function summary plus `stack: […] → […]` when on a function name |
 
 Misses (whitespace, comments, unindexed code) return `None`. Required modules are not indexed into the root probe; leave cross-file navigation to the LSP AST walk. Example: on `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` on `answer` yields `ty = Some("i32")`.
+
+## Warnings (Stage 20 / 31)
+
+Successful `check_source` / `compile` may still populate [`CheckedProgram::warnings`](../crates/yarrow-core/src/session.rs). Warnings never fail the Session `Result`. Codes are explained via `explain_code` / CLI `yarrow explain`.
+
+| Code | Meaning |
+| ---- | ------- |
+| `W401` | Unused `const` / `mutable` / `static` binding |
+| `W402` | Unused `require` |
+| `W403` | Value left on the stack and discarded at scope exit |
+| `W404` | Scalar / enum `mutable` read but never `set` / `move`d into |
+| `W405` | Redundant parameter `copy` on a non-heap type |
+| `W406` | `require` path is both a nested module and a parent-module function (function wins) |
+| `W407` | Statement after divergent control flow (`return`, both-`if` returns, `loop.break` / `continue`) |
+
+Fixtures: [`docs/examples/warnings/`](examples/warnings/). Gate: `cargo run -p yarrow_core --example check_warnings`.
 
 ## Interaction with memory and types
 

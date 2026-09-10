@@ -4,7 +4,7 @@ Language illustrations for Yarrow. They follow [`GRAMMAR.md`](../GRAMMAR.md) and
 [`SYNTAX.md`](../SYNTAX.md), not the current compiler snapshot. The implementation
 is still catching up; treat these as the intended language shape.
 
-Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
+Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
 
 ## How to read them
 
@@ -65,7 +65,13 @@ Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`
 
 | File                                                         | Expected warnings                                      |
 | ------------------------------------------------------------ | ------------------------------------------------------ |
-| [`warnings/01_unused.yar`](warnings/01_unused.yar)           | unused `const`, unused `require`, dead stack value     |
+| [`warnings/01_unused.yar`](warnings/01_unused.yar)           | `W401` unused `const`, `W402` unused `require`, `W403` dead stack |
+| [`warnings/02_never_written_and_copy.yar`](warnings/02_never_written_and_copy.yar) | `W404` never-written `mutable`, `W405` redundant `copy` |
+| [`warnings/03_unreachable.yar`](warnings/03_unreachable.yar) | `W407` unreachable after `return`                      |
+| [`warnings/04_require_ambiguous.yar`](warnings/04_require_ambiguous.yar) | `W406` item-vs-module require ambiguity         |
+
+Gate: `cargo run -p yarrow_core --example check_warnings`.
+
 
 ## Related docs
 
