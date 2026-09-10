@@ -3,7 +3,7 @@
 //! Invokes a system linker (`ld` / `lld`). Does **not** use `cc` / `gcc` /
 //! `clang` as a compile or link driver. CRT object paths may be discovered via
 //! `cc -print-file-name` when present (path lookup only), or via
-//! `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR` for cross targets (Stage 26).
+//! `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR` for cross targets (Stage 26 / 33).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,17 +64,22 @@ pub fn link_executable(
 ) -> Result<Vec<u8>, LinkError> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
-        if !target.is_linux_gnu() {
-            return Err(LinkError::new(
-                "E397",
-                format!(
-                    "AOT executable link does not support target '{}'",
-                    target.as_str()
-                ),
-            )
-            .with_help("use a linux-gnu triple (x86_64 or aarch64) or emit an object only"));
+        if target.is_linux_gnu() {
+            return link_linux_gnu(object_bytes, archive_bytes, target);
         }
-        link_linux_gnu(object_bytes, archive_bytes, target)
+        if target.is_linux_musl() {
+            return link_linux_musl(object_bytes, archive_bytes, target);
+        }
+        Err(LinkError::new(
+            "E397",
+            format!(
+                "AOT executable link does not support target '{}'",
+                target.as_str()
+            ),
+        )
+        .with_help(
+            "use a linux-gnu or linux-musl triple (x86_64 or aarch64) or emit an object only",
+        ))
     }
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
@@ -100,7 +105,7 @@ fn link_linux_gnu(
         )
     })?;
     let linker = find_linker()?;
-    let crt = CrtFiles::discover(target)?;
+    let crt = GnuCrtFiles::discover(target)?;
     let work = WorkDir::create()?;
 
     let obj_path = work.path.join("program.o");
@@ -146,6 +151,72 @@ fn link_linux_gnu(
     cmd.arg(&crt.crtend);
     cmd.arg(&crt.crtn);
 
+    run_linker(cmd, &linker, &out_path, target, emulation)
+}
+
+/// Static-friendly musl link (Stage 33). Prefer `-static` with musl CRT + `libc.a`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn link_linux_musl(
+    object_bytes: &[u8],
+    archive_bytes: &[u8],
+    target: &TargetTriple,
+) -> Result<Vec<u8>, LinkError> {
+    let emulation = target.elf_emulation().ok_or_else(|| {
+        LinkError::new(
+            "E397",
+            format!("no ELF linker emulation for '{}'", target.as_str()),
+        )
+    })?;
+    let linker = find_linker()?;
+    let crt = MuslCrtFiles::discover(target)?;
+    let work = WorkDir::create()?;
+
+    let obj_path = work.path.join("program.o");
+    let arch_path = work.path.join("libyarrow_runtime_aot.a");
+    let out_path = work.path.join("a.out");
+    fs::write(&obj_path, object_bytes)
+        .map_err(|e| LinkError::new("E395", format!("failed to write temporary object: {e}")))?;
+    fs::write(&arch_path, archive_bytes).map_err(|e| {
+        LinkError::new(
+            "E395",
+            format!("failed to write temporary runtime archive: {e}"),
+        )
+    })?;
+
+    let mut cmd = Command::new(&linker);
+    cmd.arg("-o").arg(&out_path);
+    cmd.arg("-static");
+    cmd.arg("--eh-frame-hdr");
+    cmd.arg("-m").arg(emulation);
+    cmd.arg(&crt.crt1);
+    cmd.arg(&crt.crti);
+    cmd.arg(&obj_path);
+    cmd.arg("--whole-archive");
+    cmd.arg(&arch_path);
+    cmd.arg("--no-whole-archive");
+    for dir in &crt.lib_dirs {
+        cmd.arg("-L").arg(dir);
+    }
+    cmd.arg("-lpthread");
+    cmd.arg("-ldl");
+    cmd.arg("-lm");
+    cmd.arg("-lc");
+    if let Some(libgcc) = &crt.libgcc_a {
+        cmd.arg(libgcc);
+    }
+    cmd.arg(&crt.crtn);
+
+    run_linker(cmd, &linker, &out_path, target, emulation)
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn run_linker(
+    mut cmd: Command,
+    linker: &Path,
+    out_path: &Path,
+    target: &TargetTriple,
+    emulation: &str,
+) -> Result<Vec<u8>, LinkError> {
     let output = cmd.output().map_err(|e| {
         LinkError::new(
             "E395",
@@ -164,10 +235,15 @@ fn link_linux_gnu(
         } else {
             format!("linker exited with status {}", output.status)
         };
-        // Cross link without the right ld emulation / CRT often lands here.
         let help = if target.is_host() {
             "need a system linker (`ld` / `lld`) and host libc/CRT; not a C toolchain compile step"
                 .to_string()
+        } else if target.is_linux_musl() {
+            format!(
+                "musl link for '{}' needs matching CRT / libc.a (set YARROW_AOT_SYSROOT or \
+                 YARROW_AOT_CRT_DIR to a musl prefix; see docs/RUNTIME.md)",
+                target.as_str()
+            )
         } else {
             format!(
                 "cross-link for '{}' needs a linker that supports `-m {emulation}` and matching CRT \
@@ -184,7 +260,7 @@ fn link_linux_gnu(
             )));
     }
 
-    let bytes = fs::read(&out_path)
+    let bytes = fs::read(out_path)
         .map_err(|e| LinkError::new("E395", format!("failed to read linked executable: {e}")))?;
     if bytes.is_empty() {
         return Err(LinkError::new(
@@ -223,7 +299,7 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-struct CrtFiles {
+struct GnuCrtFiles {
     scrt1: PathBuf,
     crti: PathBuf,
     crtn: PathBuf,
@@ -235,7 +311,7 @@ struct CrtFiles {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-impl CrtFiles {
+impl GnuCrtFiles {
     fn discover(target: &TargetTriple) -> Result<Self, LinkError> {
         let dyn_name = target.dynamic_linker_name().ok_or_else(|| {
             LinkError::new(
@@ -259,35 +335,21 @@ impl CrtFiles {
             });
 
         let mut lib_dirs = Vec::new();
-        for p in [
-            &scrt1,
-            &crti,
-            &crtbegin,
-            &dynamic_linker,
-            libgcc_a.as_ref().unwrap_or(&scrt1),
-        ] {
-            if let Some(dir) = p.parent() {
-                let dir = dir.to_path_buf();
-                if !lib_dirs.iter().any(|d| d == &dir) {
-                    lib_dirs.push(dir);
-                }
-            }
+        collect_lib_dirs(
+            &mut lib_dirs,
+            [
+                &scrt1,
+                &crti,
+                &crtbegin,
+                &dynamic_linker,
+                libgcc_a.as_ref().unwrap_or(&scrt1),
+            ],
+        );
+        if let Some(p) = print_file_name(target, "libgcc_s.so").filter(|p| p.is_file()) {
+            push_parent(&mut lib_dirs, &p);
         }
-        if let Some(p) = print_file_name(target, "libgcc_s.so").filter(|p| p.is_file())
-            && let Some(dir) = p.parent()
-        {
-            let dir = dir.to_path_buf();
-            if !lib_dirs.iter().any(|d| d == &dir) {
-                lib_dirs.push(dir);
-            }
-        }
-        if let Some(p) = print_file_name(target, "libc.so").filter(|p| p.is_file())
-            && let Some(dir) = p.parent()
-        {
-            let dir = dir.to_path_buf();
-            if !lib_dirs.iter().any(|d| d == &dir) {
-                lib_dirs.push(dir);
-            }
+        if let Some(p) = print_file_name(target, "libc.so").filter(|p| p.is_file()) {
+            push_parent(&mut lib_dirs, &p);
         }
 
         Ok(Self {
@@ -300,6 +362,62 @@ impl CrtFiles {
             libgcc_a,
             lib_dirs,
         })
+    }
+}
+
+/// Musl CRT: no gcc `crtbegin` / `crtend`; static link uses `crt1` + `libc.a`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+struct MuslCrtFiles {
+    crt1: PathBuf,
+    crti: PathBuf,
+    crtn: PathBuf,
+    libgcc_a: Option<PathBuf>,
+    lib_dirs: Vec<PathBuf>,
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+impl MuslCrtFiles {
+    fn discover(target: &TargetTriple) -> Result<Self, LinkError> {
+        let crt1 = crt_file(target, "crt1.o", &["Scrt1.o"])?;
+        let crti = crt_file(target, "crti.o", &[])?;
+        let crtn = crt_file(target, "crtn.o", &[])?;
+        // libc.a must exist for `-static -lc`.
+        let libc_a = crt_file(target, "libc.a", &[])?;
+        let libgcc_a = print_file_name(target, "libgcc.a").filter(|p| p.is_file());
+
+        let mut lib_dirs = Vec::new();
+        collect_lib_dirs(
+            &mut lib_dirs,
+            [&crt1, &crti, &libc_a, libgcc_a.as_ref().unwrap_or(&crt1)],
+        );
+        if let Some(p) = print_file_name(target, "libc.a").filter(|p| p.is_file()) {
+            push_parent(&mut lib_dirs, &p);
+        }
+
+        Ok(Self {
+            crt1,
+            crti,
+            crtn,
+            libgcc_a,
+            lib_dirs,
+        })
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn collect_lib_dirs<'a>(lib_dirs: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = &'a PathBuf>) {
+    for p in paths {
+        push_parent(lib_dirs, p);
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn push_parent(lib_dirs: &mut Vec<PathBuf>, path: &Path) {
+    if let Some(dir) = path.parent() {
+        let dir = dir.to_path_buf();
+        if !lib_dirs.iter().any(|d| d == &dir) {
+            lib_dirs.push(dir);
+        }
     }
 }
 
@@ -318,6 +436,13 @@ fn crt_file(target: &TargetTriple, name: &str, alts: &[&str]) -> Result<PathBuf,
     let cross_hint = if target.is_host() {
         "need host libc/CRT objects for `ld` (on NixOS: a stdenv with glibc). A C compiler is only used to locate paths, not to compile"
             .to_string()
+    } else if target.is_linux_musl() {
+        format!(
+            "missing musl CRT for '{}'. Set YARROW_AOT_SYSROOT to a musl sysroot/prefix containing \
+             lib/{}, or YARROW_AOT_CRT_DIR to that lib directory (see docs/RUNTIME.md)",
+            target.as_str(),
+            tried.join(" / ")
+        )
     } else {
         format!(
             "missing CRT for cross target '{}'. Set YARROW_AOT_SYSROOT to a sysroot containing usr/lib, \
@@ -354,6 +479,11 @@ fn print_file_name(target: &TargetTriple, name: &str) -> Option<PathBuf> {
             "aarch64-linux-gnu-gcc".into(),
             "aarch64-unknown-linux-gnu-gcc".into(),
             "x86_64-linux-gnu-gcc".into(),
+            "musl-gcc".into(),
+            "x86_64-linux-musl-gcc".into(),
+            "x86_64-unknown-linux-musl-gcc".into(),
+            "aarch64-linux-musl-gcc".into(),
+            "aarch64-unknown-linux-musl-gcc".into(),
         ] {
             drivers.push((prefix, Vec::new()));
         }

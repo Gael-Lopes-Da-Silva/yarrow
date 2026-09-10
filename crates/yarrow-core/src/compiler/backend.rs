@@ -77,7 +77,7 @@ impl CodeModule {
                 "E397",
             )
             .with_help(
-                "use a supported linux-gnu triple (see CompileOptions::target / docs/RUNTIME.md)",
+                "use a supported linux-gnu or linux-musl triple (see CompileOptions::target / docs/RUNTIME.md)",
             )
         })?;
         let isa = isa_builder

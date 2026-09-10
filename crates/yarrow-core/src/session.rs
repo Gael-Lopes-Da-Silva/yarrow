@@ -78,10 +78,11 @@ pub struct CompileOptions {
     /// Default `true`: AOT artifacts include compilation units and function
     /// names / line mappings when spans exist.
     pub debug_info: bool,
-    /// Object / executable target triple (Stage 26).
+    /// Object / executable target triple (Stage 26 / 33).
     ///
-    /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu` for a
-    /// non-host object. JIT rejects non-host triples (`E397`).
+    /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu` or
+    /// `x86_64-unknown-linux-musl` for a non-host object. JIT rejects non-host
+    /// triples (`E397`).
     pub target: Option<crate::target::TargetTriple>,
 }
 

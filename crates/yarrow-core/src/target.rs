@@ -1,8 +1,10 @@
-//! AOT / object target triples (Stage 26).
+//! AOT / object target triples (Stage 26 / 33).
 //!
-//! Host linux-gnu remains the default. The first additional triple is the other
-//! linux-gnu architecture among `x86_64` and `aarch64`. Unsupported triples
-//! fail with diagnostic `E397` (no panic).
+//! Host linux-gnu remains the default. Supported cross classes:
+//! - the other linux-gnu architecture among `x86_64` and `aarch64` (Stage 26)
+//! - `*-linux-musl` for those same arches (Stage 33, static-friendly)
+//!
+//! Unsupported triples fail with diagnostic `E397` (no panic).
 
 use std::fmt;
 use std::str::FromStr;
@@ -12,6 +14,9 @@ use target_lexicon::{Architecture, Environment, OperatingSystem, Triple};
 
 /// Documented Stage 26 AOT triples (host plus the other linux-gnu arch).
 const KNOWN_LINUX_GNU: &[&str] = &["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+
+/// Documented Stage 33 musl triples (same arches as gnu).
+const KNOWN_LINUX_MUSL: &[&str] = &["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
 
 /// Canonical target for object emit and executable link.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -45,7 +50,7 @@ impl TargetTriple {
                 trimmed,
                 format!(
                     "unsupported AOT target '{trimmed}' (supported: {})",
-                    KNOWN_LINUX_GNU.join(", ")
+                    supported_triple_names().join(", ")
                 ),
             ));
         }
@@ -73,9 +78,19 @@ impl TargetTriple {
         self.triple == Triple::host()
     }
 
-    /// Linux GNU userland targets we link with `ld` / `lld`.
+    /// Linux GNU userland targets we link with `ld` / `lld` (dynamic glibc).
     pub fn is_linux_gnu(&self) -> bool {
-        matches_linux_gnu(&self.triple)
+        matches_linux_env(&self.triple, Environment::Gnu)
+    }
+
+    /// Linux musl userland targets (Stage 33; static-friendly ELF).
+    pub fn is_linux_musl(&self) -> bool {
+        matches_linux_env(&self.triple, Environment::Musl)
+    }
+
+    /// Linux ELF AOT targets (gnu or musl).
+    pub fn is_linux_elf(&self) -> bool {
+        self.is_linux_gnu() || self.is_linux_musl()
     }
 
     /// Whether Yarrow AOT currently accepts this triple.
@@ -83,9 +98,10 @@ impl TargetTriple {
         if self.is_host() {
             // Host path stays available wherever Stage 19 already linked.
             return cfg!(all(target_os = "linux", target_env = "gnu"))
-                || matches_linux_gnu(&self.triple);
+                || matches_linux_env(&self.triple, Environment::Gnu)
+                || matches_linux_env(&self.triple, Environment::Musl);
         }
-        matches_linux_gnu(&self.triple)
+        self.is_linux_elf()
     }
 
     /// Cranelift ISA builder for this triple.
@@ -104,9 +120,11 @@ impl TargetTriple {
 
     /// Dynamic linker soname used when locating CRT for this triple.
     pub fn dynamic_linker_name(&self) -> Option<&'static str> {
-        match self.triple.architecture {
-            Architecture::X86_64 => Some("ld-linux-x86-64.so.2"),
-            Architecture::Aarch64(_) => Some("ld-linux-aarch64.so.1"),
+        match (self.triple.environment, self.triple.architecture) {
+            (Environment::Gnu, Architecture::X86_64) => Some("ld-linux-x86-64.so.2"),
+            (Environment::Gnu, Architecture::Aarch64(_)) => Some("ld-linux-aarch64.so.1"),
+            (Environment::Musl, Architecture::X86_64) => Some("ld-musl-x86_64.so.1"),
+            (Environment::Musl, Architecture::Aarch64(_)) => Some("ld-musl-aarch64.so.1"),
             _ => None,
         }
     }
@@ -117,9 +135,9 @@ impl TargetTriple {
     }
 }
 
-fn matches_linux_gnu(triple: &Triple) -> bool {
+fn matches_linux_env(triple: &Triple, env: Environment) -> bool {
     triple.operating_system == OperatingSystem::Linux
-        && triple.environment == Environment::Gnu
+        && triple.environment == env
         && matches!(
             triple.architecture,
             Architecture::X86_64 | Architecture::Aarch64(_)
@@ -162,14 +180,22 @@ impl fmt::Display for TargetError {
 
 impl std::error::Error for TargetError {}
 
-/// Triples documented as supported for object emit (host + first cross).
+/// Canonical names listed in `E397` / docs (gnu then musl).
+pub fn supported_triple_names() -> Vec<&'static str> {
+    let mut names = Vec::with_capacity(KNOWN_LINUX_GNU.len() + KNOWN_LINUX_MUSL.len());
+    names.extend_from_slice(KNOWN_LINUX_GNU);
+    names.extend_from_slice(KNOWN_LINUX_MUSL);
+    names
+}
+
+/// Triples documented as supported for object emit (host + gnu/musl matrix).
 pub fn supported_triples() -> Vec<TargetTriple> {
     let mut out = Vec::new();
     let host = TargetTriple::host();
     if host.is_supported() {
         out.push(host);
     }
-    for name in KNOWN_LINUX_GNU {
+    for name in supported_triple_names() {
         if let Ok(t) = TargetTriple::parse(name)
             && !out.iter().any(|x| x == &t)
         {

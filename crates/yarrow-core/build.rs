@@ -2,7 +2,8 @@
 //!
 //! - Embeds the std library under `lib/std/` into the binary.
 //! - Builds / records AOT runtime static archives for the host and, when the
-//!   Rust target is installed, the Stage 26 cross triple(s).
+//!   Rust target is installed, Stage 26 / 33 cross triples (other linux-gnu
+//!   arch + host-arch linux-musl).
 
 use std::env;
 use std::fs;
@@ -60,7 +61,7 @@ fn record_aot_runtime_archives() {
         host_archive.display()
     );
 
-    // Optional cross archives: other linux-gnu arch when that Rust target exists.
+    // Optional cross archives: other linux-gnu arch + host-arch musl when installed.
     let mut table = format!("{host_target}={}", host_archive.display());
     let cross_enabled = env::var_os("YARROW_BUILD_CROSS_AOT").is_some_and(|v| v != "0");
     if cross_enabled {
@@ -90,11 +91,19 @@ fn record_aot_runtime_archives() {
 }
 
 fn cross_triples_for(host: &str) -> Vec<&'static str> {
-    // Stage 26: one additional linux-gnu arch.
+    // Stage 26: other linux-gnu arch. Stage 33: host-arch linux-musl.
     if host.starts_with("x86_64-") && host.contains("linux") && host.contains("gnu") {
-        vec!["aarch64-unknown-linux-gnu"]
+        vec![
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+        ]
     } else if host.starts_with("aarch64-") && host.contains("linux") && host.contains("gnu") {
-        vec!["x86_64-unknown-linux-gnu"]
+        vec![
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+        ]
     } else {
         Vec::new()
     }

@@ -27,7 +27,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings` |
 | Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30) |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel`; cross triple object emit (`x86_64` / `aarch64` linux-gnu) |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (`x86_64` / `aarch64` linux-gnu and linux-musl) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393 |
@@ -42,7 +42,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | Cross link needs matching archive + CRT / linker emulation; musl / Mach-O / Windows later (Stages 33–34)     |
+| AOT         | Cross link needs matching archive + CRT / linker emulation; Mach-O / Windows later (Stage 34)               |
 | Interpret   | No regions / defer, unsafe / raw pointers, field `set`, or full `valid/**` parity (remaining E393 after Stage 32) |
 | Warnings    | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later |
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
@@ -54,7 +54,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 ## Next (Phase G)
 
-Focus: broader AOT targets (Stage 33+). Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
+Focus: Mach-O / Windows AOT (Stage 34). Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
@@ -110,7 +110,7 @@ Grow past Stage 21 / `E393` so more of `docs/examples/valid/**` interpret with s
 
 **Done:** structs / `implement` / enums; named unions + type-dispatch `match`; lists / hashmaps + `std.list` intrinsics; custom `error`, fallible `|T Err|`, `unwrap`, `handle` + fallback. Gate example `check_interpret`. Still E393: regions / defer, unsafe / pointers, field `set`, remaining `valid/**`.
 
-### Stage 33 - Broader cross-compile matrix (linux)
+### Stage 33 - Broader cross-compile matrix (linux) ✅
 
 After Stage 26’s first non-host linux-gnu arch: widen linux targets before Mach-O / Windows.
 
@@ -120,6 +120,8 @@ After Stage 26’s first non-host linux-gnu arch: widen linux targets before Mac
 4. Update [`docs/RUNTIME.md`](../../docs/RUNTIME.md) Cross-compile section and Known gaps; keep Mach-O / Windows for Stage 34.
 
 **Gate:** documented Session options (or env) produce a non-host object for the new triple; missing pieces fail with stable diagnostics. Existing host + Stage 26 cross path still pass. `cargo clippy` green.
+
+**Done:** `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` accepted for object emit; static musl link when CRT + archive exist (`YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR`); `build.rs` optionally records musl archives under `YARROW_BUILD_CROSS_AOT`; gate example `check_cross`. Mach-O / Windows remain Stage 34.
 
 ### Stage 34 - Mach-O / Windows AOT link
 
