@@ -30,7 +30,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu); DWARF + `OptLevel`; cross triple object emit (`x86_64` / `aarch64` linux-gnu) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
-| Interpret   | Stage 21 subset of `docs/examples/valid/**` (stdout matches JIT); structs / errors / regions still E393    |
+| Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393 |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
 
@@ -43,7 +43,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | AOT         | Cross link needs matching archive + CRT / linker emulation; musl / Mach-O / Windows later (Stages 33–34)     |
-| Interpret   | No structs, unions, regions, unsafe, errors/`unwrap`, lists/maps (E393); not full JIT corpus parity (Stage 32) |
+| Interpret   | No regions / defer, unsafe / raw pointers, field `set`, or full `valid/**` parity (remaining E393 after Stage 32) |
 | Warnings    | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later |
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
 | Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
@@ -54,7 +54,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 ## Next (Phase G)
 
-Focus: interpreter corpus growth (Stage 32), then broader AOT targets. Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
+Focus: broader AOT targets (Stage 33+). Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
@@ -97,7 +97,7 @@ Extend beyond `W401`–`W403` without turning warnings into hard errors.
 
 **Done:** `W404` never-written scalar/`enum` `mutable`; `W405` redundant `copy` on non-heap params; `W406` require item-vs-module ambiguity (replaces `eprintln`); `W407` unreachable after divergent flow. Fixtures `02`–`04` plus `examples/check_warnings` gate. Empty `match` arm left for a later lint pass.
 
-### Stage 32 - Interpreter corpus toward JIT parity
+### Stage 32 - Interpreter corpus toward JIT parity ✅
 
 Grow past Stage 21 / `E393` so more of `docs/examples/valid/**` interpret with stdout matching JIT `run --target jit`.
 
@@ -107,6 +107,8 @@ Grow past Stage 21 / `E393` so more of `docs/examples/valid/**` interpret with s
 4. Coordinate with CLI `interpret` / REPL only if a new Session knob is required; default remains `interpret_source`.
 
 **Gate:** at least `06_structs_and_enums.yar`, `07_unions.yar`, `10_errors.yar`, and `13_containers.yar` interpret with stdout matching JIT. Remaining E393 surface listed in Known gaps / module docs. JIT and object gates unchanged.
+
+**Done:** structs / `implement` / enums; named unions + type-dispatch `match`; lists / hashmaps + `std.list` intrinsics; custom `error`, fallible `|T Err|`, `unwrap`, `handle` + fallback. Gate example `check_interpret`. Still E393: regions / defer, unsafe / pointers, field `set`, remaining `valid/**`.
 
 ### Stage 33 - Broader cross-compile matrix (linux)
 

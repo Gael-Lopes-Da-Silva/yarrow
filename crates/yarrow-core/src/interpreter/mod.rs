@@ -1,11 +1,11 @@
-//! AST interpreter for checked Yarrow programs (Stages 13b / 21).
+//! AST interpreter for checked Yarrow programs (Stages 13b / 21 / 32).
 //!
 //! Design choice: **tree-walk** the checked AST with an explicit operand stack,
-//! calling into [`crate::runtime`] for heap strings and printing. A stack
-//! bytecode VM can replace this later without changing the Session surface
-//! (`interpret_source` / [`EvalContext`]).
+//! calling into [`crate::runtime`] for heap strings, lists, maps, structs, and
+//! unions. A stack bytecode VM can replace this later without changing the
+//! Session surface (`interpret_source` / [`EvalContext`]).
 //!
-//! ## Corpus coverage (Stage 21)
+//! ## Corpus coverage (Stage 32)
 //!
 //! Interprets cleanly (stdout matches JIT `run`):
 //! - `docs/examples/valid/01_hello.yar`
@@ -13,19 +13,19 @@
 //! - `docs/examples/valid/03_variables_and_typeof.yar`
 //! - `docs/examples/valid/04_functions.yar`
 //! - `docs/examples/valid/05_control_flow.yar`
+//! - `docs/examples/valid/06_structs_and_enums.yar`
+//! - `docs/examples/valid/07_unions.yar`
+//! - `docs/examples/valid/10_errors.yar`
 //! - `docs/examples/valid/12_modules.yar`
+//! - `docs/examples/valid/13_containers.yar`
 //!
-//! Supported surface: `require` + module / nested calls, literals, arithmetic /
-//! comparisons / bool ops / shifts, string `~`, stack words, `@print` /
-//! `@print_newline` / `@print_int` / `@print_float`, `@string_len` /
-//! `@string_join` / `@str_len` / `@str_join` / `@str_cmp`, variables / `set`,
-//! `if` / `match` (value) / condition and array `for`, `typeof` / type values,
-//! array literals, `std.loop` `value` / `index`, void `main` and simple scalar /
-//! string returns.
+//! Supported surface: Stage 21 plus structs / `implement` methods / enums,
+//! named unions + type-dispatch `match`, lists / hashmaps + `std.list` /
+//! `std.map` intrinsics, custom `error` types, fallible `|T Err|` calls,
+//! `unwrap`, and `handle` + fallback.
 //!
-//! Still out of scope (clear `E393`): structs / unions / enums as values,
-//! regions / defer, unsafe / pointers, fallible `unwrap` / `handle`, lists /
-//! maps, method calls on structs.
+//! Still out of scope (clear `E393`): regions / defer, unsafe / raw pointers,
+//! field `set`, full `valid/**` parity beyond the Stage 32 gate.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -35,13 +35,19 @@ use crate::compiler::RunResult;
 use crate::compiler::modules::{ModuleLoader, RequiredModule};
 use crate::diagnostics::Span;
 use crate::parser::ast::{
-    BinOp, Expr, Function, MatchCase, MatchCaseKind, Program, StackOp, Stmt, StmtKind, Type,
-    TypeKind, UnOp, Visibility,
+    BinOp, EnumDecl, ErrorDecl, Expr, Function, Implement, MatchCase, MatchCaseKind, Primitive,
+    Program, StackOp, Stmt, StmtKind, StructDecl, Type, TypeKind, UnOp, UnionDecl, Visibility,
 };
 use crate::parser::literals::{decode_float_literal, decode_int_literal, decode_string_literal};
 use crate::parser::parse;
-use crate::runtime::{self, KIND_STRING, free_value};
+use crate::runtime::{
+    self, KIND_LIST, KIND_MAP, KIND_STRING, KIND_STRUCT, KIND_UNION, UNION_PAYLOAD_OFFSET,
+    UNION_TAG_OFFSET, free_value,
+};
 use crate::tokenizer::Tokenizer;
+
+/// Kind tag used for fallible error envelopes on the interpreter stack.
+const KIND_ERROR: u64 = 0x51;
 
 /// Runtime value on the interpreter operand stack / in a local.
 #[derive(Debug, Clone)]
@@ -56,6 +62,11 @@ pub enum Value {
     },
     /// Fixed array (Stage 21 iterable `for`).
     Array(Vec<Value>),
+    /// Host heap handle: struct, union, list, or hashmap (`Slot.kind` selects).
+    Heap {
+        handle: u64,
+        owned: bool,
+    },
 }
 
 impl Value {
@@ -65,6 +76,9 @@ impl Value {
                 handle,
                 owned: true,
             } => free_value(handle, KIND_STRING),
+            Value::Heap { .. } => {
+                // Owned heaps are freed through [`Slot::drop_owned`] (needs kind).
+            }
             Value::Array(elems) => {
                 for e in elems {
                     e.drop_owned();
@@ -80,10 +94,24 @@ impl Value {
                 handle: *handle,
                 owned: false,
             },
+            Value::Heap { handle, .. } => Value::Heap {
+                handle: *handle,
+                owned: false,
+            },
             Value::Array(elems) => {
                 Value::Array(elems.iter().map(|e| e.clone_for_stack()).collect())
             }
             other => other.clone(),
+        }
+    }
+
+    fn as_bits(&self) -> Option<u64> {
+        match self {
+            Value::Int(n) => Some(*n as u64),
+            Value::Bool(b) => Some(u64::from(*b)),
+            Value::Float(f) => Some(f.to_bits()),
+            Value::Str { handle, .. } | Value::Heap { handle, .. } => Some(*handle),
+            Value::Array(_) => None,
         }
     }
 }
@@ -97,7 +125,22 @@ struct Slot {
 
 impl Slot {
     fn drop_owned(self) {
-        self.value.drop_owned();
+        match self.value {
+            Value::Str {
+                handle,
+                owned: true,
+            } => free_value(handle, KIND_STRING),
+            Value::Heap {
+                handle,
+                owned: true,
+            } => free_value(handle, self.kind),
+            Value::Array(elems) => {
+                for e in elems {
+                    e.drop_owned();
+                }
+            }
+            other => other.drop_owned(),
+        }
     }
 }
 
@@ -139,13 +182,45 @@ enum Flow {
     Return,
 }
 
-/// One registered function body (top-level, nested, or from a required module).
+/// One registered function body (top-level, nested, method, or from a module).
 #[derive(Debug, Clone)]
 struct FuncEntry {
-    /// Fully-qualified name (`demo::add`, `std.io::write_line`, `main`).
+    /// Fully-qualified name (`demo::add`, `std.io::write_line`, `Point::distance`).
     fq: String,
     module: Option<String>,
     function: Function,
+    /// True when registered from an `implement` block (binds `self`).
+    is_method: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FieldInfo {
+    name: String,
+    /// Runtime kind of the field value.
+    kind: u64,
+    offset: i32,
+    size: u32,
+}
+
+#[derive(Debug, Clone)]
+struct StructInfo {
+    name: String,
+    fields: Vec<FieldInfo>,
+    size: u32,
+}
+
+#[derive(Debug, Clone)]
+struct UnionInfo {
+    name: String,
+    /// Member type names / primitive tags in declaration order.
+    members: Vec<MemberTy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemberTy {
+    Primitive(u64),
+    Named(String),
+    String,
 }
 
 struct LoopCtx {
@@ -156,6 +231,10 @@ struct LoopCtx {
 struct Frame {
     locals: HashMap<String, Slot>,
     loops: Vec<LoopCtx>,
+    /// Payload type of this frame's fallible `|T Err|` return, when present.
+    error_payload: Option<MemberTy>,
+    /// Set by `unwrap` when propagating an error out of a fallible function.
+    pending_error_return: Option<i64>,
 }
 
 /// Stack-machine interpreter over a checked AST.
@@ -175,6 +254,18 @@ pub struct Interpreter {
     #[allow(dead_code)]
     public_funcs: std::collections::HashSet<String>,
     modules: Vec<RequiredModule>,
+    struct_ids: HashMap<String, u32>,
+    structs: Vec<StructInfo>,
+    enum_ids: HashMap<String, u32>,
+    /// `(enum_name, member_name)` → ordinal value.
+    enum_members: HashMap<(String, String), i64>,
+    union_ids: HashMap<String, u32>,
+    unions: Vec<UnionInfo>,
+    error_type_ids: HashMap<String, u32>,
+    /// Error type id → `(member_name, tag)`.
+    error_types: Vec<(String, Vec<(String, u32)>)>,
+    /// Interned error tags (`AppError.NOT_FOUND` → 1..).
+    error_tags: HashMap<String, u32>,
 }
 
 /// REPL-oriented wrapper around [`Interpreter`] (Stage 13b surface).
@@ -225,6 +316,15 @@ impl Interpreter {
             extra_plain_items: Vec::new(),
             public_funcs: std::collections::HashSet::new(),
             modules: Vec::new(),
+            struct_ids: HashMap::new(),
+            structs: Vec::new(),
+            enum_ids: HashMap::new(),
+            enum_members: HashMap::new(),
+            union_ids: HashMap::new(),
+            unions: Vec::new(),
+            error_type_ids: HashMap::new(),
+            error_types: Vec::new(),
+            error_tags: HashMap::new(),
         }
     }
 
@@ -240,6 +340,15 @@ impl Interpreter {
         self.extra_plain_items.clear();
         self.public_funcs.clear();
         self.modules.clear();
+        self.struct_ids.clear();
+        self.structs.clear();
+        self.enum_ids.clear();
+        self.enum_members.clear();
+        self.union_ids.clear();
+        self.unions.clear();
+        self.error_type_ids.clear();
+        self.error_types.clear();
+        self.error_tags.clear();
 
         let mut loaded = Vec::new();
         let mut loading = HashSet::new();
@@ -266,8 +375,49 @@ impl Interpreter {
                 "E360",
             )
         })?;
+        let fallible = fallible_payload(&entry.function.returns, &self.error_type_ids);
         let mut stack = Vec::new();
         self.call_function(&entry, &mut stack)?;
+        if fallible.is_some() {
+            // Fallible entry: `(payload, env)` on the stack. Non-zero env is a
+            // runtime failure; success is void (matching JIT `run_main`).
+            if stack.len() < 2 {
+                return Err(InterpretError::new(
+                    format!(
+                        "{name} fallible entry left {} value(s); expected 2",
+                        stack.len()
+                    ),
+                    Span::default(),
+                    "E393",
+                ));
+            }
+            let env = stack.pop().unwrap();
+            let payload = stack.pop().unwrap();
+            while let Some(v) = stack.pop() {
+                v.drop_owned();
+            }
+            let tag = match env.value {
+                Value::Int(n) => n,
+                other => {
+                    other.drop_owned();
+                    payload.drop_owned();
+                    return Err(InterpretError::new(
+                        format!("{name} fallible envelope must be an int tag"),
+                        Span::default(),
+                        "E360",
+                    ));
+                }
+            };
+            payload.drop_owned();
+            if tag != 0 {
+                return Err(InterpretError::new(
+                    format!("{name} returned error tag {tag}"),
+                    Span::default(),
+                    "E360",
+                ));
+            }
+            return Ok(RunResult::Void);
+        }
         if entry.function.returns.is_empty() {
             while let Some(v) = stack.pop() {
                 v.drop_owned();
@@ -302,21 +452,221 @@ impl Interpreter {
                     Span::default(),
                 ));
             }
+            Value::Heap { .. } => {
+                return Err(InterpretError::unsupported(
+                    "heap handle as entry return value",
+                    Span::default(),
+                ));
+            }
         })
     }
 
     fn register_unit(&mut self, module: Option<String>, program: &Program) -> IResult<()> {
         for item in &program.items {
-            if let StmtKind::Function(f) = &item.kind {
-                let keep = module.is_none() || matches!(f.visibility, Some(Visibility::Public));
-                if !keep {
-                    continue;
+            match &item.kind {
+                StmtKind::Struct(d) => self.register_struct(d)?,
+                StmtKind::Enum(d) => self.register_enum(d)?,
+                StmtKind::Union(d) => self.register_union(d)?,
+                StmtKind::Error(d) => self.register_error(d)?,
+                StmtKind::Implement(imp) => self.register_implement(module.clone(), imp)?,
+                StmtKind::Function(f) => {
+                    let keep = module.is_none() || matches!(f.visibility, Some(Visibility::Public));
+                    if !keep {
+                        continue;
+                    }
+                    let fq = match &module {
+                        Some(path) => format!("{path}::{}", f.name),
+                        None => f.name.clone(),
+                    };
+                    self.register_function_tree(module.clone(), fq, f, false)?;
                 }
-                let fq = match &module {
-                    Some(path) => format!("{path}::{}", f.name),
-                    None => f.name.clone(),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn register_struct(&mut self, d: &StructDecl) -> IResult<()> {
+        if self.struct_ids.contains_key(&d.name) {
+            return Ok(());
+        }
+        let id = self.structs.len() as u32;
+        self.struct_ids.insert(d.name.clone(), id);
+        let mut fields = Vec::new();
+        let mut size = 0u32;
+        let mut align = 1u32;
+        for f in &d.fields {
+            let (kind, fsize, falign) = self.field_layout(&f.ty)?;
+            align = align.max(falign);
+            size = (size + (falign - 1)) & !(falign - 1);
+            fields.push(FieldInfo {
+                name: f.name.clone(),
+                kind,
+                offset: size as i32,
+                size: fsize,
+            });
+            size += fsize;
+        }
+        size = (size + (align - 1)) & !(align - 1);
+        if size == 0 {
+            size = 1;
+        }
+        self.structs.push(StructInfo {
+            name: d.name.clone(),
+            fields,
+            size,
+        });
+        Ok(())
+    }
+
+    fn field_layout(&self, ty: &Type) -> IResult<(u64, u32, u32)> {
+        match &ty.kind {
+            TypeKind::Primitive(p) => {
+                let kind = primitive_to_kind(*p).ok_or_else(|| {
+                    InterpretError::unsupported(format!("field type {ty:?}"), Span::default())
+                })?;
+                let (size, align) = match kind {
+                    0 | 1 | 6 => (1, 1),
+                    2 | 7 | 12 => (2, 2),
+                    3 | 8 | 11 | 13 => (4, 4),
+                    _ => (8, 8),
                 };
-                self.register_function_tree(module.clone(), fq, f)?;
+                Ok((kind, size, align))
+            }
+            TypeKind::Named(n) if n == "string" => Ok((KIND_STRING, 8, 8)),
+            TypeKind::Named(n) => {
+                if let Some(id) = self.struct_ids.get(n) {
+                    Ok((KIND_STRUCT | ((*id as u64) << 8), 8, 8))
+                } else if let Some(id) = self.union_ids.get(n) {
+                    Ok((KIND_UNION | ((*id as u64) << 8), 8, 8))
+                } else if self.enum_ids.contains_key(n) {
+                    Ok((4, 8, 8))
+                } else {
+                    Err(InterpretError::unsupported(
+                        format!("field type '{n}'"),
+                        Span::default(),
+                    ))
+                }
+            }
+            TypeKind::Reference { inner } => self.field_layout(inner),
+            TypeKind::List { element } => {
+                let (ek, _, _) = self.field_layout(element)?;
+                Ok((KIND_LIST | (ek << 8), 8, 8))
+            }
+            TypeKind::Hashmap { key, value } => {
+                let (kk, _, _) = self.field_layout(key)?;
+                let (vk, _, _) = self.field_layout(value)?;
+                Ok((KIND_MAP | (kk << 8) | (vk << 40), 8, 8))
+            }
+            _ => Err(InterpretError::unsupported(
+                format!("field type {ty:?}"),
+                Span::default(),
+            )),
+        }
+    }
+
+    fn register_enum(&mut self, d: &EnumDecl) -> IResult<()> {
+        if self.enum_ids.contains_key(&d.name) {
+            return Ok(());
+        }
+        let id = self.enum_ids.len() as u32;
+        self.enum_ids.insert(d.name.clone(), id);
+        let mut next = 0i64;
+        for m in &d.members {
+            let v = if let Some(raw) = &m.value {
+                decode_int_literal(raw)
+                    .map_err(|msg| InterpretError::new(msg, Span::default(), "E363"))?
+                    as i64
+            } else {
+                next
+            };
+            next = v + 1;
+            self.enum_members
+                .insert((d.name.clone(), m.name.clone()), v);
+        }
+        Ok(())
+    }
+
+    fn register_union(&mut self, d: &UnionDecl) -> IResult<()> {
+        if self.union_ids.contains_key(&d.name) {
+            return Ok(());
+        }
+        let id = self.unions.len() as u32;
+        self.union_ids.insert(d.name.clone(), id);
+        let mut members = Vec::new();
+        for t in &d.types {
+            members.push(self.member_ty(t)?);
+        }
+        self.unions.push(UnionInfo {
+            name: d.name.clone(),
+            members,
+        });
+        Ok(())
+    }
+
+    fn member_ty(&self, t: &Type) -> IResult<MemberTy> {
+        match &t.kind {
+            TypeKind::Primitive(Primitive::String) => Ok(MemberTy::String),
+            TypeKind::Named(n) if n == "string" => Ok(MemberTy::String),
+            TypeKind::Primitive(p) => {
+                let kind = primitive_to_kind(*p).ok_or_else(|| {
+                    InterpretError::unsupported(format!("union member {t:?}"), Span::default())
+                })?;
+                Ok(MemberTy::Primitive(kind))
+            }
+            TypeKind::Named(n) => Ok(MemberTy::Named(n.clone())),
+            TypeKind::Reference { inner } => self.member_ty(inner),
+            _ => Err(InterpretError::unsupported(
+                format!("union member {t:?}"),
+                Span::default(),
+            )),
+        }
+    }
+
+    fn register_error(&mut self, d: &ErrorDecl) -> IResult<()> {
+        if self.error_type_ids.contains_key(&d.name) {
+            return Ok(());
+        }
+        let id = self.error_types.len() as u32;
+        self.error_type_ids.insert(d.name.clone(), id);
+        let mut members = Vec::new();
+        for m in &d.members {
+            let key = format!("{}.{}", d.name, m);
+            let tag = self.intern_error_tag(&key);
+            members.push((m.clone(), tag));
+        }
+        self.error_types.push((d.name.clone(), members));
+        Ok(())
+    }
+
+    fn intern_error_tag(&mut self, key: &str) -> u32 {
+        let next = self.error_tags.len() as u32 + 1;
+        *self.error_tags.entry(key.to_string()).or_insert(next)
+    }
+
+    fn register_implement(&mut self, module: Option<String>, imp: &Implement) -> IResult<()> {
+        for f in &imp.functions {
+            let short = format!("{}::{}", imp.target, f.name);
+            let fq = match &module {
+                Some(path) => format!("{path}::{short}"),
+                None => short.clone(),
+            };
+            if matches!(f.visibility, Some(Visibility::Public)) {
+                self.public_funcs.insert(fq.clone());
+                self.public_funcs.insert(short.clone());
+            }
+            self.register_function_tree(module.clone(), fq, f, true)?;
+            // Calls resolve as `Type::method` without a module prefix.
+            if module.is_some() {
+                self.funcs.insert(
+                    short.clone(),
+                    FuncEntry {
+                        fq: short,
+                        module: module.clone(),
+                        function: f.clone(),
+                        is_method: true,
+                    },
+                );
             }
         }
         Ok(())
@@ -327,6 +677,7 @@ impl Interpreter {
         module: Option<String>,
         fq: String,
         f: &Function,
+        is_method: bool,
     ) -> IResult<()> {
         if matches!(f.visibility, Some(Visibility::Public)) {
             self.public_funcs.insert(fq.clone());
@@ -334,7 +685,7 @@ impl Interpreter {
         for stmt in &f.body {
             if let StmtKind::Function(nf) = &stmt.kind {
                 let nested = format!("{fq}::{}", nf.name);
-                self.register_function_tree(module.clone(), nested, nf)?;
+                self.register_function_tree(module.clone(), nested, nf, false)?;
             }
         }
         self.funcs.insert(
@@ -343,6 +694,7 @@ impl Interpreter {
                 fq,
                 module,
                 function: f.clone(),
+                is_method,
             },
         );
         Ok(())
@@ -508,10 +860,24 @@ impl Interpreter {
         }
         let args: Vec<Slot> = stack.split_off(stack.len() - n);
         let mut local_stack = args;
+        let error_payload = fallible_payload(&entry.function.returns, &self.error_type_ids);
         let mut frame = Frame {
             locals: HashMap::new(),
             loops: Vec::new(),
+            error_payload: error_payload.clone(),
+            pending_error_return: None,
         };
+        if entry.is_method
+            && let Some(recv) = local_stack.first()
+        {
+            frame.locals.insert(
+                "self".to_string(),
+                Slot {
+                    value: recv.value.clone_for_stack(),
+                    kind: recv.kind,
+                },
+            );
+        }
         let _flow = self.eval_body(
             &entry.function.body,
             &mut local_stack,
@@ -519,16 +885,60 @@ impl Interpreter {
             entry.module.as_deref(),
             &entry.fq,
         )?;
+
+        if let Some(_payload_ty) = error_payload {
+            // Fallible ABI: leave `(payload, env)` on the caller stack.
+            let (payload, env_tag) =
+                if matches!(local_stack.last().map(|s| s.kind), Some(KIND_ERROR)) {
+                    let env = local_stack.pop().unwrap();
+                    let tag = match env.value {
+                        Value::Int(n) => n,
+                        other => {
+                            other.drop_owned();
+                            return Err(InterpretError::new(
+                                "fallible error return must be an error tag",
+                                Span::default(),
+                                "E328",
+                            ));
+                        }
+                    };
+                    (
+                        Slot {
+                            value: Value::Int(0),
+                            kind: 4,
+                        },
+                        tag,
+                    )
+                } else if local_stack.is_empty() {
+                    (
+                        Slot {
+                            value: Value::Int(0),
+                            kind: 4,
+                        },
+                        0,
+                    )
+                } else {
+                    (local_stack.pop().unwrap(), 0)
+                };
+            while let Some(v) = local_stack.pop() {
+                v.drop_owned();
+            }
+            for (_, slot) in frame.locals.drain() {
+                slot.drop_owned();
+            }
+            stack.push(payload);
+            stack.push(Slot {
+                value: Value::Int(env_tag),
+                kind: KIND_ERROR,
+            });
+            return Ok(());
+        }
+
         let ret_n = entry
             .function
             .returns
             .iter()
-            .filter(|t| {
-                !matches!(
-                    t.kind,
-                    TypeKind::Primitive(crate::parser::ast::Primitive::Void)
-                )
-            })
+            .filter(|t| !matches!(t.kind, TypeKind::Primitive(Primitive::Void)))
             .count();
         if ret_n == 0 {
             while let Some(v) = local_stack.pop() {
@@ -572,7 +982,18 @@ impl Interpreter {
         for stmt in body {
             match self.eval_stmt(stmt, stack, frame, module, caller_fq)? {
                 Flow::Return => return Ok(Flow::Return),
-                Flow::Next => {}
+                Flow::Next => {
+                    if let Some(tag) = frame.pending_error_return.take() {
+                        while let Some(v) = stack.pop() {
+                            v.drop_owned();
+                        }
+                        stack.push(Slot {
+                            value: Value::Int(tag),
+                            kind: KIND_ERROR,
+                        });
+                        return Ok(Flow::Return);
+                    }
+                }
             }
         }
         Ok(Flow::Next)
@@ -600,18 +1021,67 @@ impl Interpreter {
             StmtKind::VarDecl {
                 name, ty, value, ..
             } => {
-                let kind = type_kind_code(ty).ok_or_else(|| {
+                // Method receiver already bound at call entry.
+                if name == "self" && frame.locals.contains_key("self") {
+                    return Ok(Flow::Next);
+                }
+                let kind = self.type_kind_code(ty).ok_or_else(|| {
                     InterpretError::unsupported(format!("binding type {ty:?}"), stmt.span)
                 })?;
                 let slot = match value {
+                    Some(Expr::StructLit(pairs)) => {
+                        self.eval_struct_lit(pairs, ty, stack, frame, module, caller_fq, stmt.span)?
+                    }
+                    Some(Expr::EmptyMapOrStruct) => self.eval_empty_aggregate(ty, stmt.span)?,
+                    Some(Expr::List(elems)) => {
+                        self.eval_list_lit(elems, ty, stack, frame, module, caller_fq, stmt.span)?
+                    }
+                    Some(Expr::Map(pairs)) => {
+                        self.eval_map_lit(pairs, ty, stack, frame, module, caller_fq, stmt.span)?
+                    }
+                    Some(Expr::Seq(elems)) => {
+                        // Prior words are side effects; trailing literal is the value.
+                        if elems.is_empty() {
+                            return Err(InterpretError::new(
+                                "empty initializer sequence",
+                                stmt.span,
+                                "E306",
+                            ));
+                        }
+                        for (el, sp) in &elems[..elems.len() - 1] {
+                            self.eval_expr(el, stack, frame, module, caller_fq, *sp)?;
+                        }
+                        let (last, last_span) = &elems[elems.len() - 1];
+                        match last {
+                            Expr::StructLit(pairs) => self.eval_struct_lit(
+                                pairs, ty, stack, frame, module, caller_fq, *last_span,
+                            )?,
+                            Expr::EmptyMapOrStruct => self.eval_empty_aggregate(ty, *last_span)?,
+                            Expr::List(elems) => self.eval_list_lit(
+                                elems, ty, stack, frame, module, caller_fq, *last_span,
+                            )?,
+                            Expr::Map(pairs) => self.eval_map_lit(
+                                pairs, ty, stack, frame, module, caller_fq, *last_span,
+                            )?,
+                            other => {
+                                self.eval_expr(other, stack, frame, module, caller_fq, *last_span)?;
+                                let mut s = self.pop(stack, stmt.span, "value")?;
+                                s = self.coerce_to_binding(s, ty, stmt.span)?;
+                                s.kind = kind;
+                                s
+                            }
+                        }
+                    }
                     Some(e) => {
                         self.eval_expr(e, stack, frame, module, caller_fq, stmt.span)?;
                         let mut s = self.pop(stack, stmt.span, "value")?;
+                        s = self.coerce_to_binding(s, ty, stmt.span)?;
                         s.kind = kind;
                         s
                     }
                     None => {
                         let mut s = self.pop(stack, stmt.span, "value")?;
+                        s = self.coerce_to_binding(s, ty, stmt.span)?;
                         s.kind = kind;
                         s
                     }
@@ -632,10 +1102,15 @@ impl Interpreter {
                     self.eval_expr(e, stack, frame, module, caller_fq, stmt.span)?;
                 }
                 let mut slot = self.pop(stack, stmt.span, "set")?;
-                let kind = frame.locals.get(name).map(|s| s.kind).ok_or_else(|| {
+                let old = frame.locals.get(name).cloned().ok_or_else(|| {
                     InterpretError::new(format!("unknown variable '{name}'"), stmt.span, "E320")
                 })?;
-                slot.kind = kind;
+                // When assigning into a union variable, wrap the raw member.
+                if (old.kind & 0xff) == KIND_UNION {
+                    slot = self.wrap_union_value(slot, (old.kind >> 8) as u32, stmt.span)?;
+                } else {
+                    slot.kind = old.kind;
+                }
                 if let Some(old) = frame.locals.insert(name.clone(), slot) {
                     old.drop_owned();
                 }
@@ -681,6 +1156,16 @@ impl Interpreter {
                 }
                 Ok(Flow::Return)
             }
+            StmtKind::Handle { body, fallback } => self.eval_handle(
+                body,
+                fallback.as_ref(),
+                stack,
+                frame,
+                module,
+                caller_fq,
+                stmt.span,
+            ),
+            StmtKind::Fallback { .. } | StmtKind::Defer { .. } => Ok(Flow::Next),
             other => Err(InterpretError::unsupported(
                 format!("statement {other:?}"),
                 stmt.span,
@@ -731,8 +1216,122 @@ impl Interpreter {
                         return Ok(flow);
                     }
                 }
-                MatchCaseKind::Type(_) => {
-                    return Err(InterpretError::unsupported("type-dispatch match", span));
+                MatchCaseKind::Type(ty) => {
+                    // Error member case (`AppError.NOT_FOUND case`) or union member.
+                    if let Some(tag) = self.error_member_tag(ty) {
+                        let subject = stack.get(sub_len.saturating_sub(1)).ok_or_else(|| {
+                            InterpretError::new("match subject missing", span, "E343")
+                        })?;
+                        let matched = matches!(subject.value, Value::Int(n) if n as u32 == tag)
+                            || matches!(
+                                subject.kind,
+                                KIND_ERROR if matches!(subject.value, Value::Int(n) if n as u32 == tag)
+                            );
+                        if matched {
+                            while stack.len() > sub_len {
+                                stack.pop().unwrap().drop_owned();
+                            }
+                            let flow =
+                                self.eval_body(&case.body, stack, frame, module, caller_fq)?;
+                            let extras: Vec<Slot> = stack.split_off(sub_len);
+                            while stack.len() > pre {
+                                stack.pop().unwrap().drop_owned();
+                            }
+                            stack.extend(extras);
+                            return Ok(flow);
+                        }
+                        continue;
+                    }
+                    // Union type dispatch.
+                    let subject =
+                        stack
+                            .get(sub_len.saturating_sub(1))
+                            .cloned()
+                            .ok_or_else(|| {
+                                InterpretError::new("match subject missing", span, "E343")
+                            })?;
+                    if (subject.kind & 0xff) != KIND_UNION {
+                        subject.drop_owned();
+                        return Err(InterpretError::new(
+                            "match type dispatch requires a union subject",
+                            span,
+                            "E308",
+                        ));
+                    }
+                    let uid = (subject.kind >> 8) as u32;
+                    let want = self.member_ty(ty)?;
+                    let idx = self
+                        .unions
+                        .get(uid as usize)
+                        .and_then(|u| u.members.iter().position(|m| m == &want));
+                    let Some(idx) = idx else {
+                        continue;
+                    };
+                    let handle = match subject.value {
+                        Value::Heap { handle, .. } => handle,
+                        other => {
+                            other.drop_owned();
+                            return Err(InterpretError::new(
+                                "union subject must be a heap handle",
+                                span,
+                                "E308",
+                            ));
+                        }
+                    };
+                    let tag = unsafe {
+                        std::ptr::read_unaligned(
+                            (handle as *const u8).add(UNION_TAG_OFFSET as usize) as *const u64,
+                        )
+                    };
+                    if tag != idx as u64 {
+                        continue;
+                    }
+                    let payload_bits = unsafe {
+                        std::ptr::read_unaligned(
+                            (handle as *const u8).add(UNION_PAYLOAD_OFFSET as usize) as *const u64,
+                        )
+                    };
+                    while stack.len() > sub_len {
+                        stack.pop().unwrap().drop_owned();
+                    }
+                    // Push payload as a borrowed reference (auto-deref on use).
+                    let payload = self.bits_to_slot(payload_bits, &want, false);
+                    stack.push(payload);
+                    let flow = self.eval_body(&case.body, stack, frame, module, caller_fq)?;
+                    // Drop unconsumed borrow of the payload.
+                    if stack.len() > sub_len
+                        && matches!(
+                            stack.get(sub_len).map(|s| &s.value),
+                            Some(
+                                Value::Heap { owned: false, .. }
+                                    | Value::Str { owned: false, .. }
+                                    | Value::Int(_)
+                                    | Value::Float(_)
+                                    | Value::Bool(_)
+                            )
+                        )
+                    {
+                        // If the first extra is still the payload we pushed, drop it.
+                        let first = &stack[sub_len];
+                        let still_payload = match (&first.value, &want) {
+                            (Value::Heap { handle: h, .. }, MemberTy::String)
+                            | (Value::Str { handle: h, .. }, MemberTy::String) => {
+                                *h == payload_bits
+                            }
+                            (Value::Int(n), MemberTy::Primitive(_)) => *n as u64 == payload_bits,
+                            (Value::Heap { handle: h, .. }, _) => *h == payload_bits,
+                            _ => false,
+                        };
+                        if still_payload {
+                            stack.remove(sub_len).drop_owned();
+                        }
+                    }
+                    let extras: Vec<Slot> = stack.split_off(sub_len);
+                    while stack.len() > pre {
+                        stack.pop().unwrap().drop_owned();
+                    }
+                    stack.extend(extras);
+                    return Ok(flow);
                 }
             }
         }
@@ -1011,10 +1610,98 @@ impl Interpreter {
                         _ => {}
                     }
                 }
-                Err(InterpretError::unsupported(
-                    "bare name/member as a value (use `call`)",
-                    span,
-                ))
+                // `Color.GREEN` / `AppError.NOT_FOUND` / `error.TAG`
+                if let Expr::Variable { name } = base.as_ref() {
+                    if name == "error" {
+                        let key = member.clone();
+                        let tag = self
+                            .error_tags
+                            .get(&key)
+                            .copied()
+                            .or_else(|| {
+                                self.error_types.iter().find_map(|(_, ms)| {
+                                    ms.iter().find(|(n, _)| n == member).map(|(_, t)| *t)
+                                })
+                            })
+                            .ok_or_else(|| {
+                                InterpretError::new(
+                                    format!("unknown error member '{member}'"),
+                                    span,
+                                    "E320",
+                                )
+                            })?;
+                        stack.push(Slot {
+                            value: Value::Int(i64::from(tag)),
+                            kind: KIND_ERROR,
+                        });
+                        return Ok(());
+                    }
+                    if let Some(tag) = self
+                        .error_type_ids
+                        .get(name)
+                        .and_then(|id| self.error_types.get(*id as usize))
+                        .and_then(|(_, ms)| ms.iter().find(|(n, _)| n == member).map(|(_, t)| *t))
+                    {
+                        stack.push(Slot {
+                            value: Value::Int(i64::from(tag)),
+                            kind: KIND_ERROR,
+                        });
+                        return Ok(());
+                    }
+                    if let Some(v) = self.enum_members.get(&(name.clone(), member.clone())) {
+                        stack.push(Slot {
+                            value: Value::Int(*v),
+                            kind: 4,
+                        });
+                        return Ok(());
+                    }
+                }
+                // Struct field access: evaluate base, load field.
+                self.eval_expr(base, stack, frame, module, caller_fq, span)?;
+                let base_slot = self.pop(stack, span, "field access")?;
+                let sid = match base_slot.kind & 0xff {
+                    KIND_STRUCT => (base_slot.kind >> 8) as u32,
+                    _ => {
+                        // Reference to struct has the struct kind already.
+                        base_slot.drop_owned();
+                        return Err(InterpretError::new(
+                            format!("cannot access field '{member}' on non-struct"),
+                            span,
+                            "E340",
+                        ));
+                    }
+                };
+                let handle = match &base_slot.value {
+                    Value::Heap { handle, .. } => *handle,
+                    _ => {
+                        base_slot.drop_owned();
+                        return Err(InterpretError::new(
+                            "struct field access requires a heap handle",
+                            span,
+                            "E340",
+                        ));
+                    }
+                };
+                let field = self
+                    .structs
+                    .get(sid as usize)
+                    .and_then(|s| s.fields.iter().find(|f| f.name == *member))
+                    .cloned()
+                    .ok_or_else(|| {
+                        InterpretError::new(format!("struct has no field '{member}'"), span, "E340")
+                    })?;
+                let bits = unsafe {
+                    let mut buf = 0u64;
+                    std::ptr::copy_nonoverlapping(
+                        (handle as *const u8).add(field.offset as usize),
+                        &mut buf as *mut u64 as *mut u8,
+                        field.size as usize,
+                    );
+                    buf
+                };
+                base_slot.drop_owned();
+                stack.push(self.bits_to_slot_kind(bits, field.kind, false));
+                Ok(())
             }
             Expr::TypeValue { name } => {
                 let kind = primitive_kind_code(name).ok_or_else(|| {
@@ -1064,7 +1751,113 @@ impl Interpreter {
             }
             Expr::StackOp(op) => self.eval_stack_op(*op, stack, span),
             Expr::Builtin { name } => self.eval_builtin(name, stack, span),
-            Expr::Call { target } => self.eval_call(target, stack, module, caller_fq, span),
+            Expr::Call { target } => self.eval_call(target, stack, frame, module, caller_fq, span),
+            Expr::List(elems) => {
+                // Untyped list literal: element kind from first element.
+                let mut values = Vec::with_capacity(elems.len());
+                for e in elems {
+                    self.eval_expr(e, stack, frame, module, caller_fq, span)?;
+                    values.push(self.pop(stack, span, "list element")?);
+                }
+                let elem_kind = values.first().map(|s| s.kind).unwrap_or(4);
+                let elem_size = kind_elem_size(elem_kind);
+                let handle = runtime::yarrow_list_new(u64::from(elem_size));
+                for v in values {
+                    let bits = v.value.as_bits().ok_or_else(|| {
+                        InterpretError::unsupported("array element in list", span)
+                    })?;
+                    // Transfer ownership into the list; don't free the slot.
+                    match v.value {
+                        Value::Str { .. } | Value::Heap { .. } => {}
+                        other => other.drop_owned(),
+                    }
+                    runtime::yarrow_list_push(handle, bits);
+                }
+                stack.push(Slot {
+                    value: Value::Heap {
+                        handle,
+                        owned: true,
+                    },
+                    kind: KIND_LIST | (elem_kind << 8),
+                });
+                Ok(())
+            }
+            Expr::Map(pairs) => {
+                let mut evaluated = Vec::with_capacity(pairs.len());
+                for (k, v) in pairs {
+                    self.eval_expr(k, stack, frame, module, caller_fq, span)?;
+                    let key = self.pop(stack, span, "map key")?;
+                    self.eval_expr(v, stack, frame, module, caller_fq, span)?;
+                    let val = self.pop(stack, span, "map value")?;
+                    evaluated.push((key, val));
+                }
+                let key_kind = evaluated
+                    .first()
+                    .map(|(k, _)| k.kind)
+                    .unwrap_or(KIND_STRING);
+                let val_kind = evaluated.first().map(|(_, v)| v.kind).unwrap_or(4);
+                let keys_string = u64::from(key_kind == KIND_STRING);
+                let handle = runtime::yarrow_map_new(keys_string);
+                for (k, v) in evaluated {
+                    let kb = k
+                        .value
+                        .as_bits()
+                        .ok_or_else(|| InterpretError::unsupported("complex map key", span))?;
+                    let vb = v
+                        .value
+                        .as_bits()
+                        .ok_or_else(|| InterpretError::unsupported("complex map value", span))?;
+                    match k.value {
+                        Value::Str { .. } | Value::Heap { .. } => {}
+                        other => other.drop_owned(),
+                    }
+                    match v.value {
+                        Value::Str { .. } | Value::Heap { .. } => {}
+                        other => other.drop_owned(),
+                    }
+                    runtime::yarrow_map_insert(handle, kb, vb);
+                }
+                stack.push(Slot {
+                    value: Value::Heap {
+                        handle,
+                        owned: true,
+                    },
+                    kind: KIND_MAP | (key_kind << 8) | (val_kind << 40),
+                });
+                Ok(())
+            }
+            Expr::EmptyMapOrStruct => Err(InterpretError::unsupported(
+                "empty `{}` without a typed binding",
+                span,
+            )),
+            Expr::ApplyBorrow | Expr::Borrow { .. } => {
+                let s = self.pop(stack, span, "'borrow'")?;
+                // Borrow: keep handle, mark unowned so drop does not free.
+                let borrowed = Slot {
+                    value: match s.value {
+                        Value::Heap { handle, .. } => Value::Heap {
+                            handle,
+                            owned: false,
+                        },
+                        Value::Str { handle, .. } => Value::Str {
+                            handle,
+                            owned: false,
+                        },
+                        Value::Array(elems) => {
+                            Value::Array(elems.iter().map(|e| e.clone_for_stack()).collect())
+                        }
+                        other => other,
+                    },
+                    kind: s.kind,
+                };
+                // Original owned value stays in its variable; stack borrow is unowned.
+                stack.push(borrowed);
+                Ok(())
+            }
+            Expr::Unwrap { inner } => {
+                self.eval_expr(inner, stack, frame, module, caller_fq, span)?;
+                self.eval_unwrap(stack, frame, span)
+            }
             _ => Err(InterpretError::unsupported(
                 format!("expression {expr:?}"),
                 span,
@@ -1087,11 +1880,15 @@ impl Interpreter {
         &mut self,
         target: &Expr,
         stack: &mut Vec<Slot>,
+        frame: &Frame,
         module: Option<&str>,
         caller_fq: &str,
         span: Span,
     ) -> IResult<()> {
-        let name = self.resolve_call_name(target, module, caller_fq, span)?;
+        let name = self.resolve_call_name(target, frame, module, caller_fq, span)?;
+        if self.is_std_intrinsic(&name) {
+            return self.eval_std_intrinsic(&name, stack, span);
+        }
         let entry = self.funcs.get(&name).cloned().ok_or_else(|| {
             InterpretError::new(format!("unknown function '{name}'"), span, "E330")
         })?;
@@ -1122,6 +1919,7 @@ impl Interpreter {
     fn resolve_call_name(
         &self,
         target: &Expr,
+        frame: &Frame,
         module: Option<&str>,
         caller_fq: &str,
         span: Span,
@@ -1158,6 +1956,19 @@ impl Interpreter {
                     }
                     return Ok(format!("{path}::{member}"));
                 }
+                // Method call: resolve from the base variable's struct type.
+                if let Expr::Variable { name } = base.as_ref()
+                    && let Some(slot) = frame.locals.get(name)
+                    && (slot.kind & 0xff) == KIND_STRUCT
+                {
+                    let sid = (slot.kind >> 8) as u32;
+                    if let Some(info) = self.structs.get(sid as usize) {
+                        let method = format!("{}::{member}", info.name);
+                        if self.funcs.contains_key(&method) {
+                            return Ok(method);
+                        }
+                    }
+                }
                 Err(InterpretError::unsupported(
                     "method call / complex call target",
                     span,
@@ -1167,6 +1978,89 @@ impl Interpreter {
                 "'call' target must be a function name",
                 span,
                 "E329",
+            )),
+        }
+    }
+
+    fn is_std_intrinsic(&self, fq: &str) -> bool {
+        matches!(
+            fq,
+            "std.list::push_last"
+                | "std.list::len"
+                | "std.list::get"
+                | "std.list::put"
+                | "std.map::len"
+                | "std.map::get"
+                | "std.map::put"
+        )
+    }
+
+    fn eval_std_intrinsic(&mut self, fq: &str, stack: &mut Vec<Slot>, span: Span) -> IResult<()> {
+        match fq {
+            "std.list::push_last" => {
+                let value = self.pop(stack, span, "list.push_last")?;
+                let list = self.pop(stack, span, "list.push_last")?;
+                if (list.kind & 0xff) != KIND_LIST {
+                    list.drop_owned();
+                    value.drop_owned();
+                    return Err(InterpretError::new(
+                        "'list.push_last' requires a list",
+                        span,
+                        "E372",
+                    ));
+                }
+                let handle = match list.value {
+                    Value::Heap { handle, .. } => handle,
+                    _ => {
+                        list.drop_owned();
+                        value.drop_owned();
+                        return Err(InterpretError::new(
+                            "'list.push_last' requires a list handle",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let bits = match value.value.as_bits() {
+                    Some(b) => b,
+                    None => {
+                        value.drop_owned();
+                        return Err(InterpretError::unsupported("list element", span));
+                    }
+                };
+                // Transfer ownership of heap bits into the list storage.
+                match value.value {
+                    Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                    other => other.drop_owned(),
+                }
+                runtime::yarrow_list_push(handle, bits);
+                stack.push(list);
+                Ok(())
+            }
+            "std.list::len" => {
+                let list = self.pop(stack, span, "list.len")?;
+                let handle = match list.value {
+                    Value::Heap { handle, .. } => handle,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'list.len' requires a list",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let len = runtime::yarrow_list_len(handle) as i64;
+                list.drop_owned();
+                stack.push(Slot {
+                    value: Value::Int(len),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            other => Err(InterpretError::unsupported(
+                format!("std intrinsic {other}"),
+                span,
             )),
         }
     }
@@ -1774,6 +2668,499 @@ impl Interpreter {
         })
     }
 
+    fn eval_unwrap(&mut self, stack: &mut Vec<Slot>, frame: &mut Frame, span: Span) -> IResult<()> {
+        if !matches!(stack.last().map(|s| s.kind), Some(KIND_ERROR)) {
+            // Identity on non-error values (e.g. list.push_last result).
+            return Ok(());
+        }
+        if frame.error_payload.is_none() {
+            return Err(InterpretError::new(
+                "'unwrap' requires the caller to declare a fallible return (|T Err|)",
+                span,
+                "E308",
+            ));
+        }
+        let env = self.pop(stack, span, "unwrap")?;
+        let payload = self.pop(stack, span, "unwrap")?;
+        let tag = match env.value {
+            Value::Int(n) => n,
+            other => {
+                other.drop_owned();
+                payload.drop_owned();
+                return Err(InterpretError::new(
+                    "unwrap envelope must be an int tag",
+                    span,
+                    "E308",
+                ));
+            }
+        };
+        if tag == 0 {
+            stack.push(payload);
+            Ok(())
+        } else {
+            payload.drop_owned();
+            frame.pending_error_return = Some(tag);
+            Ok(())
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_handle(
+        &mut self,
+        body: &[Stmt],
+        fallback: Option<&Expr>,
+        stack: &mut Vec<Slot>,
+        frame: &mut Frame,
+        module: Option<&str>,
+        caller_fq: &str,
+        span: Span,
+    ) -> IResult<Flow> {
+        if !matches!(stack.last().map(|s| s.kind), Some(KIND_ERROR)) {
+            return Ok(Flow::Next);
+        }
+        let env = self.pop(stack, span, "handle")?;
+        let payload = self.pop(stack, span, "handle")?;
+        let tag = match env.value {
+            Value::Int(n) => n,
+            other => {
+                other.drop_owned();
+                payload.drop_owned();
+                return Err(InterpretError::new(
+                    "handle envelope must be an int tag",
+                    span,
+                    "E308",
+                ));
+            }
+        };
+        let pre = stack.len();
+        if tag == 0 {
+            stack.push(payload);
+            return Ok(Flow::Next);
+        }
+        payload.drop_owned();
+        stack.push(Slot {
+            value: Value::Int(tag),
+            kind: KIND_ERROR,
+        });
+        let err_idx = stack.len() - 1;
+        let flow = self.eval_body(body, stack, frame, module, caller_fq)?;
+        if flow == Flow::Return {
+            return Ok(Flow::Return);
+        }
+        if stack.len() > err_idx && stack[err_idx].kind == KIND_ERROR {
+            stack.remove(err_idx).drop_owned();
+        } else if let Some(i) = stack.iter().rposition(|s| s.kind == KIND_ERROR)
+            && i >= pre
+        {
+            stack.remove(i).drop_owned();
+        }
+        if let Some(fb) = fallback {
+            self.eval_expr(fb, stack, frame, module, caller_fq, span)?;
+        }
+        Ok(Flow::Next)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_struct_lit(
+        &mut self,
+        pairs: &[(String, Expr)],
+        ty: &Type,
+        stack: &mut Vec<Slot>,
+        frame: &mut Frame,
+        module: Option<&str>,
+        caller_fq: &str,
+        span: Span,
+    ) -> IResult<Slot> {
+        let name = match &ty.kind {
+            TypeKind::Named(n) => n.as_str(),
+            TypeKind::Reference { inner } => match &inner.kind {
+                TypeKind::Named(n) => n.as_str(),
+                _ => {
+                    return Err(InterpretError::unsupported(
+                        format!("struct literal type {ty:?}"),
+                        span,
+                    ));
+                }
+            },
+            _ => {
+                return Err(InterpretError::unsupported(
+                    format!("struct literal type {ty:?}"),
+                    span,
+                ));
+            }
+        };
+        let sid = *self
+            .struct_ids
+            .get(name)
+            .ok_or_else(|| InterpretError::new(format!("unknown struct '{name}'"), span, "E340"))?;
+        let info = self.structs[sid as usize].clone();
+        let handle = runtime::yarrow_alloc(u64::from(info.size));
+        unsafe {
+            std::ptr::write_bytes(handle as *mut u8, 0, info.size as usize);
+        }
+        for (fname, expr) in pairs {
+            let field = info
+                .fields
+                .iter()
+                .find(|f| f.name == *fname)
+                .ok_or_else(|| {
+                    InterpretError::new(
+                        format!("struct '{name}' has no field '{fname}'"),
+                        span,
+                        "E340",
+                    )
+                })?;
+            self.eval_expr(expr, stack, frame, module, caller_fq, span)?;
+            let val = self.pop(stack, span, "struct field")?;
+            let bits = val.value.as_bits().unwrap_or(0);
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &bits as *const u64 as *const u8,
+                    (handle as *mut u8).add(field.offset as usize),
+                    field.size as usize,
+                );
+            }
+            // Field storage owns heap bits.
+            match val.value {
+                Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                other => other.drop_owned(),
+            }
+        }
+        Ok(Slot {
+            value: Value::Heap {
+                handle,
+                owned: true,
+            },
+            kind: KIND_STRUCT | ((sid as u64) << 8),
+        })
+    }
+
+    fn eval_empty_aggregate(&self, ty: &Type, span: Span) -> IResult<Slot> {
+        match &ty.kind {
+            TypeKind::Named(n) => {
+                if let Some(sid) = self.struct_ids.get(n) {
+                    let size = self.structs[*sid as usize].size;
+                    let handle = runtime::yarrow_alloc(u64::from(size));
+                    unsafe {
+                        std::ptr::write_bytes(handle as *mut u8, 0, size as usize);
+                    }
+                    return Ok(Slot {
+                        value: Value::Heap {
+                            handle,
+                            owned: true,
+                        },
+                        kind: KIND_STRUCT | ((*sid as u64) << 8),
+                    });
+                }
+                Err(InterpretError::unsupported(
+                    format!("empty `{{}}` for type '{n}'"),
+                    span,
+                ))
+            }
+            TypeKind::List { element } => {
+                let (ek, esize, _) = self.field_layout(element)?;
+                let handle = runtime::yarrow_list_new(u64::from(esize));
+                Ok(Slot {
+                    value: Value::Heap {
+                        handle,
+                        owned: true,
+                    },
+                    kind: KIND_LIST | (ek << 8),
+                })
+            }
+            TypeKind::Hashmap { key, value } => {
+                let (kk, _, _) = self.field_layout(key)?;
+                let (vk, _, _) = self.field_layout(value)?;
+                let keys_string = u64::from(kk == KIND_STRING);
+                let handle = runtime::yarrow_map_new(keys_string);
+                Ok(Slot {
+                    value: Value::Heap {
+                        handle,
+                        owned: true,
+                    },
+                    kind: KIND_MAP | (kk << 8) | (vk << 40),
+                })
+            }
+            _ => Err(InterpretError::unsupported(
+                format!("empty aggregate for {ty:?}"),
+                span,
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_list_lit(
+        &mut self,
+        elems: &[Expr],
+        ty: &Type,
+        stack: &mut Vec<Slot>,
+        frame: &mut Frame,
+        module: Option<&str>,
+        caller_fq: &str,
+        span: Span,
+    ) -> IResult<Slot> {
+        let elem_ty = match &ty.kind {
+            TypeKind::List { element } => element.as_ref(),
+            _ => {
+                return Err(InterpretError::unsupported(
+                    format!("list literal type {ty:?}"),
+                    span,
+                ));
+            }
+        };
+        let (ek, esize, _) = self.field_layout(elem_ty)?;
+        let handle = runtime::yarrow_list_new(u64::from(esize));
+        for e in elems {
+            self.eval_expr(e, stack, frame, module, caller_fq, span)?;
+            let val = self.pop(stack, span, "list element")?;
+            let bits = val.value.as_bits().unwrap_or(0);
+            match val.value {
+                Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                other => other.drop_owned(),
+            }
+            runtime::yarrow_list_push(handle, bits);
+        }
+        Ok(Slot {
+            value: Value::Heap {
+                handle,
+                owned: true,
+            },
+            kind: KIND_LIST | (ek << 8),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_map_lit(
+        &mut self,
+        pairs: &[(Expr, Expr)],
+        ty: &Type,
+        stack: &mut Vec<Slot>,
+        frame: &mut Frame,
+        module: Option<&str>,
+        caller_fq: &str,
+        span: Span,
+    ) -> IResult<Slot> {
+        let (key_ty, val_ty) = match &ty.kind {
+            TypeKind::Hashmap { key, value } => (key.as_ref(), value.as_ref()),
+            _ => {
+                return Err(InterpretError::unsupported(
+                    format!("map literal type {ty:?}"),
+                    span,
+                ));
+            }
+        };
+        let (kk, _, _) = self.field_layout(key_ty)?;
+        let (vk, _, _) = self.field_layout(val_ty)?;
+        let handle = runtime::yarrow_map_new(u64::from(kk == KIND_STRING));
+        for (k, v) in pairs {
+            self.eval_expr(k, stack, frame, module, caller_fq, span)?;
+            let key = self.pop(stack, span, "map key")?;
+            self.eval_expr(v, stack, frame, module, caller_fq, span)?;
+            let val = self.pop(stack, span, "map value")?;
+            let kb = key.value.as_bits().unwrap_or(0);
+            let vb = val.value.as_bits().unwrap_or(0);
+            match key.value {
+                Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                other => other.drop_owned(),
+            }
+            match val.value {
+                Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                other => other.drop_owned(),
+            }
+            runtime::yarrow_map_insert(handle, kb, vb);
+        }
+        Ok(Slot {
+            value: Value::Heap {
+                handle,
+                owned: true,
+            },
+            kind: KIND_MAP | (kk << 8) | (vk << 40),
+        })
+    }
+
+    fn coerce_to_binding(&mut self, slot: Slot, ty: &Type, span: Span) -> IResult<Slot> {
+        if let TypeKind::Named(n) = &ty.kind
+            && let Some(uid) = self.union_ids.get(n).copied()
+        {
+            return self.wrap_union_value(slot, uid, span);
+        }
+        Ok(slot)
+    }
+
+    fn wrap_union_value(&self, slot: Slot, uid: u32, span: Span) -> IResult<Slot> {
+        let info = self
+            .unions
+            .get(uid as usize)
+            .ok_or_else(|| InterpretError::new(format!("unknown union id {uid}"), span, "E346"))?;
+        let from = slot_member_ty(&slot);
+        let idx = info
+            .members
+            .iter()
+            .position(|m| members_compatible(m, &from))
+            .ok_or_else(|| {
+                InterpretError::new(
+                    format!("cannot convert into union '{}'", info.name),
+                    span,
+                    "E309",
+                )
+            })?;
+        let bits = slot.value.as_bits().unwrap_or(0);
+        // Transfer ownership into the union payload.
+        match slot.value {
+            Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+            other => other.drop_owned(),
+        }
+        let handle = runtime::yarrow_alloc(16);
+        unsafe {
+            std::ptr::write_unaligned(
+                (handle as *mut u8).add(UNION_TAG_OFFSET as usize) as *mut u64,
+                idx as u64,
+            );
+            std::ptr::write_unaligned(
+                (handle as *mut u8).add(UNION_PAYLOAD_OFFSET as usize) as *mut u64,
+                bits,
+            );
+        }
+        Ok(Slot {
+            value: Value::Heap {
+                handle,
+                owned: true,
+            },
+            kind: KIND_UNION | ((uid as u64) << 8),
+        })
+    }
+
+    fn type_kind_code(&self, ty: &Type) -> Option<u64> {
+        match &ty.kind {
+            TypeKind::Primitive(p) => primitive_to_kind(*p),
+            TypeKind::Array { element, size } => {
+                let elem = self.type_kind_code(element)?;
+                let count = size.unwrap_or(0);
+                Some(0x60 | (elem << 8) | (count << 40))
+            }
+            TypeKind::List { element } => {
+                let elem = self.type_kind_code(element)?;
+                Some(KIND_LIST | (elem << 8))
+            }
+            TypeKind::Hashmap { key, value } => {
+                let k = self.type_kind_code(key)?;
+                let v = self.type_kind_code(value)?;
+                Some(KIND_MAP | (k << 8) | (v << 40))
+            }
+            TypeKind::Reference { inner } => self.type_kind_code(inner),
+            TypeKind::Named(name) => {
+                if let Some(k) = primitive_kind_code(name) {
+                    return Some(k);
+                }
+                if let Some(id) = self.struct_ids.get(name) {
+                    return Some(KIND_STRUCT | ((*id as u64) << 8));
+                }
+                if let Some(id) = self.union_ids.get(name) {
+                    return Some(KIND_UNION | ((*id as u64) << 8));
+                }
+                if self.enum_ids.contains_key(name) {
+                    return Some(4);
+                }
+                if self.error_type_ids.contains_key(name) {
+                    return Some(KIND_ERROR);
+                }
+                None
+            }
+            TypeKind::Union(_) => Some(KIND_ERROR), // fallible binding rare
+            _ => None,
+        }
+    }
+
+    fn error_member_tag(&self, ty: &Type) -> Option<u32> {
+        let TypeKind::Named(path) = &ty.kind else {
+            return None;
+        };
+        if let Some(member) = path.strip_prefix("error.") {
+            return self.error_tags.get(member).copied().or_else(|| {
+                self.error_types
+                    .iter()
+                    .find_map(|(_, ms)| ms.iter().find(|(n, _)| n == member).map(|(_, t)| *t))
+            });
+        }
+        let (type_name, member) = path.rsplit_once('.')?;
+        let id = self.error_type_ids.get(type_name)?;
+        self.error_types
+            .get(*id as usize)?
+            .1
+            .iter()
+            .find(|(n, _)| n == member)
+            .map(|(_, t)| *t)
+    }
+
+    fn bits_to_slot(&self, bits: u64, ty: &MemberTy, owned: bool) -> Slot {
+        match ty {
+            MemberTy::String => Slot {
+                value: Value::Str {
+                    handle: bits,
+                    owned,
+                },
+                kind: KIND_STRING,
+            },
+            MemberTy::Primitive(k) => self.bits_to_slot_kind(bits, *k, owned),
+            MemberTy::Named(n) => {
+                if let Some(id) = self.struct_ids.get(n) {
+                    Slot {
+                        value: Value::Heap {
+                            handle: bits,
+                            owned,
+                        },
+                        kind: KIND_STRUCT | ((*id as u64) << 8),
+                    }
+                } else if let Some(id) = self.union_ids.get(n) {
+                    Slot {
+                        value: Value::Heap {
+                            handle: bits,
+                            owned,
+                        },
+                        kind: KIND_UNION | ((*id as u64) << 8),
+                    }
+                } else {
+                    Slot {
+                        value: Value::Int(bits as i64),
+                        kind: 4,
+                    }
+                }
+            }
+        }
+    }
+
+    fn bits_to_slot_kind(&self, bits: u64, kind: u64, owned: bool) -> Slot {
+        let tag = kind & 0xff;
+        match tag {
+            0 => Slot {
+                value: Value::Bool(bits != 0),
+                kind,
+            },
+            16 => Slot {
+                value: Value::Str {
+                    handle: bits,
+                    owned,
+                },
+                kind,
+            },
+            0x20 | 0x30 | 0x40 | 0x70 => Slot {
+                value: Value::Heap {
+                    handle: bits,
+                    owned,
+                },
+                kind,
+            },
+            12..=15 => Slot {
+                value: Value::Float(f64::from_bits(bits)),
+                kind,
+            },
+            _ => Slot {
+                value: Value::Int(bits as i64),
+                kind,
+            },
+        }
+    }
+
     fn pop(&self, stack: &mut Vec<Slot>, span: Span, what: &str) -> IResult<Slot> {
         stack
             .pop()
@@ -1835,39 +3222,97 @@ fn primitive_kind_code(name: &str) -> Option<u64> {
         "f32" => 13,
         "f64" => 14,
         "string" => 16,
+        "void" => 4,
         _ => return None,
     })
 }
 
-fn type_kind_code(ty: &Type) -> Option<u64> {
-    match &ty.kind {
-        TypeKind::Primitive(p) => {
-            use crate::parser::ast::Primitive::*;
-            Some(match p {
-                Bool => 0,
-                I8 => 1,
-                I16 => 2,
-                I32 => 3,
-                I64 => 4,
-                U8 => 6,
-                U16 => 7,
-                U32 => 8,
-                U64 => 9,
-                Rune => 11,
-                F16 => 12,
-                F32 => 13,
-                F64 => 14,
-                String => 16,
-                _ => return None,
-            })
+fn primitive_to_kind(p: Primitive) -> Option<u64> {
+    use Primitive::*;
+    Some(match p {
+        Bool => 0,
+        I8 => 1,
+        I16 => 2,
+        I32 => 3,
+        I64 => 4,
+        U8 => 6,
+        U16 => 7,
+        U32 => 8,
+        U64 => 9,
+        Rune => 11,
+        F16 => 12,
+        F32 => 13,
+        F64 => 14,
+        String => 16,
+        Void => 4,
+        Error => KIND_ERROR,
+        _ => return None,
+    })
+}
+
+fn kind_elem_size(kind: u64) -> u32 {
+    match kind & 0xff {
+        0 | 1 | 6 => 1,
+        2 | 7 | 12 => 2,
+        3 | 8 | 11 | 13 => 4,
+        _ => 8,
+    }
+}
+
+fn fallible_payload(returns: &[Type], error_type_ids: &HashMap<String, u32>) -> Option<MemberTy> {
+    if returns.len() != 1 {
+        return None;
+    }
+    let TypeKind::Union(members) = &returns[0].kind else {
+        return None;
+    };
+    if members.len() != 2 {
+        return None;
+    }
+    let is_err = |t: &Type| match &t.kind {
+        TypeKind::Primitive(Primitive::Error) => true,
+        TypeKind::Named(n) => {
+            let name = n.rsplit('.').next().unwrap_or(n);
+            error_type_ids.contains_key(name) || error_type_ids.contains_key(n) || n == "Error"
         }
-        TypeKind::Array { element, size } => {
-            let elem = type_kind_code(element)?;
-            let count = size.unwrap_or(0);
-            Some(0x60 | (elem << 8) | (count << 40))
-        }
-        TypeKind::Named(name) => primitive_kind_code(name),
+        _ => false,
+    };
+    match (is_err(&members[0]), is_err(&members[1])) {
+        (false, true) => Some(ast_member_ty(&members[0])),
+        (true, false) => Some(ast_member_ty(&members[1])),
         _ => None,
+    }
+}
+
+fn ast_member_ty(t: &Type) -> MemberTy {
+    match &t.kind {
+        TypeKind::Primitive(Primitive::String) => MemberTy::String,
+        TypeKind::Named(n) if n == "string" => MemberTy::String,
+        TypeKind::Primitive(p) => MemberTy::Primitive(primitive_to_kind(*p).unwrap_or(4)),
+        TypeKind::Named(n) => MemberTy::Named(n.clone()),
+        TypeKind::Reference { inner } => ast_member_ty(inner),
+        _ => MemberTy::Primitive(4),
+    }
+}
+
+fn slot_member_ty(slot: &Slot) -> MemberTy {
+    match slot.kind & 0xff {
+        KIND_STRING => MemberTy::String,
+        k if k <= 15 => MemberTy::Primitive(k),
+        _ => MemberTy::Primitive(slot.kind),
+    }
+}
+
+fn members_compatible(want: &MemberTy, got: &MemberTy) -> bool {
+    match (want, got) {
+        (a, b) if a == b => true,
+        (MemberTy::Primitive(a), MemberTy::Primitive(b)) => {
+            let intish = |k: u64| matches!(k, 1..=11);
+            intish(*a) && intish(*b)
+        }
+        (MemberTy::String, MemberTy::Primitive(16))
+        | (MemberTy::Primitive(16), MemberTy::String) => true,
+        _ => false,
     }
 }
 
@@ -1907,6 +3352,7 @@ fn infer_value_kind(v: &Value) -> u64 {
         Value::Int(_) => 4,
         Value::Float(_) => 14,
         Value::Str { .. } => 16,
+        Value::Heap { .. } => 0x50,
         Value::Array(elems) => {
             let count = elems.len() as u64;
             let elem = elems.first().map(infer_value_kind).unwrap_or(4);

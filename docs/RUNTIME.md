@@ -18,6 +18,8 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 | `executable` | Object emit + system `ld`/`lld` link with the runtime archive       |
 | `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)     |
 
+`Session::interpret_source` covers the Stage 21 corpus plus Stage 32 fixtures (`06` structs/enums/methods, `07` unions, `10` errors/`unwrap`/`handle`, `13` lists/maps) with stdout matching JIT. Regions, unsafe/pointers, and remaining `valid/**` stay `E393` until later. Gate: `cargo run -p yarrow_core --example check_interpret`.
+
 ### Default backend (Stage 29)
 
 Product default is **object** (AOT), not JIT:
