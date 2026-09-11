@@ -108,7 +108,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–17 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–18 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -130,6 +130,7 @@ Stages 0–17 are complete. Historical stage write-ups were removed; git history
 | Range / span format API      | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)                    |
 | Stdlib + CI `--check`        | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`           |
 | Best-effort incomplete parse | Stage 17: hygiene subset + `Parser::parse_recovering`                          |
+| Selective construct reprint  | Stage 18: recovered top-level decls reprint when spans clear errors            |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -137,22 +138,11 @@ Stages 0–17 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: deepen best-effort recovery, then ignore regions and throughput. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
+Focus: ignore regions, then throughput. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 18 - Selective construct reprint on recovered parse
+### Stage 18 - Selective construct reprint on recovered parse ✅
 
-Stage 17 left construct / indent / blanks fail-closed on incomplete parse because recovered spans were not trustworthy. Editors still only get hygiene on broken buffers.
-
-1. Coordinate with `yarrow-core`: recovered AST (or statement / item spans) must be mapped reliably enough to reprint **unbroken** regions without shifting broken text. If core cannot expose trustworthy covers yet, land a short design note in Done and keep this stage open / blocked; do not invent a second parser here.
-2. Extend `format_source_best_effort` so that, when recovery succeeds partially:
-   - always apply source hygiene (as today)
-   - reprint construct / indent / blanks only for contiguous recovered top-level items (or documented smaller units) whose spans do not overlap error regions
-   - leave broken slices byte-identical aside from hygiene
-3. Keep `FormattedSource { best_effort: true }` whenever any region was skipped or only hygiened. `format_source` stays strict (full parse or `FormatError::Parse`).
-4. Idempotence: second best-effort pass must not churn the recovered subset; broken text must not grow/shrink except via hygiene.
-5. Update fixtures / gate example; LSP full-doc path keeps calling best-effort (gains selective reprint automatically). [`yarrow-lsp` Stage 23](../yarrow-lsp/PLAN.md) on-type may depend on this.
-
-**Gate:** a deliberately broken fixture gets hygiene plus at least one recovered top-level item reprinted to match full `format_source` on that item alone; the broken region remains intact (aside from LF / trailing-WS). A fully valid file still fully formats with `best_effort: false`. If core recovery spans are unavailable, Done notes say blocked. `cargo fmt && cargo check && cargo clippy` green for whatever landed.
+**Done:** No new core parser API. Trust model: recovered `Stmt` spans that do not overlap diagnostic primary spans, cover only inert gaps between neighbors, and pass `format_source` on the cover slice alone. `format_source_best_effort` splices those reprints into hygiened text; broken regions stay intact aside from LF / trailing-WS / final newline. Tokenize failure remains hygiene-only. Fixture: `crates/yarrow-fmt/fixtures/stage18_selective_reprint.yar`. Fully valid input still returns `best_effort: false`.
 
 ---
 

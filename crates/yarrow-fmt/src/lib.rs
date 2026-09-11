@@ -3,10 +3,12 @@
 //! Rewrites `.yar` to match `docs/STYLE_GUIDE.md`. Parses via `yarrow_core`;
 //! does not type-check, borrow-check, or codegen.
 //!
-//! Stage 17: [`format_source_best_effort`] applies source hygiene on incomplete
-//! parses (construct reprint stays fail-closed). Shared [`run_fmt`] for
-//! `yarrow-fmt` / `yarrow fmt`; [`format_range`] for span edits.
+//! Stage 18: [`format_source_best_effort`] applies source hygiene on incomplete
+//! parses and selectively reprints recovered top-level declarations whose spans
+//! stay clear of error regions. Shared [`run_fmt`] for `yarrow-fmt` /
+//! `yarrow fmt`; [`format_range`] for span edits.
 
+mod best_effort;
 mod blank;
 mod comment;
 mod driver;
@@ -144,8 +146,10 @@ impl From<SessionDiagnostics> for FormatError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormattedSource {
     pub text: String,
-    /// True when parse was incomplete and only source hygiene was applied.
-    /// Idempotence for construct/indent/blanks applies only when this is false.
+    /// True when parse was incomplete: hygiene always ran; recovered top-level
+    /// declarations may have been selectively reprinted (Stage 18). Full
+    /// construct/indent/blank idempotence across the whole file applies only
+    /// when this is false.
     pub best_effort: bool,
 }
 
@@ -165,10 +169,11 @@ pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, Fo
 
 /// Format with a safe subset on incomplete parse.
 ///
-/// On a clean parse, same as [`format_source`]. On syntax / tokenize failure,
-/// returns hygiened text (`LF`, no trailing WS, final newline) with
-/// [`FormattedSource::best_effort`] set and leaves the broken region intact
-/// (no construct reprint from a recovered AST). I/O and UTF-8 errors still
+/// On a clean parse, same as [`format_source`]. On syntax failure with a
+/// recovered AST, applies hygiene then selectively reprints top-level
+/// declarations whose spans do not overlap error regions and that re-format
+/// cleanly alone (Stage 18). Tokenize failure still yields hygiene only.
+/// Broken slices stay intact aside from hygiene. I/O and UTF-8 errors still
 /// surface as [`FormatError`].
 pub fn format_source_best_effort(
     source: &str,
@@ -186,10 +191,11 @@ fn format_source_at(
     let cleaned = apply_source_hygiene(source);
     let ir = match FormatIr::parse_recovering(cleaned.clone(), path) {
         Ok(FormatIrParse::Complete(ir)) => ir,
-        Ok(FormatIrParse::Partial { file, batch, .. }) => {
+        Ok(FormatIrParse::Partial { ir, file, batch }) => {
             if best_effort {
+                let text = best_effort::selective_reprint(&cleaned, &ir, &batch, options);
                 return Ok(FormattedSource {
-                    text: cleaned,
+                    text,
                     best_effort: true,
                 });
             }
