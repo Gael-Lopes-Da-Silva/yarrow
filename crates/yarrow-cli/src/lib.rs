@@ -84,18 +84,37 @@ where
                 no_sort_requires,
                 reorder_layout,
                 best_effort,
+                range,
                 paths,
             }),
             None,
-        ) => commands::run_fmt_command(
-            paths,
-            check,
-            stdin,
-            max_width,
-            yarrow_fmt::resolve_sort_requires_flags(sort_requires, no_sort_requires),
-            reorder_layout,
-            best_effort,
-        ),
+        ) => {
+            let range = match range {
+                Some(s) => match yarrow_fmt::parse_range_arg(&s) {
+                    Ok(r) => Some(r),
+                    Err(msg) => {
+                        eprintln!("yarrow fmt: {msg}");
+                        return ExitCode::from(2);
+                    }
+                },
+                None => None,
+            };
+            commands::run_fmt_command(yarrow_fmt::FmtInput {
+                options: yarrow_fmt::FormatOptions {
+                    max_width,
+                    sort_requires: yarrow_fmt::resolve_sort_requires_flags(
+                        sort_requires,
+                        no_sort_requires,
+                    ),
+                    reorder_layout,
+                },
+                check,
+                stdin,
+                best_effort,
+                range,
+                paths,
+            })
+        }
         (
             Some(Cmd::Lsp {
                 stdio,

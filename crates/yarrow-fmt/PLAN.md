@@ -36,6 +36,7 @@ Mechanical rewrite of parseable source:
 - Diff-friendly ignore regions via `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (Stage 19)
 - Parallel multi-file driver (Stage 20); per-file bytes unchanged vs sequential
 - Widened fmt-check corpus (Stage 21): `warnings/**`, `project/**`, stage19 fixture
+- CLI range mode (Stage 22): `--range START:END` prints `format_range` edit encoding
 
 ### Out of scope
 
@@ -65,6 +66,9 @@ source (.yar)
 
 multi-file `run_fmt` (Stage 20): independent paths formatted in parallel (rayon);
   reporting / writes stay sorted-path order; stdin and single-file stay sequential
+
+`--range START:END` (Stage 22): `format_range` → `yarrow-fmt-range-v1` stdout encoding
+  (no file write); editors keep using LSP rangeFormatting
 ```
 
 Public surface:
@@ -87,8 +91,11 @@ pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, Fo
 pub fn format_source_best_effort(source: &str, options: &FormatOptions) -> Result<FormattedSource, FormatError>;
 pub fn format_file(path: &Path, options: &FormatOptions) -> Result<String, FormatError>;
 
-pub struct FmtInput { /* options, check, stdin, best_effort, paths */ }
+pub struct FmtInput { /* options, check, stdin, best_effort, range, paths */ }
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode;
+pub fn parse_range_arg(s: &str) -> Result<ByteRange, String>;
+pub fn encode_range_edit(edit: &FormatRangeEdit) -> String;
+pub const RANGE_EDIT_HEADER: &str; // "yarrow-fmt-range-v1"
 
 pub struct ByteRange { pub start: usize, pub end: usize }
 pub struct FormatRangeEdit { pub range: ByteRange, pub new_text: String, pub expanded: bool }
@@ -107,6 +114,7 @@ CLI (`yarrow-fmt` and `yarrow fmt`):
 | `--no-sort-requires` | Keep top-level require source order              |
 | `--reorder-layout`   | Opt-in top-level file-layout reorder             |
 | `--best-effort`      | On parse failure, hygiene (and Stage 18 reprint) |
+| `--range START:END`  | Byte-span edit encoding to stdout (Stage 22)     |
 | paths / dirs         | `.yar` files; recurse directories                |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
@@ -115,7 +123,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–21 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–22 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -141,6 +149,7 @@ Stages 0–21 are complete. Historical stage write-ups were removed; git history
 | Ignore regions               | Stage 19: `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end`              |
 | Parallel multi-file driver   | Stage 20: rayon over independent paths; sorted reporting                       |
 | Widened fmt-check corpus     | Stage 21: `warnings/**`, `project/**`, stage19 fixture on the CI gate          |
+| CLI range mode               | Stage 22: `--range START:END`; `yarrow-fmt-range-v1` stdout encoding           |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check` on the Stage 21 path set) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -148,26 +157,11 @@ Stages 0–21 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: optional CLI range surface. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
+Focus: backlog only unless a new style-guide rule appears. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 21 - Widen fmt-check corpus ✅
+### Stage 22 - CLI range mode ✅
 
-**Done:** Bootstrap-formatted and gated `docs/examples/warnings/**`, `docs/examples/project/**`, and `crates/yarrow-fmt/fixtures/stage19_ignore_regions.yar` alongside `valid/**` + `lib/std`. Restored [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh) / [`.github/workflows/fmt-check.yml`](../../.github/workflows/fmt-check.yml) with that set. Still excludes `docs/examples/invalid/**` and `fixtures/stage18_selective_reprint.yar` (intentional incomplete parse).
-
----
-
-### Stage 22 - CLI range mode (optional)
-
-Stage 15 kept range format library-only for LSP. Scripts may want the same without the language server.
-
-1. Add a narrow CLI surface, e.g. `yarrow-fmt --range START:END` (byte offsets) or `--range-start` / `--range-end`, usable with `--stdin` or a single file.
-2. Print the replacement text or a documented edit encoding; prefer matching `FormatRangeEdit` semantics (expansion included).
-3. On parse failure: exit `1` with a clear message (same as full format); never half-write the file.
-4. Wire through `yarrow fmt` the same flags. Document that editors should keep using LSP `rangeFormatting`.
-
-**Gate:** formatting a span of a messy fixture via CLI yields the same `new_text` as `format_range` for that span; full-file default path unchanged. `cargo clippy` green.
-
-**Skip if unused:** if no agent / script need appears after Stage 18–21, leave this in Later and mark Next accordingly.
+**Done:** `--range START:END` on `yarrow-fmt` and `yarrow fmt` (stdin or one file). Prints `yarrow-fmt-range-v1` / `start end expanded` / `new_text` matching [`FormatRangeEdit`](src/range.rs). Parse failure exits `1` with no file write. Incompatible with `--best-effort`. Editors keep using LSP `rangeFormatting`. Gate fixture: [`fixtures/stage22_range_messy.yar`](fixtures/stage22_range_messy.yar).
 
 ---
 
@@ -190,7 +184,7 @@ Stage 15 kept range format library-only for LSP. Scripts may want the same witho
 | Control flow / Defer / Unsafe / Errors | Landed (7)                                |
 | Ownership / Stack hygiene              | Out of scope (semantics)                  |
 | Checklist                              | Landed layout rows; naming rows ignored   |
-| Tooling / ignore                       | Stage 19 ✅                               |
+| Tooling / ignore                       | Stage 19 ✅; CLI `--range` Stage 22 ✅          |
 
 ---
 

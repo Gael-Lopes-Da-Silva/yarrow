@@ -9,7 +9,7 @@
 //! `# yarrow-fmt-ignore-end` regions keep original text (plus hygiene). Stage 20:
 //! multi-file [`run_fmt`] formats independent paths in parallel (same bytes as
 //! sequential; sorted reporting). Shared driver for `yarrow-fmt` / `yarrow fmt`;
-//! [`format_range`] for span edits.
+//! [`format_range`] for span edits (CLI `--range START:END`, Stage 22).
 
 mod best_effort;
 mod blank;
@@ -28,7 +28,7 @@ mod require;
 
 pub use blank::apply_blank_lines;
 pub use comment::{normalize_comment, trailing_suffix};
-pub use driver::{FmtInput, run_fmt};
+pub use driver::{FmtInput, RANGE_EDIT_HEADER, encode_range_edit, parse_range_arg, run_fmt};
 pub use hygiene::apply_source_hygiene;
 pub use ignore::{
     enclosing_ignore, find_ignore_regions, has_ignore_markers, intersects_ignore,

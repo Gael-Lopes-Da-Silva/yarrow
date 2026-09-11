@@ -1,11 +1,12 @@
-//! `yarrow-fmt` binary: in-place format, `--check`, and `--stdin`.
+//! `yarrow-fmt` binary: in-place format, `--check`, `--stdin`, and `--range`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use yarrow_fmt::{
-    DEFAULT_MAX_WIDTH, FmtInput, FormatOptions, resolve_sort_requires_flags, run_fmt,
+    DEFAULT_MAX_WIDTH, FmtInput, FormatOptions, parse_range_arg, resolve_sort_requires_flags,
+    run_fmt,
 };
 
 /// Exit: 0 ok / already formatted; 1 would change (`--check`) or format failure; 2 usage / I/O.
@@ -44,6 +45,14 @@ struct Args {
     #[arg(long)]
     best_effort: bool,
 
+    /// Format a UTF-8 byte span `START:END` (exclusive end) via `format_range`.
+    ///
+    /// Requires `--stdin` or exactly one `.yar` file. Prints a `yarrow-fmt-range-v1`
+    /// edit encoding to stdout (does not write the file). Incompatible with
+    /// `--best-effort`. Editors should keep using LSP range formatting.
+    #[arg(long, value_name = "START:END")]
+    range: Option<String>,
+
     /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
@@ -51,6 +60,16 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    let range = match args.range {
+        Some(s) => match parse_range_arg(&s) {
+            Ok(r) => Some(r),
+            Err(msg) => {
+                eprintln!("yarrow-fmt: {msg}");
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
     run_fmt(
         "yarrow-fmt",
         FmtInput {
@@ -65,6 +84,7 @@ fn main() -> ExitCode {
             check: args.check,
             stdin: args.stdin,
             best_effort: args.best_effort,
+            range,
             paths: args.paths,
         },
     )
