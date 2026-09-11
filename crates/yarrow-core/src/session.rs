@@ -120,7 +120,8 @@ pub struct Session {
 ///
 /// Warnings (Stage 20) may be non-empty while this remains `Ok` from
 /// [`Session::check_source`]. [`CheckedProgram::type_at`] answers typed hover
-/// probes (Stage 30) without re-running the checker.
+/// probes (Stage 30); [`CheckedProgram::definition_at`] answers definition /
+/// require probes (Stage 35) without re-running the checker.
 #[derive(Debug, Clone)]
 pub struct CheckedProgram {
     pub file: SourceFile,
@@ -128,6 +129,8 @@ pub struct CheckedProgram {
     pub warnings: DiagnosticBatch,
     /// Typed sites in the root file (bindings / function signatures).
     pub type_index: crate::TypeIndex,
+    /// Definition / require sites in the root file (Stage 35).
+    pub def_index: crate::DefIndex,
 }
 
 impl CheckedProgram {
@@ -137,6 +140,14 @@ impl CheckedProgram {
     /// comments, or code that was not indexed).
     pub fn type_at(&self, offset: usize) -> Option<crate::TypeProbe> {
         self.type_index.type_at(offset)
+    }
+
+    /// Probe the definition or `require` target at a byte offset in the root file.
+    ///
+    /// Returns `None` on whitespace, comments, unresolved names, or other
+    /// unindexed offsets. Never fabricates module paths.
+    pub fn definition_at(&self, offset: usize) -> Option<crate::DefProbe> {
+        self.def_index.definition_at(offset)
     }
 }
 
@@ -249,11 +260,13 @@ impl Session {
         let mut compiler = self.lower(&file, &program, LowerKind::Check)?;
         let warnings = compiler.take_warnings();
         let type_index = compiler.take_type_index();
+        let def_index = compiler.take_def_index();
         Ok(CheckedProgram {
             file,
             program,
             warnings,
             type_index,
+            def_index,
         })
     }
 

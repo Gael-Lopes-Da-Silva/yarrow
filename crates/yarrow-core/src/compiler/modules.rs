@@ -69,11 +69,20 @@ impl ModuleLoader {
                 return Some((*source).to_string());
             }
         }
+        self.resolve_file_path(path)
+            .and_then(|file| std::fs::read_to_string(file).ok())
+    }
+
+    /// On-disk `.yar` for a dotted module path under search roots, if any.
+    ///
+    /// Embedded std modules return `None` unless a matching file is also on a
+    /// search path (Stage 35 optional `file_path`).
+    pub fn resolve_file_path(&self, path: &str) -> Option<PathBuf> {
         let relative = path.replace('.', "/");
         for root in &self.search_paths {
             let file = root.join(&relative).with_extension("yar");
             if file.is_file() {
-                return std::fs::read_to_string(&file).ok();
+                return Some(file);
             }
         }
         None

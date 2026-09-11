@@ -26,12 +26,12 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                                                                                           |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)                                                                              |
 | Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings`                                    |
-| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30)         |
+| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `type_at` (30) + `definition_at` (35) |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                                                                                        |
 | Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393  |
-| Probes      | `TypeIndex` / `TypeProbe` / `type_at` (bindings + signatures); no require-path / definition index yet                                                                           |
+| Probes      | `TypeIndex` / `type_at`; `DefIndex` / `definition_at` (bindings + requires, root-only; Stage 35)                                                                               |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
 
@@ -48,30 +48,18 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | Warnings   | `W401`–`W407` landed; empty `match` arm and further lints are Stage 38                                                   |
 | Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
-| LSP assist | Typed-at-span via `type_at`; require-path / definition probe is Stage 35 ([`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md)) |
+| LSP assist | Typed-at-span + definition / require probes landed (Stage 35); LSP consumption is [`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md) |
 | Formatter  | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene via `parse_recovering`; selective reprint is [`yarrow-fmt` Stage 18](../yarrow-fmt/PLAN.md) |
 
 ---
 
 ## Next (Phase H)
 
-Focus: LSP navigation probes, interpreter parity for remaining `valid/**`, then AOT executable link on non-ELF and lint/ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md).
+Focus: interpreter parity for remaining `valid/**`, then AOT executable link on non-ELF and lint/ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
 
-### Stage 35 - Require-path / definition probe API
+### Stage 35 - Require-path / definition probe API - **done**
 
-Stage 30’s stretch (require-path or definition span at offset) was skipped; LSP still walks the AST for navigation. Land a stable core probe so hover / goto do not invent resolves.
-
-1. After a successful `check_source`, expose probes usable without JIT / object emit, e.g. on `CheckedProgram` or an extended `TypeIndex` / `DefIndex`:
-   - at a byte offset on an identifier: definition `Span` + path (root file or resolved module path) when known
-   - at a byte offset on a `require` path / imported name: resolved module path (and optional on-disk path if the loader has it)
-2. Prefer data already computed during check / module load (reuse `resolve_require` / module graph edges). Do not re-parse in the probe.
-3. Misses (whitespace, comments, unresolved) return `None` / clear miss; never fabricate paths.
-4. Document under [`docs/RUNTIME.md`](../../docs/RUNTIME.md) Session probes; coordinate names with [`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md) (definition / hover “defined in …”).
-5. Optional stretch (same stage only if cheap): fill probes for required-module files as well as the root; otherwise document root-only and leave multi-file index to LSP + project graph.
-
-**Gate:** documented probe on a binding in `docs/examples/valid/03_variables_and_typeof.yar` returns a non-empty definition span in that file; probe on a `require` in `docs/examples/valid/12_modules.yar` (or project fixture) returns the resolved module path. Miss on empty span. Existing `type_at` / corpus gates unchanged. `cargo clippy` green.
-
----
+`CheckedProgram::definition_at` / `DefIndex` on the root file: binding and function definition spans (use sites point back), plus `require` alias / path string → resolved module path and optional on-disk `file_path`. Root-only (required-module bodies not indexed). Documented in [`docs/RUNTIME.md`](../../docs/RUNTIME.md). Stretch (multi-file index) deferred to LSP + project graph.
 
 ### Stage 36 - Interpreter: regions, defer, field `set`
 

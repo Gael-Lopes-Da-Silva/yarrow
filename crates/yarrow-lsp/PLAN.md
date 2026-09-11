@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–19)
+### Landed (v1, Stages 0–19, 21–22)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
@@ -42,6 +42,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Semantic tokens (full document) from tokenizer + AST decls
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
+- Core `definition_at` probes for goto / hover (Stage 22; AST fallback on miss)
 
 Stage 20 (editor extension packaging) was **canceled**; clients live in separate repos.
 
@@ -121,20 +122,20 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21 landed; Stage 20 canceled                    |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–22 landed; Stage 20 canceled                 |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
-| Def / require probe | ⏳     | Core Stage 35; LSP Stage 22 consumes it                       |
-| Cross-file resolve  | ⚠      | AST + `require` today; project multi-root landed in Stage 21  |
+| Def / require probe | ✅     | Core Stage 35 + LSP Stage 22 consume `definition_at`          |
+| Cross-file resolve  | ⚠      | Probe + AST / `require`; project multi-root in Stage 21       |
 | `yarrow-fmt`        | ✅     | Full-doc best-effort + `format_range`; on-type still deferred |
 | CLI `yarrow lsp`    | ✅     | In-process `run_stdio_blocking` / `--listen`                  |
 
 ---
 
-## Landed (Stages 0–19, 21)
+## Landed (Stages 0–19, 21–22)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stage 21 (project-aware multi-root) is landed.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–22 are landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -160,30 +161,17 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 19    | TCP `--listen` + `scripts/harness.mjs`                      |
 | 20    | Editor extensions - **canceled** (separate repos)           |
 | 21    | Project-aware multi-root via `projectRoots` + `check_project` |
+| 22    | Core `definition_at` for goto / hover; AST fallback on miss |
 
 **Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
+
+**Stage 22 notes:** Prefer `CheckedProgram::definition_at` (core Stage 35) for `textDocument/definition` and hover “defined in …” / module path. Misses keep AST / require resolution. Harness: `definition-require` on `12_modules.yar` `greet` alias.
 
 ---
 
 ## Next
 
-Focus: richer probes / on-type / workspace pull. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
-
-### Stage 22 - Core definition / require-path probes
-
-Navigation and hover still walk AST / require paths. Core Stage 35 adds stable definition / require probes; this stage consumes them.
-
-1. **Blocked** until [`yarrow-core` Stage 35](../yarrow-core/PLAN.md) lands. If probes are missing, keep AST fallbacks and leave this stage open.
-2. Prefer probe results for:
-   - `textDocument/definition` when the probe returns a span / path
-   - hover “defined in …” / require target path when available
-3. Misses fall back to today’s AST / require resolution (no empty regression).
-4. Never fabricate modules. Cross-file targets must resolve to real URIs (`file://` or Stage 26 virtual std).
-5. Harness scenario: definition or hover on a binding / require in `12_modules.yar` (or project fixture) asserts a non-empty location.
-
-**Gate:** scripted client gets a `Location` (or hover text including the resolved path) from a known require / binding using the probe path. Existing typed hover / definition fixtures still pass. `cargo clippy` green.
-
----
+Focus: on-type formatting / workspace pull / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
 ### Stage 23 - On-type formatting
 
@@ -248,8 +236,8 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | textDocument sync                  | 1 ✅           | -                                          |
 | publishDiagnostics                 | 2 ✅           | `check_source`, spans                      |
 | documentSymbol                     | 3 ✅           | AST spans                                  |
-| definition                         | 4, 7 ✅; 22    | AST + require; core Stage 35 probes        |
-| hover                              | 5, 9 ✅; 22    | AST; `type_at`; def/require probes         |
+| definition                         | 4, 7, 22 ✅    | AST + require; core Stage 35 probes        |
+| hover                              | 5, 9, 22 ✅    | AST; `type_at`; def/require probes         |
 | completion                         | 6 ✅           | grammar keywords + AST names               |
 | references                         | 7 ✅           | binding / name index                       |
 | formatting                         | 8 ✅           | `yarrow-fmt`                               |

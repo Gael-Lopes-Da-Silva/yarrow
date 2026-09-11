@@ -1,10 +1,13 @@
 //! Same-file `textDocument/hover` from AST signatures (+ typed core probes, optional diagnostic explain).
+//!
+//! Prefers core [`CheckedProgram::definition_at`] for “defined in …” / require
+//! paths (Stage 22) when check succeeds.
 
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 use yarrow_core::parser::ast::{
     Function, Mutability, ParamModifier, Primitive, Stmt, StmtKind, Type, TypeKind,
 };
-use yarrow_core::{Program, SourceFile, Span, TokenKind, Tokenizer, explain_code};
+use yarrow_core::{DefKind, Program, SourceFile, Span, TokenKind, Tokenizer, explain_code};
 
 use crate::config::LspConfig;
 use crate::position::{PositionEncoding, PositionMap};
@@ -28,7 +31,7 @@ pub fn hover(
 
     let mut md = format!("```yarrow\n{}\n```", decl.signature);
 
-    // Stage 9: enrich with checker types / stack effects when check succeeds.
+    // Stage 9 / 22: enrich with checker types, definition / require probes, explain.
     match session.check_source(text.to_string()) {
         Ok(checked) => {
             if let Some(probe) = checked
@@ -43,6 +46,25 @@ pub fn hover(
                     md.push_str("\n\n```yarrow\n");
                     md.push_str(sig);
                     md.push_str("\n```");
+                }
+            }
+            if let Some(def) = checked.definition_at(offset) {
+                match def.kind {
+                    DefKind::Definition => {
+                        md.push_str("\n\n*defined in* `");
+                        md.push_str(&def.path);
+                        md.push('`');
+                    }
+                    DefKind::Require => {
+                        md.push_str("\n\n*module* `");
+                        md.push_str(&def.path);
+                        md.push('`');
+                        if let Some(file) = def.file_path.as_deref() {
+                            md.push_str("\n\n*resolved* `");
+                            md.push_str(file);
+                            md.push('`');
+                        }
+                    }
                 }
             }
             if let Some(explain) = explain_in_batch(&checked.warnings, offset) {

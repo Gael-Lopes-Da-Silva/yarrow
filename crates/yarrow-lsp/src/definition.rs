@@ -1,8 +1,11 @@
 //! Same-file + `require` cross-file `textDocument/definition`.
+//!
+//! Prefers core [`CheckedProgram::definition_at`] (Stage 22) when check succeeds;
+//! falls back to the AST / require walk on miss or check failure.
 
 use tower_lsp_server::ls_types::{GotoDefinitionResponse, Location, Position, Range, Uri};
 use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
-use yarrow_core::{Program, SourceFile, Span, TokenKind, Tokenizer};
+use yarrow_core::{DefKind, Program, SourceFile, Span, TokenKind, Tokenizer};
 
 use crate::config::LspConfig;
 use crate::modules::{self, item_name_span};
@@ -18,6 +21,19 @@ pub fn goto_definition(
     config: &LspConfig,
 ) -> Option<GotoDefinitionResponse> {
     let session = config.session(path);
+    let map_file = SourceFile::new(path.to_string(), text.to_string());
+    let map = PositionMap::from_file(&map_file, encoding);
+    let offset = map.offset(position)?;
+
+    if let Ok(checked) = session.check_source(text.to_string())
+        && let Some(probe) = checked.definition_at(offset)
+    {
+        let probe_map = PositionMap::from_file(&checked.file, encoding);
+        if let Some(resp) = location_from_probe(&probe, &probe_map, uri, path, encoding, config) {
+            return Some(resp);
+        }
+    }
+
     let (file, program) = session.parse_source(text.to_string()).ok()?;
     let map = PositionMap::from_file(&file, encoding);
     let offset = map.offset(position)?;
@@ -52,6 +68,48 @@ pub fn goto_definition(
         uri.clone(),
         range,
     )))
+}
+
+fn location_from_probe(
+    probe: &yarrow_core::DefProbe,
+    map: &PositionMap,
+    uri: &Uri,
+    source_path: &str,
+    encoding: PositionEncoding,
+    config: &LspConfig,
+) -> Option<GotoDefinitionResponse> {
+    match probe.kind {
+        DefKind::Definition => {
+            let range = map.range(probe.def_span);
+            Some(GotoDefinitionResponse::Scalar(Location::new(
+                uri.clone(),
+                range,
+            )))
+        }
+        DefKind::Require => {
+            let target_path = probe
+                .file_path
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    modules::resolve_require_file(source_path, &probe.path, &config.search_paths)
+                        .map(|t| t.path)
+                })?;
+            let target_uri = Uri::from_file_path(&target_path)?;
+            let range = std::fs::read_to_string(&target_path)
+                .ok()
+                .and_then(|target_text| {
+                    let target_file =
+                        SourceFile::new(target_path.to_string_lossy().into_owned(), target_text);
+                    let target_map = PositionMap::from_file(&target_file, encoding);
+                    item_name_span(&target_path, &probe.name).map(|span| target_map.range(span))
+                })
+                .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0)));
+            Some(GotoDefinitionResponse::Scalar(Location::new(
+                target_uri, range,
+            )))
+        }
+    }
 }
 
 /// Binding kind for semantic highlighting / navigation helpers.

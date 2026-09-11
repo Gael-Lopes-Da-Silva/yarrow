@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stage-30), [Warnings](#warnings-stage-20--31).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--31).
 
 ## Execution model
 
@@ -417,17 +417,27 @@ Diagnostics:
 
 Single-file `Session::check_source` and nested `require` are unchanged. CLI / LSP project drivers come later; see [`docs/examples/project/`](examples/project/).
 
-## Session probes (Stage 30)
+## Session probes (Stages 30 / 35)
 
-After a successful `Session::check_source`, [`CheckedProgram`](../crates/yarrow-core/src/session.rs) retains a [`TypeIndex`](../crates/yarrow-core/src/analysis.rs) of root-file sites collected during check-only lowering (no JIT / object product).
+After a successful `Session::check_source`, [`CheckedProgram`](../crates/yarrow-core/src/session.rs) retains a [`TypeIndex`](../crates/yarrow-core/src/analysis.rs) and a [`DefIndex`](../crates/yarrow-core/src/analysis.rs) of root-file sites collected during check-only lowering (no JIT / object product).
 
-| API                               | Role                                                             |
-| --------------------------------- | ---------------------------------------------------------------- |
-| `CheckedProgram::type_at(offset)` | Innermost site whose span contains the byte offset               |
-| `TypeProbe::ty`                   | Resolved binding type string (`i32`, `list<i32>`, …)             |
-| `TypeProbe::signature`            | Function summary plus `stack: […] → […]` when on a function name |
+| API                                    | Role                                                             |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| `CheckedProgram::type_at(offset)`      | Innermost typed site whose span contains the byte offset         |
+| `TypeProbe::ty`                        | Resolved binding type string (`i32`, `list<i32>`, …)             |
+| `TypeProbe::signature`                 | Function summary plus `stack: […] → […]` when on a function name |
+| `CheckedProgram::definition_at(offset)`| Innermost definition / `require` site at the offset (Stage 35)   |
+| `DefProbe::def_span`                   | Definition name span (use sites point back to the binding)       |
+| `DefProbe::path`                       | Root source path, or resolved module dotted path for requires    |
+| `DefProbe::file_path`                  | On-disk `.yar` when the loader found one; else `None`            |
+| `DefProbe::kind`                       | `Definition` or `Require`                                        |
 
-Misses (whitespace, comments, unindexed code) return `None`. Required modules are not indexed into the root probe; leave cross-file navigation to the LSP AST walk. Example: on `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` on `answer` yields `ty = Some("i32")`.
+Misses (whitespace, comments, unindexed code) return `None`. Never fabricates module paths. Required-module *bodies* are not indexed into the root probe (root-only); LSP may still walk `require` / project graphs for multi-file navigation.
+
+Examples:
+
+- On `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` / `definition_at` on `answer` yield `ty = Some("i32")` and a non-empty `def_span` in that file.
+- On `docs/examples/valid/12_modules.yar`, `definition_at` on the `greet` alias (or the `"helpers.greet"` path string) yields `kind = Require`, `path = "helpers.greet"`, and `file_path` pointing at `helpers/greet.yar` when that file is on a search path.
 
 ## Warnings (Stage 20 / 31)
 
