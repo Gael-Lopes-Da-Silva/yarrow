@@ -29,7 +29,7 @@ struct Args {
     #[arg(long, value_name = "NAME", default_value = "main")]
     main: String,
 
-    /// Disable `textDocument/formatting`.
+    /// Disable document / range / on-type formatting.
     #[arg(long)]
     no_format: bool,
 

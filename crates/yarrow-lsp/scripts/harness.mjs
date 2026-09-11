@@ -11,6 +11,7 @@
  *   node crates/yarrow-lsp/scripts/harness.mjs project-roots
  *   node crates/yarrow-lsp/scripts/harness.mjs project-missing-root
  *   node crates/yarrow-lsp/scripts/harness.mjs definition-require
+ *   node crates/yarrow-lsp/scripts/harness.mjs on-type-format
  *
  * Env:
  *   YARROW_LSP_BIN  - server argv prefix (default: cargo run -q -p yarrow_lsp --)
@@ -31,6 +32,7 @@ const SCENARIOS = [
   "project-roots",
   "project-missing-root",
   "definition-require",
+  "on-type-format",
 ];
 
 function usage() {
@@ -392,6 +394,72 @@ async function scenarioDefinitionRequire(client) {
   client.notify("exit", null);
 }
 
+async function scenarioOnTypeFormat(client) {
+  // Nested `end` at one tab; client over-indented the following blank line.
+  const text = "main function do\n\tinner function do\n\t\t1 drop\n\tend\n\t\t\t";
+  const uri = "file:///tmp/yarrow-lsp-on-type.yar";
+  // Cursor after typed newline + over-indent (end of buffer).
+  const line = 4;
+  const character = 3;
+
+  const init = await client.request("initialize", {
+    processId: null,
+    clientInfo: { name: "yarrow-lsp-harness", version: "0.1" },
+    capabilities: {
+      general: { positionEncodings: ["utf-8"] },
+    },
+    rootUri: null,
+  });
+  const onType = init?.capabilities?.documentOnTypeFormattingProvider;
+  if (!onType || onType.firstTriggerCharacter !== "\n") {
+    throw new Error(
+      `expected documentOnTypeFormattingProvider firstTriggerCharacter=\\n; got: ${JSON.stringify(onType)}`,
+    );
+  }
+
+  client.notify("initialized", {});
+  client.notify("textDocument/didOpen", {
+    textDocument: {
+      uri,
+      languageId: "yarrow",
+      version: 1,
+      text,
+    },
+  });
+
+  const edits = await client.request("textDocument/onTypeFormatting", {
+    textDocument: { uri },
+    position: { line, character },
+    ch: "\n",
+    options: { tabSize: 4, insertSpaces: false },
+  });
+
+  if (!Array.isArray(edits) || edits.length !== 1) {
+    throw new Error(
+      `expected one indent TextEdit; got: ${JSON.stringify(edits)}`,
+    );
+  }
+  const edit = edits[0];
+  if (edit.newText !== "\t") {
+    throw new Error(
+      `expected newText one tab (match end indent); got: ${JSON.stringify(edit)}`,
+    );
+  }
+  if (
+    edit.range?.start?.line !== 4 ||
+    edit.range?.end?.line !== 4 ||
+    edit.range?.start?.character !== 0 ||
+    edit.range?.end?.character !== 3
+  ) {
+    throw new Error(
+      `expected range covering over-indent on line 4; got: ${JSON.stringify(edit.range)}`,
+    );
+  }
+
+  await client.request("shutdown", null);
+  client.notify("exit", null);
+}
+
 async function main() {
   const scenario = process.argv[2] || "pull-diagnostics";
   if (scenario === "-h" || scenario === "--help") usage();
@@ -415,6 +483,8 @@ async function main() {
       await scenarioProjectMissingRoot(client);
     } else if (scenario === "definition-require") {
       await scenarioDefinitionRequire(client);
+    } else if (scenario === "on-type-format") {
+      await scenarioOnTypeFormat(client);
     }
 
     console.log(`harness ok: ${scenario} via tcp ${addr}`);

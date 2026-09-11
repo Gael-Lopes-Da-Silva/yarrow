@@ -33,8 +33,9 @@ use tower_lsp_server::ls_types::{
     CompletionParams, CompletionResponse, Diagnostic, DiagnosticOptions,
     DiagnosticServerCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentDiagnosticParams, DocumentDiagnosticReport,
-    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentRangeFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
+    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentOnTypeFormattingOptions,
+    DocumentOnTypeFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
     FullDocumentDiagnosticReport, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
     InlayHintParams, LSPAny, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams,
@@ -56,7 +57,7 @@ pub use completion::completions;
 pub use config::{InitializationOptions, LspConfig};
 pub use definition::goto_definition;
 pub use document::{Document, DocumentStore, LANGUAGE_ID};
-pub use format::{format_document, format_document_range};
+pub use format::{format_document, format_document_range, format_on_type};
 pub use hover::hover as hover_at;
 pub use inlay_hints::inlay_hints as inlay_hints_at;
 pub use position::{PositionEncoding, PositionMap};
@@ -595,9 +596,16 @@ impl LanguageServer for Backend {
                 } else {
                     None
                 },
-                // On-type formatting deferred: mid-edit buffers often fail to parse,
-                // and format_range expands to whole top-level items (too aggressive
-                // for a keystroke). Prefer explicit range / full-document format.
+                // Stage 23: only `\n` after an `end` line; local indent fix, no
+                // format_range expansion (still too aggressive mid-edit).
+                document_on_type_formatting_provider: if format_enable {
+                    Some(DocumentOnTypeFormattingOptions {
+                        first_trigger_character: "\n".into(),
+                        more_trigger_character: None,
+                    })
+                } else {
+                    None
+                },
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![code_action::EXPLAIN_COMMAND.into()],
@@ -1075,6 +1083,35 @@ impl LanguageServer for Backend {
             .unwrap_or(PositionEncoding::Utf16);
         let _ = params.options;
         Ok(format::format_document_range(&text, params.range, encoding))
+    }
+
+    async fn on_type_formatting(
+        &self,
+        params: DocumentOnTypeFormattingParams,
+    ) -> LspResult<Option<Vec<TextEdit>>> {
+        if !self.config_snapshot().format_enable {
+            return Ok(None);
+        }
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let ch = params.ch;
+        let text = {
+            let Ok(store) = self.state.documents.lock() else {
+                return Ok(None);
+            };
+            let Some(doc) = store.get(&uri) else {
+                return Ok(None);
+            };
+            doc.text.clone()
+        };
+        let encoding = self
+            .state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let _ = params.options;
+        Ok(format::format_on_type(&text, position, &ch, encoding))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {

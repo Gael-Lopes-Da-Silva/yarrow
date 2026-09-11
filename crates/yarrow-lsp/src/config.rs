@@ -17,7 +17,7 @@ pub struct LspConfig {
     pub project_roots: Vec<PathBuf>,
     /// Top-level entry name (default `main`).
     pub entry_name: String,
-    /// When false, do not advertise or serve document / range formatting.
+    /// When false, do not advertise or serve document / range / on-type formatting.
     pub format_enable: bool,
     /// When false, do not advertise or serve `textDocument/inlayHint`.
     pub inlay_hints_enable: bool,
@@ -129,7 +129,7 @@ pub struct InitializationOptions {
     /// Entry function name (default `main`).
     #[serde(default)]
     pub entry_name: Option<String>,
-    /// Enable document and range formatting (default true).
+    /// Enable document, range, and on-type formatting (default true).
     #[serde(default)]
     pub format: Option<bool>,
     /// Enable inlay hints (default true).
