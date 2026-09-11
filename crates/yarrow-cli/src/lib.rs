@@ -65,7 +65,9 @@ where
             }),
             None,
         ) => commands::compile_file(&file, target, emit, &main, output.as_deref(), &cli.global),
-        (Some(Cmd::Check { file, main }), None) => commands::check_file(&file, &main, &cli.global),
+        (Some(Cmd::Check { files, main }), None) => {
+            commands::check_files(&files, &main, &cli.global)
+        }
         (
             Some(Cmd::Interpret {
                 file,
@@ -160,7 +162,7 @@ where
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow check <file.yar> [file.yar...]\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp"
             );
             ExitCode::from(2)
         }

@@ -4,7 +4,7 @@ Language illustrations for Yarrow. They follow [`GRAMMAR.md`](../GRAMMAR.md) and
 [`SYNTAX.md`](../SYNTAX.md), not the current compiler snapshot. The implementation
 is still catching up; treat these as the intended language shape.
 
-Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 / 38 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
+Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 / 38 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (`yarrow check` with two or more roots, or library `check_project`).
 
 Formatter gate (`./scripts/fmt-check.sh` / `yarrow fmt --check`): [`valid/`](valid/), [`warnings/`](warnings/), [`project/`](project/), plus `crates/yarrow-core/lib/std` and the Stage 19 ignore-region fixture. [`invalid/`](invalid/) stays out of that gate (expected parse failures).
 
@@ -63,7 +63,7 @@ Interpreter (Stage 37): `01`–`15` except `00_grammar_tour.yar` interpret with 
 
 | Path                   | Topic                                                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| [`project/`](project/) | Two roots + shared helper; `check_project` / `ProjectOptions` (see [`project/README.md`](project/README.md)) |
+| [`project/`](project/) | Two roots + shared helper; `yarrow check root_a.yar root_b.yar` / `check_project` (see [`project/README.md`](project/README.md)) |
 
 ## Warnings (check succeeds)
 

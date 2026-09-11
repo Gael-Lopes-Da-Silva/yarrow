@@ -31,7 +31,7 @@ src/main.rs  →  yarrow_cli::run
 | ----------- | ------------------------------------------------------------------------------------- |
 | `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--`          |
 | `compile`   | Codegen only; default `object` writes `-o` / `stem.o`; `--emit exe` linked binary     |
-| `check`     | Semantic check only (single file)                                                     |
+| `check`     | Semantic check; one file → `check_source`; two+ roots → `check_project` |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit`         |
 | `lsp`       | Language server stdio / `--listen` (`yarrow_lsp`)                                     |
@@ -46,7 +46,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–12 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–13 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -63,23 +63,13 @@ Stages 1–12 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: project check driver (core Stage 28 API is ready), then UX / artifact polish. Do not invent language features or a package manifest in the CLI.
+Focus: UX / artifact polish. Do not invent language features or a package manifest in the CLI.
 
-### Stage 13 - Multi-root project `check`
+### Stage 13 - Multi-root project `check` ✅
 
-Core already exposes `ProjectOptions` / `check_project` / `CheckedProject` ([`docs/RUNTIME.md`](../../docs/RUNTIME.md) Projects; fixtures under [`docs/examples/project/`](../../docs/examples/project/)). The CLI still only checks one file.
+Clap: `yarrow check FILE [FILE...]`. One path → `Session::check_source`; two or more → `ProjectOptions::from_root_paths` + `Session::check_project` (shared `-L`, `--main`, `--error-limit`; `require_main` true). Missing roots → rendered `E383`, exit `1`. `-v` lists `CheckedProject.graph.modules` on stderr. Docs: RUNTIME Projects, `docs/examples/project/README.md`.
 
-1. Extend `check` (prefer over a separate `project` subcommand) so multiple root paths mean a project check: e.g. `yarrow check root_a.yar root_b.yar` or `yarrow check --project root_a.yar root_b.yar`. Pick one clap shape; document it in `--help`.
-2. Build `ProjectOptions` via `from_root_paths`, apply global `-L` / `--search-path` to `module_search_paths`, honor `--main` / `require_main` and `--error-limit` the same way as single-file `check`.
-3. On success: exit `0`; print warnings from every root (same render path as today). On failure: render `SessionDiagnostics` (multi-root batches keep their own `file`) and exit `1`. Empty roots / missing files stay `E383` → exit `1` (or `2` only for pure CLI I/O outside core).
-4. Single-file `yarrow check file.yar` stays `Session::check_source` (no forced project wrapper).
-5. Optional stretch (same stage only if cheap): `--dump-graph` / verbose line listing `CheckedProject.graph.modules` for debugging; omit if it clutters UX.
-6. Align with [`yarrow-lsp` Stage 21](../yarrow-lsp/PLAN.md) root-list semantics where practical (same paths, no manifest).
-7. Update [`docs/examples/project/README.md`](../../docs/examples/project/README.md) and RUNTIME’s “CLI / LSP project drivers come later” blurb to point at this command.
-
-**Gate:** `yarrow check docs/examples/project/root_a.yar docs/examples/project/root_b.yar` exits `0`. A missing root path fails with a rendered diagnostic (not a panic). Single-file `yarrow check docs/examples/valid/01_hello.yar` unchanged. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** No manifest / lockfile. Do not compile or run a multi-root project in this stage (check-only). LSP multi-root index stays on the LSP plan.
+**Gate:** `yarrow check docs/examples/project/root_a.yar docs/examples/project/root_b.yar` exits `0`; single-file check unchanged.
 
 ---
 

@@ -434,7 +434,7 @@ Diagnostics:
 | `E382` | Module dependency cycle         |
 | `E383` | Missing / empty project root    |
 
-Single-file `Session::check_source` and nested `require` are unchanged. CLI / LSP project drivers come later; see [`docs/examples/project/`](examples/project/).
+Single-file `Session::check_source` and nested `require` are unchanged. Drivers: `yarrow check root_a.yar root_b.yar` ([`yarrow-cli` Stage 13](../crates/yarrow-cli/PLAN.md)); LSP `initializationOptions.projectRoots` ([`yarrow-lsp` Stage 21](../crates/yarrow-lsp/PLAN.md)). Fixtures: [`docs/examples/project/`](examples/project/).
 
 ## Session probes (Stages 30 / 35)
 

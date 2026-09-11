@@ -1,8 +1,14 @@
-# Multi-root project fixture (Stage 28 / LSP Stage 21).
+# Multi-root project fixture (Stage 28 / CLI Stage 13 / LSP Stage 21).
 #
 # Product shape: an explicit set of root `.yar` files sharing module search
 # paths. No manifest or package-manager syntax. Each root is a normal
 # compilation unit; `require` works as in RUNTIME Modules.
+#
+# CLI:
+#
+# ```text
+# yarrow check docs/examples/project/root_a.yar docs/examples/project/root_b.yar
+# ```
 #
 # Library API:
 #
@@ -20,7 +26,7 @@
 #
 # LSP: pass the same paths in `initializationOptions.projectRoots` (see
 # `crates/yarrow-lsp/scripts/harness.mjs` scenarios `project-roots` /
-# `project-missing-root`). CLI multi-root `check` is [`yarrow-cli` Stage 13](../../crates/yarrow-cli/PLAN.md).
+# `project-missing-root`).
 #
 # | File | Role |
 # | --- | --- |

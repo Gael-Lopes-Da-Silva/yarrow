@@ -47,7 +47,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | Interpret  | `00_grammar_tour.yar` stays out of scope (mixed surface / `loop.break` and further tour forms); Stage 37 landed unsafe / pointers / move / fs |
 | Warnings   | `W401`–`W410` landed (Stage 38: empty match arm / empty `if` then / empty `unsafe`)                                      |
 | ICE        | `E999` / `SessionFailureKind` landed (Stage 40); CLI exit `101` consumption is [`yarrow-cli` Stage 16](../yarrow-cli/PLAN.md) |
-| Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
+| Projects   | Multi-root check via `check_project`; CLI driver ✅ [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                    |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
 | LSP assist | Typed-at-span + definition / require probes landed (Stage 35); LSP consumption is [`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md) |
 | Formatter  | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene + selective top-level reprint; ignore regions Stage 19; parallel multi-file Stage 20; widened fmt-check corpus Stage 21 ([`yarrow-fmt`](../yarrow-fmt/PLAN.md)) |
@@ -56,7 +56,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 ## Next (Phase H)
 
-Focus: Mach-O / Windows executable link when a native Darwin or Windows-gnu host / CI agent is available (Stage 39, currently **blocked**). Stage 40 ICE tagging is done. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes. CLI Stage 16 can consume `SessionFailureKind::Ice` → exit `101`.
+Focus: Mach-O / Windows executable link when a native Darwin or Windows-gnu host / CI agent is available (Stage 39, currently **blocked**). Stage 40 ICE tagging is done. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md) ✅. LSP Stage 22 consumes Stage 35 probes. CLI Stage 16 can consume `SessionFailureKind::Ice` → exit `101`.
 
 ### Stage 35 - Require-path / definition probe API - **done**
 
