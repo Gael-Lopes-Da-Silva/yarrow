@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio or TCP and delegates analysis to `yarrow_core`. Stage 19
-//! adds `--listen` TCP transport and an in-repo protocol harness.
+//! Speaks LSP over stdio or TCP and delegates analysis to `yarrow_core`. Stage 21
+//! adds optional multi-root `check_project` via `initializationOptions.projectRoots`.
 
 mod analysis;
 mod code_action;
@@ -48,7 +48,9 @@ use tower_lsp_server::ls_types::{
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
-pub use analysis::{check_document, uri_to_source_path};
+pub use analysis::{
+    RootDiagnostics, check_document, check_project_roots, path_key, path_to_uri, uri_to_source_path,
+};
 pub use code_action::EXPLAIN_COMMAND;
 pub use completion::completions;
 pub use config::{InitializationOptions, LspConfig};
@@ -160,6 +162,9 @@ struct CachedDiagnostics {
     items: Vec<Diagnostic>,
 }
 
+/// Generation key for multi-root project rechecks (shared across open buffers).
+const PROJECT_ANALYSIS_KEY: &str = "__project__";
+
 struct ServerState {
     documents: Mutex<DocumentStore>,
     encoding: Mutex<PositionEncoding>,
@@ -168,6 +173,8 @@ struct ServerState {
     analysis_gens: Mutex<HashMap<String, u64>>,
     /// Push and pull share this cache so both paths stay in sync (uri → version).
     diag_cache: Mutex<HashMap<String, CachedDiagnostics>>,
+    /// Root URIs last published in project mode (cleared when a root drops).
+    published_project_uris: Mutex<Vec<Uri>>,
 }
 
 struct Backend {
@@ -185,6 +192,7 @@ impl Backend {
                 config: Mutex::new(config),
                 analysis_gens: Mutex::new(HashMap::new()),
                 diag_cache: Mutex::new(HashMap::new()),
+                published_project_uris: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -198,12 +206,56 @@ impl Backend {
     }
 
     fn bump_analysis_gen(&self, uri: &Uri) -> u64 {
+        self.bump_analysis_key(uri.as_str())
+    }
+
+    fn bump_analysis_key(&self, key: &str) -> u64 {
         let Ok(mut gens) = self.state.analysis_gens.lock() else {
             return 0;
         };
-        let entry = gens.entry(uri.as_str().to_string()).or_insert(0);
+        let entry = gens.entry(key.to_string()).or_insert(0);
         *entry = entry.saturating_add(1);
         *entry
+    }
+
+    fn analysis_gen(state: &ServerState, key: &str) -> u64 {
+        state
+            .analysis_gens
+            .lock()
+            .ok()
+            .and_then(|g| g.get(key).copied())
+            .unwrap_or(0)
+    }
+
+    fn collect_overlays(state: &ServerState) -> HashMap<String, String> {
+        let Ok(store) = state.documents.lock() else {
+            return HashMap::new();
+        };
+        let mut overlays = HashMap::new();
+        for (uri, text) in store.snapshot_texts() {
+            if let Some(path) = uri.to_file_path() {
+                overlays.insert(path_key(path.as_ref()), text);
+            }
+        }
+        overlays
+    }
+
+    fn open_version(state: &ServerState, uri: &Uri) -> Option<i32> {
+        let Ok(store) = state.documents.lock() else {
+            return None;
+        };
+        store.get(uri).map(|d| d.version)
+    }
+
+    fn is_project_root(config: &LspConfig, uri: &Uri) -> bool {
+        let Some(path) = uri.to_file_path() else {
+            return false;
+        };
+        let key = path_key(path.as_ref());
+        config
+            .project_roots
+            .iter()
+            .any(|root| path_key(root) == key)
     }
 
     fn store_diagnostics(state: &ServerState, uri: &Uri, version: i32, items: Vec<Diagnostic>) {
@@ -271,19 +323,43 @@ impl Backend {
             .map(|g| *g)
             .unwrap_or(PositionEncoding::Utf16);
         let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
-        let items = check_document(uri, &text, encoding, &config);
-        let result_id = format!("v{version}");
+
+        let items = if config.project_mode() && Self::is_project_root(&config, uri) {
+            let overlays = Self::collect_overlays(state);
+            let roots = check_project_roots(encoding, &config, &overlays);
+            let want = uri
+                .to_file_path()
+                .map(|p| path_key(p.as_ref()))
+                .unwrap_or_default();
+            roots
+                .into_iter()
+                .find(|r| path_key(&r.path) == want)
+                .map(|r| r.items)
+                .unwrap_or_default()
+        } else {
+            check_document(uri, &text, encoding, &config)
+        };
+
         Self::store_diagnostics(state, uri, version, items.clone());
         DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
             related_documents: None,
             full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: Some(result_id),
+                result_id: Some(format!("v{version}")),
                 items,
             },
         })
     }
 
     fn schedule_analysis(&self, uri: Uri, version: i32, debounce: bool) {
+        let config = self.config_snapshot();
+        if config.project_mode() {
+            self.schedule_project_analysis(Some((uri, version)), debounce);
+        } else {
+            self.schedule_single_analysis(uri, version, debounce);
+        }
+    }
+
+    fn schedule_single_analysis(&self, uri: Uri, version: i32, debounce: bool) {
         let ticket = self.bump_analysis_gen(&uri);
         let state = Arc::clone(&self.state);
         let client = self.client.clone();
@@ -291,13 +367,7 @@ impl Backend {
         tokio::spawn(async move {
             if debounce {
                 tokio::time::sleep(CHANGE_DEBOUNCE).await;
-                let current = state
-                    .analysis_gens
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.get(uri.as_str()).copied())
-                    .unwrap_or(0);
-                if current != ticket {
+                if Backend::analysis_gen(&state, uri.as_str()) != ticket {
                     return;
                 }
             }
@@ -331,13 +401,7 @@ impl Backend {
                     Some(doc) if doc.version == version => {}
                     _ => return,
                 }
-                let current = state
-                    .analysis_gens
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.get(uri.as_str()).copied())
-                    .unwrap_or(0);
-                if current != ticket {
+                if Backend::analysis_gen(&state, uri.as_str()) != ticket {
                     return;
                 }
             }
@@ -346,6 +410,101 @@ impl Backend {
             client
                 .publish_diagnostics(uri, diagnostics, Some(version))
                 .await;
+        });
+    }
+
+    /// Recheck all configured project roots (overlays for open buffers).
+    ///
+    /// When `trigger` is an open non-root buffer, also publish single-file
+    /// diagnostics for that URI after the project pass.
+    fn schedule_project_analysis(&self, trigger: Option<(Uri, i32)>, debounce: bool) {
+        let ticket = self.bump_analysis_key(PROJECT_ANALYSIS_KEY);
+        let state = Arc::clone(&self.state);
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            if debounce {
+                tokio::time::sleep(CHANGE_DEBOUNCE).await;
+                if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                    return;
+                }
+            }
+
+            if let Some((ref uri, version)) = trigger {
+                let Ok(store) = state.documents.lock() else {
+                    return;
+                };
+                match store.get(uri) {
+                    Some(doc) if doc.version == version => {}
+                    _ => return,
+                }
+            }
+
+            let encoding = state
+                .encoding
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(PositionEncoding::Utf16);
+            let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
+            let overlays = Backend::collect_overlays(&state);
+            let roots = check_project_roots(encoding, &config, &overlays);
+
+            if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                return;
+            }
+
+            let mut published: Vec<Uri> = Vec::new();
+            for root in roots {
+                let version = Backend::open_version(&state, &root.uri);
+                if let Some(v) = version {
+                    Backend::store_diagnostics(&state, &root.uri, v, root.items.clone());
+                }
+                published.push(root.uri.clone());
+                client
+                    .publish_diagnostics(root.uri, root.items, version)
+                    .await;
+            }
+
+            // Clear diagnostics for roots that dropped from the configured set.
+            let stale = if let Ok(mut slot) = state.published_project_uris.lock() {
+                let prev = std::mem::replace(&mut *slot, published.clone());
+                prev.into_iter()
+                    .filter(|u| !published.iter().any(|k| k.as_str() == u.as_str()))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            for uri in stale {
+                Backend::clear_diagnostics_cache(&state, &uri);
+                client.publish_diagnostics(uri, Vec::new(), None).await;
+            }
+
+            // Non-root open buffers still get a single-file check.
+            if let Some((uri, version)) = trigger {
+                let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
+                if !Backend::is_project_root(&config, &uri) {
+                    let text = {
+                        let Ok(store) = state.documents.lock() else {
+                            return;
+                        };
+                        let Some(doc) = store.get(&uri) else {
+                            return;
+                        };
+                        if doc.version != version {
+                            return;
+                        }
+                        doc.text.clone()
+                    };
+                    let diagnostics = check_document(&uri, &text, encoding, &config);
+                    if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                        return;
+                    }
+                    Backend::store_diagnostics(&state, &uri, version, diagnostics.clone());
+                    client
+                        .publish_diagnostics(uri, diagnostics, Some(version))
+                        .await;
+                }
+            }
         });
     }
 }
@@ -388,7 +547,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        let (format_enable, inlay_hints_enable) = {
+        let (format_enable, inlay_hints_enable, project_mode) = {
             let Ok(mut cfg) = self.state.config.lock() else {
                 return Ok(InitializeResult {
                     capabilities: ServerCapabilities::default(),
@@ -400,7 +559,11 @@ impl LanguageServer for Backend {
                 });
             };
             cfg.apply_initialize(init_opts.as_ref(), &folders);
-            (cfg.format_enable, cfg.inlay_hints_enable)
+            (
+                cfg.format_enable,
+                cfg.inlay_hints_enable,
+                cfg.project_mode(),
+            )
         };
 
         Ok(InitializeResult {
@@ -466,7 +629,8 @@ impl LanguageServer for Backend {
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
                     DiagnosticOptions {
                         identifier: Some("yarrow".into()),
-                        inter_file_dependencies: false,
+                        // Project mode rechecks all configured roots together.
+                        inter_file_dependencies: project_mode,
                         workspace_diagnostics: false,
                         ..Default::default()
                     },

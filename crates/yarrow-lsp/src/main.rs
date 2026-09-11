@@ -77,6 +77,7 @@ async fn main() -> ExitCode {
 
     let config = LspConfig {
         search_paths: args.search_paths,
+        project_roots: Vec::new(),
         entry_name: args.main,
         format_enable: !args.no_format,
         inlay_hints_enable: !args.no_inlay,

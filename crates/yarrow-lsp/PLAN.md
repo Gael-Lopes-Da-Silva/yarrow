@@ -29,6 +29,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
 - Text document sync for `file://` `.yar` buffers
 - Publish diagnostics from `Session::check_source` (and parse failures)
+- Optional multi-root `Session::check_project` via init `projectRoots`
 - Pull diagnostics (`textDocument/diagnostic`) with uri+version cache shared with push
 - Navigation: go-to-definition, find references (same file + `require` cross-file)
 - Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
@@ -120,20 +121,20 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 landed; Stage 20 canceled                         |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21 landed; Stage 20 canceled                    |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
 | Def / require probe | ⏳     | Core Stage 35; LSP Stage 22 consumes it                       |
-| Cross-file resolve  | ⚠      | AST + `require` today; project multi-root is Stage 21         |
+| Cross-file resolve  | ⚠      | AST + `require` today; project multi-root landed in Stage 21  |
 | `yarrow-fmt`        | ✅     | Full-doc best-effort + `format_range`; on-type still deferred |
 | CLI `yarrow lsp`    | ✅     | In-process `run_stdio_blocking` / `--listen`                  |
 
 ---
 
-## Landed (Stages 0–19)
+## Landed (Stages 0–19, 21)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stage 21 (project-aware multi-root) is landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -158,29 +159,15 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 18    | Pull diagnostics (`textDocument/diagnostic`; workspace off) |
 | 19    | TCP `--listen` + `scripts/harness.mjs`                      |
 | 20    | Editor extensions - **canceled** (separate repos)           |
+| 21    | Project-aware multi-root via `projectRoots` + `check_project` |
+
+**Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
 
 ---
 
 ## Next
 
-Focus: project-aware analysis (core graph ready), then richer probes / on-type / workspace pull. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
-
-### Stage 21 - Project-aware multi-root analysis
-
-Core Stage 28 already exposes `ProjectOptions` / `check_project` / `ModuleGraph`. The server still checks one buffer at a time.
-
-1. Define when multi-root mode applies: e.g. init option `projectRoots: string[]`, or all `.yar` roots listed under workspace folders when explicitly configured. Default stays single-file `check_source` (no surprise whole-folder crawl).
-2. On change to any open root (or shared require), run `Session::check_project` with those roots + `LspConfig` search paths; publish diagnostics for every root URI (and clear stale diags when a root drops).
-3. Prefer overlaying open-buffer text for roots that are open; on-disk read for roots that are not. Do not invent a lockfile.
-4. Optional stretch: feed `CheckedProject.graph` into workspace symbols / completion module paths; omit if it clutters this stage.
-5. Align with [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md) root-list semantics where practical (same paths, no manifest).
-6. Add a harness scenario on `docs/examples/project/` (both roots open or configured).
-
-**Gate:** with project roots set to `docs/examples/project/root_a.yar` and `root_b.yar`, the server reports no errors (or only fixture-known warnings) for both; a missing root surfaces `E383` (or equivalent) as a diagnostic, not a hang. Single-file open without project roots unchanged. `cargo clippy` green.
-
-**Notes:** No background crawl of the entire disk. Inter-file pull diagnostics (`workspaceDiagnostics`) stays Stage 24.
-
----
+Focus: richer probes / on-type / workspace pull. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
 ### Stage 22 - Core definition / require-path probes
 
@@ -271,12 +258,12 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | inlayHint                          | 13 ✅          | `TypeIndex` probes                         |
 | semanticTokens                     | 14 ✅          | tokens + AST                               |
 | rename                             | 15 ✅          | references / resolve (file-local)          |
-| workspaceSymbol                    | 16 ✅; 21      | open + requires; optional project graph    |
-| rangeFormatting / onTypeFormatting | 17 ✅; 23      | `format_range`; on-type after fmt Stage 18 |
-| textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache        |
-| workspace/diagnostic               | 24             | open / project roots only                  |
-| TCP + test harness                 | 19 ✅          | transport only                             |
-| multi-root project check           | 21             | `check_project` (core Stage 28)            |
+| workspaceSymbol                    | 16 ✅; 21 ✅   | open + requires; project roots via `check_project` |
+| rangeFormatting / onTypeFormatting | 17 ✅; 23      | `format_range`; on-type after fmt Stage 18         |
+| textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache                |
+| workspace/diagnostic               | 24             | open / project roots only                          |
+| TCP + test harness                 | 19 ✅          | transport only                                     |
+| multi-root project check           | 21 ✅          | `check_project` (core Stage 28)                    |
 | editor extensions                  | 20 ❌ canceled | separate repos later                       |
 | DAP / debug                        | Out of scope   | AOT/JIT debug                              |
 
