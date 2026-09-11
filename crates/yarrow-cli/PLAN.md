@@ -45,9 +45,9 @@ src/main.rs  →  yarrow_cli::run
 
 **Global flags:** `--color` (`auto` honors `NO_COLOR` / `CLICOLOR_FORCE` / `FORCE_COLOR`; explicit wins), `--error-limit`, `-L` / `--search-path`, `-q` (suppress driver chatter, never diagnostics / explain / dump payload), `-v` (stderr progress; no-op under `-q`).
 
-**Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
+**Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal, `101` internal compiler error (caught panic or `E999` / `SessionFailureKind::Ice`). Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–15 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–16 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -90,17 +90,11 @@ Defaults stay cwd: `./<stem>.o` (`--emit object`) and `./<stem>` (`--emit exe`);
 
 ---
 
-### Stage 16 - ICE → exit `101`
+### Stage 16 - ICE → exit `101` ✅
 
-Today panics / bugs surface as process abort or generic failure. Rustc-style tools use `101` for internal compiler errors so scripts can distinguish ICE from user diagnostics (`1`) and usage (`2`).
+Command dispatch is wrapped in `std::panic::catch_unwind`: unexpected panics print an ICE banner to stderr and exit `101`. Session failures use `SessionFailureKind` ([`yarrow-core` Stage 40](../yarrow-core/PLAN.md)): `Ice` (`E999`) → `101`, `User` → `1`. I/O and clap usage stay `2`. Gate hooks: `YARROW_DEBUG_ICE=panic` (caught panic) and `YARROW_DEBUG_ICE=session` (`debug_trigger_ice`).
 
-1. Install a process-level catch around `yarrow_cli::run`’s command dispatch (or the root binary): `std::panic::catch_unwind` (UnwindSafe boundaries as needed) → print a short “internal compiler error” message + panic payload to stderr → `ExitCode::from(101)`.
-2. Do **not** map ordinary `SessionDiagnostics` or I/O errors to `101`.
-3. Optional stretch only if [`yarrow-core` Stage 40](../yarrow-core/PLAN.md) already tags ICE: if a diagnostic code / severity means ICE, map that batch to `101` as well; otherwise keep this CLI-only panic catch and leave tagging to core.
-4. Document exit codes in Landed: `0` / `1` / `2` / `101`.
-5. No new language diagnostics invented in the CLI.
-
-**Gate:** a deliberate `panic!` behind a `#[cfg(test)]` or documented debug hook (or a one-off `RUST_BACKTRACE` agent check) yields exit `101` and a clear stderr line; normal `check` on `invalid/**` still exits `1`. `cargo clippy` green.
+**Gate:** debug panic / session ICE → `101`; `check` on `invalid/**` still `1`.
 
 ---
 

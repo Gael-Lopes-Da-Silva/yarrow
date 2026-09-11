@@ -8,7 +8,7 @@ use yarrow_core::{CompileOptions, ExecutionMode, Session};
 
 use crate::args::{CompileEmitKind, GlobalArgs, TargetKind};
 use crate::artifacts;
-use crate::diagnostics::render_batch;
+use crate::diagnostics::report_session_failure;
 
 /// Check + codegen `file` without running the entry.
 pub fn compile_file(
@@ -50,10 +50,7 @@ pub fn compile_file(
             let session = Session::new(opts);
             match session.compile_source(source) {
                 Ok(_artifact) => ExitCode::SUCCESS,
-                Err(diags) => {
-                    eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                    ExitCode::from(1)
-                }
+                Err(diags) => report_session_failure(&diags, color),
             }
         }
         TargetKind::Object => match emit {
@@ -71,10 +68,7 @@ pub fn compile_file(
                 let session = Session::new(opts);
                 match session.compile_object_source(source) {
                     Ok(artifact) => write_bytes(&out, &artifact.bytes, false, global),
-                    Err(diags) => {
-                        eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                        ExitCode::from(1)
-                    }
+                    Err(diags) => report_session_failure(&diags, color),
                 }
             }
             CompileEmitKind::Exe => {
@@ -91,10 +85,7 @@ pub fn compile_file(
                 let session = Session::new(opts);
                 match session.compile_executable_source(source) {
                     Ok(artifact) => write_bytes(&out, &artifact.bytes, true, global),
-                    Err(diags) => {
-                        eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                        ExitCode::from(1)
-                    }
+                    Err(diags) => report_session_failure(&diags, color),
                 }
             }
         },

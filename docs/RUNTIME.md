@@ -363,7 +363,9 @@ An **internal compiler error** is tagged as diagnostic code **`E999`** (`ICE_COD
 | `SessionDiagnostics::failure_kind` → `SessionFailureKind::Ice` \| `User` | Driver exit mapping (`101` vs `1`) |
 | `Session::debug_trigger_ice` | Documented gate hook (does not panic) |
 
-Selected API-boundary sites (for example JIT-only `get_finalized_function` on an object backend) return `E999` instead of panicking. The library does **not** blanket-catch panics; CLI Stage 16 may still use `catch_unwind` for unexpected aborts.
+Selected API-boundary sites (for example JIT-only `get_finalized_function` on an object backend) return `E999` instead of panicking. The library does **not** blanket-catch panics; the CLI (`yarrow-cli` Stage 16) uses `catch_unwind` around command dispatch and maps both caught panics and `SessionFailureKind::Ice` to exit **`101`**.
+
+CLI exit codes: `0` ok, `1` user / toolchain diagnostics, `2` usage / I/O, `101` ICE. Documented gate hooks (not for normal use): `YARROW_DEBUG_ICE=panic` (deliberate panic → banner + `101`) and `YARROW_DEBUG_ICE=session` (`debug_trigger_ice` → `E999` + `101`).
 
 Gate: `cargo run -p yarrow_core --example check_ice`. Explain: `yarrow explain E999`.
 

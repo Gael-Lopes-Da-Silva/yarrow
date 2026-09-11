@@ -10,7 +10,7 @@ use yarrow_core::{CompileOptions, ExecutionMode, Session};
 
 use crate::args::{GlobalArgs, TargetKind};
 use crate::commands::print_run_result;
-use crate::diagnostics::{render_batch, render_diag};
+use crate::diagnostics::{exit_for_diagnostic, render_diag, report_session_failure};
 
 /// Compile and execute `file`, printing any return value from the entry (JIT)
 /// or running the linked native binary (`--target object`).
@@ -69,10 +69,7 @@ fn run_jit(
     let session = Session::new(opts);
     let mut artifact = match session.compile_source(source) {
         Ok(artifact) => artifact,
-        Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            return ExitCode::from(1);
-        }
+        Err(diags) => return report_session_failure(&diags, color),
     };
 
     match artifact.run_main() {
@@ -82,7 +79,7 @@ fn run_jit(
         }
         Err(e) => {
             eprint!("{}", render_diag(&e.diagnostic, &artifact.file, color));
-            ExitCode::from(1)
+            exit_for_diagnostic(&e.diagnostic)
         }
     }
 }
@@ -119,10 +116,7 @@ fn run_object(
     let session = Session::new(opts);
     let artifact = match session.compile_executable_source(source) {
         Ok(artifact) => artifact,
-        Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            return ExitCode::from(1);
-        }
+        Err(diags) => return report_session_failure(&diags, color),
     };
 
     let exe = match TempExe::write(&artifact.bytes) {
