@@ -9,13 +9,29 @@
 //! - Windows-gnu hosts: host→host MinGW PE link (Stage 39).
 //! - Mach-O / Windows executable link from other hosts stays `E397` (object emit only).
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::diagnostics::{Diagnostic, DiagnosticBatch, Span};
 use crate::target::TargetTriple;
+
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
+use std::fs;
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
+use std::path::{Path, PathBuf};
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
+use std::process::Command;
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Failure while locating the linker, CRT, or running the link.
 #[derive(Debug)]

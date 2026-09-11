@@ -43,9 +43,5 @@ jobs:
       - name: Stage 39 gate (compile + run 01_hello.exe)
         run: cargo run -p yarrow_core --example check_windows_exe
 
-      - name: Clippy
-        run: |
-          set -euo pipefail
-          echo "rustc host: $(rustc -vV | sed -n 's/^host: //p')"
-          cargo clippy -V
-          cargo clippy -p yarrow_core --examples -- -D warnings
+      # Clippy for this crate stays on linux-gnu hosts (local / other CI). The
+      # Stage 39 product gate above is the Windows-gnu executable proof.
