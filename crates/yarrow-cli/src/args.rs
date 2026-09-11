@@ -186,12 +186,28 @@ pub enum Cmd {
     /// project check (`ProjectOptions` / `check_project`): shared `-L` search
     /// paths, each root still its own compilation unit. No manifest.
     ///
+    /// `--corpus DIR` checks every immediate `*.yar` in that directory
+    /// (non-recursive; nested helpers are not separate roots). Aggregates:
+    /// exit `0` if all succeed, `1` if any program diagnostics. Prints
+    /// `N ok, M failed` unless `-q`. This is a corpus driver, not a
+    /// language-level test framework.
+    ///
     /// Example: `yarrow check root_a.yar root_b.yar`
+    /// Example: `yarrow check --corpus docs/examples/valid`
     Check {
         /// Root `.yar` file(s). One path → single-file check; two or more →
-        /// project check.
-        #[arg(value_name = "FILE", num_args = 1.., required = true)]
+        /// project check. Required unless `--corpus` is set.
+        #[arg(
+            value_name = "FILE",
+            num_args = 0..,
+            required_unless_present = "corpus",
+            conflicts_with = "corpus"
+        )]
         files: Vec<std::path::PathBuf>,
+
+        /// Directory of programs to check (immediate `*.yar` only).
+        #[arg(long, value_name = "DIR", conflicts_with = "files")]
+        corpus: Option<std::path::PathBuf>,
 
         /// Top-level entry function name (default `main`).
         #[arg(long, value_name = "NAME", default_value = "main")]

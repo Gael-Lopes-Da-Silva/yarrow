@@ -6,6 +6,8 @@ is still catching up; treat these as the intended language shape.
 
 Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 / 38 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (`yarrow check` with two or more roots, or library `check_project`).
 
+Corpus check (CLI Stage 17): `yarrow check --corpus docs/examples/valid` checks every immediate `*.yar` in that directory (non-recursive; `helpers/` is not scanned as roots). Expect exit `0` and a `N ok, 0 failed` summary. Pointing `--corpus` at `invalid/` should exit `1`.
+
 Formatter gate (`./scripts/fmt-check.sh` / `yarrow fmt --check`): [`valid/`](valid/), [`warnings/`](warnings/), [`project/`](project/), plus `crates/yarrow-core/lib/std` and the Stage 19 ignore-region fixture. [`invalid/`](invalid/) stays out of that gate (expected parse failures).
 
 ## How to read them
