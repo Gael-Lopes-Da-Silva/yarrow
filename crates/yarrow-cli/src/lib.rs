@@ -99,6 +99,7 @@ where
         (
             Some(Cmd::Lsp {
                 stdio,
+                listen,
                 search_paths,
                 main,
                 no_format,
@@ -107,8 +108,8 @@ where
             }),
             None,
         ) => {
-            if !stdio {
-                eprintln!("error: only --stdio transport is supported");
+            if listen.is_none() && !stdio {
+                eprintln!("error: pass --stdio (default) or --listen HOST:PORT");
                 ExitCode::from(2)
             } else {
                 commands::run_lsp(
@@ -118,6 +119,7 @@ where
                     !no_format,
                     !no_inlay,
                     log_level,
+                    listen.as_deref(),
                 )
             }
         }

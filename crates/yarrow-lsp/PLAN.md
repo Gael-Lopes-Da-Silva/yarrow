@@ -23,9 +23,10 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–18)
+### Landed (v1, Stages 0–19)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
+- TCP `--listen host:port` transport (one client) + in-repo protocol harness
 - Text document sync for `file://` `.yar` buffers
 - Publish diagnostics from `Session::check_source` (and parse failures)
 - Pull diagnostics (`textDocument/diagnostic`) with uri+version cache shared with push
@@ -41,9 +42,8 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next, Stages 19+)
+### In scope (next, Stages 20+)
 
-- TCP transport and a reusable protocol test harness
 - Thin VS Code / Zed extension packaging (server stays editor-agnostic)
 
 ### Out of scope
@@ -57,7 +57,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 | Snippet / AI rewrite actions   | Not mechanical language support                                  |
 | Non-`.yar` / markdown embedded | Skip until requested                                             |
 
-**Transport:** stdio is the default. TCP is Stage 19 for tests / remote clients only.
+**Transport:** stdio is the default. TCP (`--listen`) is for tests / remote clients (Stage 19).
 
 ---
 
@@ -80,7 +80,9 @@ Public / binary surface:
 pub async fn run_stdio() -> Result<(), LspError>;
 pub async fn run_stdio_with(config: LspConfig) -> Result<(), LspError>;
 pub fn run_stdio_blocking() -> Result<(), LspError>;
-/// Optional: explicit streams (tests) or TCP (Stage 19).
+pub async fn run_tcp_with(addr, config, on_listen) -> Result<(), LspError>;
+pub fn run_tcp_blocking(addr, config, on_listen) -> Result<(), LspError>;
+/// Shared by stdio and TCP.
 pub async fn run_with_streams(/* … */) -> Result<(), LspError>;
 ```
 
@@ -119,7 +121,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 18: pull diagnostics                         |
+| `yarrow-lsp` crate | ✅     | Stage 19: TCP + protocol harness                   |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -190,7 +192,7 @@ Support clients that prefer pull over (or in addition to) push.
 
 ---
 
-### Stage 19 - TCP transport and protocol test harness
+### Stage 19 - TCP transport and protocol test harness ✅
 
 Make automated LSP gates reliable without ad-hoc one-off scripts each stage.
 
@@ -201,6 +203,8 @@ Make automated LSP gates reliable without ad-hoc one-off scripts each stage.
 5. Document how to run the harness in the crate README (short). Do not require a real editor for CI-style checks.
 
 **Gate:** `yarrow lsp --listen 127.0.0.1:0` (or documented flag) accepts one harness run that passes initialize + one feature assert. Stdio path unchanged. README blurb exists. `cargo clippy` green.
+
+**Done:** `--listen HOST:PORT` on `yarrow-lsp` and `yarrow lsp` (port `0` = ephemeral; prints `yarrow-lsp: listening on …` then accepts one client). `run_tcp_with` / `run_tcp_blocking` share `run_with_streams` with stdio. Harness: `crates/yarrow-lsp/scripts/harness.mjs` (default scenario `pull-diagnostics` → `E373` on `01_use_after_move.yar`). Stdio unchanged.
 
 ---
 
@@ -239,7 +243,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | workspaceSymbol                        | 16 ✅        | open buffers + require ASTs        |
 | rangeFormatting / onTypeFormatting     | 17 ✅        | `yarrow-fmt` (`format_range`; on-type deferred) |
 | textDocument/diagnostic (pull)         | 18 ✅        | same as publish + uri/version cache             |
-| TCP + test harness                     | 19           | transport only                     |
+| TCP + test harness                     | 19 ✅        | transport only                     |
 | editor extensions                      | 20       | packaging                          |
 | DAP / debug                            | Out of scope | AOT/JIT debug                  |
 
@@ -261,7 +265,7 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 ## Working rules
 
 - Prefer minimal diffs that pass the **current** stage gate.
-- Do not add tests unless explicitly asked; use scripted LSP messages + `docs/examples/**` as gates (prefer the Stage 19 harness once it exists).
+- Do not add tests unless explicitly asked; use scripted LSP messages + `docs/examples/**` as gates (prefer `scripts/harness.mjs` from Stage 19).
 - Update this file when a stage gate lands (mark done, short notes; do not re-expand history). When a whole phase is done, collapse finished stages into **Landed** the same way Stages 0–11 were.
 - No tokenizer / parser / typechecker logic here beyond calling `yarrow-core`.
 - Format only through `yarrow-fmt`, never a second pretty-printer.

@@ -230,13 +230,17 @@ pub enum Cmd {
         paths: Vec<std::path::PathBuf>,
     },
 
-    /// Start the Yarrow language server (LSP over stdio).
+    /// Start the Yarrow language server (LSP over stdio or TCP).
     ///
     /// Delegates in-process to `yarrow_lsp`. Point editors at `yarrow lsp`.
     Lsp {
-        /// Speak LSP over stdin/stdout (default and only transport in v1).
+        /// Speak LSP over stdin/stdout (default when `--listen` is omitted).
         #[arg(long, default_value_t = true)]
         stdio: bool,
+
+        /// Accept one TCP client at HOST:PORT (port `0` = ephemeral).
+        #[arg(long, value_name = "HOST:PORT")]
+        listen: Option<String>,
 
         /// Extra module search path (in addition to global `-L`).
         #[arg(short = 'L', long = "search-path", value_name = "DIR")]

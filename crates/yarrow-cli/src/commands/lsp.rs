@@ -1,4 +1,4 @@
-//! `yarrow lsp` - thin in-process wrapper around `yarrow_lsp::run_stdio_blocking`.
+//! `yarrow lsp` - thin in-process wrapper around `yarrow_lsp` (stdio or TCP).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -7,7 +7,7 @@ use yarrow_lsp::LspConfig;
 
 use crate::args::GlobalArgs;
 
-/// Start the language server on stdio.
+/// Start the language server on stdio or TCP (`--listen`).
 pub fn run_lsp(
     global: &GlobalArgs,
     search_paths: &[PathBuf],
@@ -15,6 +15,7 @@ pub fn run_lsp(
     format_enable: bool,
     inlay_hints_enable: bool,
     log_level: LspLogLevel,
+    listen: Option<&str>,
 ) -> ExitCode {
     let mut search = global.search_paths.clone();
     for p in search_paths {
@@ -28,6 +29,32 @@ pub fn run_lsp(
         format_enable,
         inlay_hints_enable,
     };
+
+    if let Some(addr) = listen {
+        if log_level.allows(LspLogLevel::Info) && !global.quiet {
+            eprintln!(
+                "yarrow lsp: starting (tcp listen={addr}; entry={}; format={}; inlay={}; search_paths={})",
+                config.entry_name,
+                config.format_enable,
+                config.inlay_hints_enable,
+                config.search_paths.len()
+            );
+        }
+
+        // Bound address always printed (even with --quiet) so harnesses can connect.
+        let result = yarrow_lsp::run_tcp_blocking(addr, config, |local| {
+            eprintln!("yarrow-lsp: listening on {local}");
+        });
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                if log_level.allows(LspLogLevel::Error) {
+                    eprintln!("yarrow lsp: {err}");
+                }
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     if log_level.allows(LspLogLevel::Info) && !global.quiet {
         eprintln!(
