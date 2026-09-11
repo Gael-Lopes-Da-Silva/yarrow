@@ -8,7 +8,7 @@ use yarrow_core::parser::ast::{Function, Stmt, StmtKind};
 use yarrow_core::{DefKind, Program, SourceFile, Span, TokenKind, Tokenizer};
 
 use crate::config::LspConfig;
-use crate::modules::{self, item_name_span};
+use crate::modules::{self, ModuleTarget, item_name_span_in};
 use crate::position::{PositionEncoding, PositionMap};
 
 /// Resolve definition at `position` in `text`, or `None` if unresolved / parse failure.
@@ -44,23 +44,8 @@ pub fn goto_definition(
     if let Some(require_path) = &decl.require_path
         && let Some(target) =
             modules::resolve_require_file(path, require_path, &config.search_paths)
-        && let Some(target_uri) = Uri::from_file_path(&target.path)
     {
-        let range = match &target.item {
-            Some(item) => std::fs::read_to_string(&target.path)
-                .ok()
-                .and_then(|target_text| {
-                    let target_file =
-                        SourceFile::new(target.path.to_string_lossy().into_owned(), target_text);
-                    let target_map = PositionMap::from_file(&target_file, encoding);
-                    item_name_span(&target.path, item).map(|span| target_map.range(span))
-                })
-                .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0))),
-            None => Range::new(Position::new(0, 0), Position::new(0, 0)),
-        };
-        return Some(GotoDefinitionResponse::Scalar(Location::new(
-            target_uri, range,
-        )));
+        return location_from_target(&target, encoding);
     }
 
     let range = map.range(decl.name_span);
@@ -87,29 +72,50 @@ fn location_from_probe(
             )))
         }
         DefKind::Require => {
-            let target_path = probe
+            let target = probe
                 .file_path
                 .as_ref()
-                .map(std::path::PathBuf::from)
+                .map(|p| ModuleTarget {
+                    module_path: probe.path.clone(),
+                    path: Some(std::path::PathBuf::from(p)),
+                    item: Some(probe.name.clone()),
+                })
                 .or_else(|| {
                     modules::resolve_require_file(source_path, &probe.path, &config.search_paths)
-                        .map(|t| t.path)
+                        .map(|mut t| {
+                            if t.item.is_none() && !probe.name.is_empty() {
+                                t.item = Some(probe.name.clone());
+                            }
+                            t
+                        })
                 })?;
-            let target_uri = Uri::from_file_path(&target_path)?;
-            let range = std::fs::read_to_string(&target_path)
-                .ok()
-                .and_then(|target_text| {
-                    let target_file =
-                        SourceFile::new(target_path.to_string_lossy().into_owned(), target_text);
-                    let target_map = PositionMap::from_file(&target_file, encoding);
-                    item_name_span(&target_path, &probe.name).map(|span| target_map.range(span))
-                })
-                .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0)));
-            Some(GotoDefinitionResponse::Scalar(Location::new(
-                target_uri, range,
-            )))
+            location_from_target(&target, encoding)
         }
     }
+}
+
+fn location_from_target(
+    target: &ModuleTarget,
+    encoding: PositionEncoding,
+) -> Option<GotoDefinitionResponse> {
+    let target_uri = target.uri()?;
+    let range = target
+        .source()
+        .and_then(|target_text| {
+            let label = target
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| target.module_path.clone());
+            let item = target.item.as_deref()?;
+            let target_file = SourceFile::new(label.clone(), target_text);
+            let target_map = PositionMap::from_file(&target_file, encoding);
+            item_name_span_in(&target_file.source, &label, item).map(|span| target_map.range(span))
+        })
+        .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0)));
+    Some(GotoDefinitionResponse::Scalar(Location::new(
+        target_uri, range,
+    )))
 }
 
 /// Binding kind for semantic highlighting / navigation helpers.

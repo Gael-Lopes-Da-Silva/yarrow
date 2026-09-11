@@ -63,6 +63,15 @@ pub fn hover(
                             md.push_str("\n\n*resolved* `");
                             md.push_str(file);
                             md.push('`');
+                        } else if let Some(target) = crate::modules::resolve_require_file(
+                            path,
+                            &def.path,
+                            &config.search_paths,
+                        ) && let Some(uri) = target.uri()
+                        {
+                            md.push_str("\n\n*resolved* `");
+                            md.push_str(uri.as_str());
+                            md.push('`');
                         }
                     }
                 }

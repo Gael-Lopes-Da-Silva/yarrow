@@ -40,6 +40,7 @@ use crate::tokenizer::Tokenizer;
 use modules::{ModuleLoader, RequiredModule};
 
 pub use errors::CompileError;
+pub use modules::std_module_source;
 use types::CResult;
 pub use types::Ty;
 use types::{

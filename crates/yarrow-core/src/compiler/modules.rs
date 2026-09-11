@@ -97,3 +97,15 @@ impl ModuleLoader {
 // build time by `build.rs` from `lib/std/**/*.yar`: each file
 // `lib/std/<name>.yar` becomes module `std.<name>`.
 include!(concat!(env!("OUT_DIR"), "/std_modules.rs"));
+
+/// Embedded std module source by dotted path (`std.io`), if any.
+///
+/// Used by the LSP when on-disk `lib/std` is unavailable (Stage 26 virtual URIs).
+pub fn std_module_source(path: &str) -> Option<&'static str> {
+    for (name, source) in STD_MODULES {
+        if *name == path {
+            return Some(*source);
+        }
+    }
+    None
+}

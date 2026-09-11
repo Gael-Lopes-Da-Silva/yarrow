@@ -72,9 +72,12 @@ impl DocumentStore {
     }
 }
 
-/// Whether this open should be tracked: language id `yarrow`, or a `.yar` path.
+/// Whether this open should be tracked: language id `yarrow`, a `.yar` path,
+/// or a virtual `yarrow-std:` buffer.
 pub fn should_track(uri: &Uri, language_id: &str) -> bool {
-    language_id == LANGUAGE_ID || uri_has_yar_extension(uri)
+    language_id == LANGUAGE_ID
+        || uri_has_yar_extension(uri)
+        || crate::modules::is_virtual_std_uri(uri)
 }
 
 fn uri_has_yar_extension(uri: &Uri) -> bool {

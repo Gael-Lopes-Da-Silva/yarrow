@@ -14,6 +14,7 @@
  *   node crates/yarrow-lsp/scripts/harness.mjs definition-require
  *   node crates/yarrow-lsp/scripts/harness.mjs on-type-format
  *   node crates/yarrow-lsp/scripts/harness.mjs rapid-edits
+ *   node crates/yarrow-lsp/scripts/harness.mjs virtual-std
  *
  * Env:
  *   YARROW_LSP_BIN  - server argv prefix (default: cargo run -q -p yarrow_lsp --)
@@ -37,6 +38,7 @@ const SCENARIOS = [
   "definition-require",
   "on-type-format",
   "rapid-edits",
+  "virtual-std",
 ];
 
 function usage() {
@@ -117,13 +119,13 @@ class LspClient {
   }
 }
 
-function startServer() {
+function startServer(extraEnv = {}) {
   const prefix = serverArgv();
   const args = [...prefix.slice(1), "--listen", "127.0.0.1:0", "--log-level", "info"];
   const child = spawn(prefix[0], args, {
     cwd: REPO_ROOT,
     stdio: ["ignore", "ignore", "pipe"],
-    env: process.env,
+    env: { ...process.env, ...extraEnv },
   });
 
   let stderr = "";
@@ -630,6 +632,68 @@ async function scenarioRapidEdits(client) {
   client.notify("exit", null);
 }
 
+async function scenarioVirtualStd(client) {
+  const fixture = path.join(REPO_ROOT, "docs/examples/valid/01_hello.yar");
+  const text = fs.readFileSync(fixture, "utf8");
+  // Alias on: `"std.io" io require`
+  const aliasOffset = text.indexOf("io require");
+  if (aliasOffset < 0) {
+    throw new Error("fixture missing 'io require'");
+  }
+  const before = text.slice(0, aliasOffset);
+  const line = (before.match(/\n/g) || []).length;
+  const character = aliasOffset - (before.lastIndexOf("\n") + 1);
+
+  const init = await client.request("initialize", {
+    processId: null,
+    clientInfo: { name: "yarrow-lsp-harness", version: "0.1" },
+    capabilities: {
+      general: { positionEncodings: ["utf-8"] },
+    },
+    rootUri: null,
+  });
+  const schemes =
+    init?.capabilities?.experimental?.textDocumentContent?.schemes;
+  if (!Array.isArray(schemes) || !schemes.includes("yarrow-std")) {
+    throw new Error(
+      `expected experimental.textDocumentContent.schemes to include yarrow-std; got: ${JSON.stringify(init?.capabilities?.experimental)}`,
+    );
+  }
+
+  client.notify("initialized", {});
+  const uri = await openFile(client, fixture);
+
+  const result = await client.request("textDocument/definition", {
+    textDocument: { uri },
+    position: { line, character },
+  });
+  const loc = Array.isArray(result) ? result[0] : result;
+  if (!loc || !loc.uri) {
+    throw new Error(
+      `expected definition Location for std.io require; got: ${JSON.stringify(result)}`,
+    );
+  }
+  const targetUri = String(loc.uri);
+  if (!targetUri.startsWith("yarrow-std:")) {
+    throw new Error(
+      `expected virtual yarrow-std: URI (FORCE_VIRTUAL_STD); got uri=${targetUri}`,
+    );
+  }
+
+  const content = await client.request("workspace/textDocumentContent", {
+    uri: targetUri,
+  });
+  const body = content?.text ?? content;
+  if (typeof body !== "string" || !body.includes("write_line")) {
+    throw new Error(
+      `expected embedded std.io source via textDocumentContent; got: ${JSON.stringify(content)?.slice(0, 200)}`,
+    );
+  }
+
+  await client.request("shutdown", null);
+  client.notify("exit", null);
+}
+
 async function main() {
   const scenario = process.argv[2] || "pull-diagnostics";
   if (scenario === "-h" || scenario === "--help") usage();
@@ -638,7 +702,9 @@ async function main() {
     usage();
   }
 
-  const { child, ready } = startServer();
+  const extraEnv =
+    scenario === "virtual-std" ? { YARROW_LSP_FORCE_VIRTUAL_STD: "1" } : {};
+  const { child, ready } = startServer(extraEnv);
   let client;
   try {
     const addr = await ready;
@@ -659,6 +725,8 @@ async function main() {
       await scenarioOnTypeFormat(client);
     } else if (scenario === "rapid-edits") {
       await scenarioRapidEdits(client);
+    } else if (scenario === "virtual-std") {
+      await scenarioVirtualStd(client);
     }
 
     console.log(`harness ok: ${scenario} via tcp ${addr}`);

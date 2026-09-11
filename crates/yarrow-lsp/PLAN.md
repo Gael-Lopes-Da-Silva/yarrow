@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–19, 21–25)
+### Landed (v1, Stages 0–19, 21–26)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
@@ -46,6 +46,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Core `definition_at` probes for goto / hover (Stage 22; AST fallback on miss)
 - On-type formatting: `\n` after an `end` line aligns indent only (Stage 23)
 - Analysis cancelation: version + generation tickets; checks on `spawn_blocking` (Stage 25)
+- Virtual `yarrow-std:` URIs when on-disk `lib/std` is missing (Stage 26)
 
 Stage 20 (editor extension packaging) was **canceled**; clients live in separate repos.
 
@@ -125,7 +126,7 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–25 landed; Stage 20 canceled                 |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–26 landed; Stage 20 canceled                 |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
@@ -136,9 +137,9 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 ---
 
-## Landed (Stages 0–19, 21–25)
+## Landed (Stages 0–19, 21–26)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–25 are landed.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–26 are landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -168,6 +169,7 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 23    | On-type formatting: `\n` after `end` aligns new-line indent |
 | 24    | Workspace pull diagnostics (open + project roots)           |
 | 25    | Analysis cancelation / latency (version + gen; spawn_blocking) |
+| 26    | Virtual `yarrow-std:` URIs when on-disk std is missing      |
 
 **Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
 
@@ -179,22 +181,15 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 
 **Stage 25 notes:** Debounce is fixed at 200ms (documented, not client-configurable). Per-URI / project generation tickets drop superseded sleeps and in-flight checks; publish and cache refuse older versions. `check_document` / `check_project_roots` run on `spawn_blocking` so the LSP loop stays responsive. No parallel module cache beyond Stage 21 `check_project`; no salsa / incremental IR. Harness: `rapid-edits`.
 
+**Stage 26 notes:** Need confirmed: packaged / relocated builds can lose on-disk `lib/std` while std stays embedded. Prefer real `lib/std` paths; fall back to `yarrow-std:/<module>.yar` + `yarrow_core::std_module_source`. Serve via custom `workspace/textDocumentContent` (advertised under `experimental.textDocumentContent`); virtual buffers are read-only and skip diagnostics. `YARROW_LSP_FORCE_VIRTUAL_STD=1` forces the virtual path (harness). Documented in crate README. Harness: `virtual-std`.
+
 ---
 
 ## Next
 
-Focus: optional virtual std URIs only if needed. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
+Focus: backlog polish only when a concrete editor need appears. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
-### Stage 26 - Virtual `yarrow-std:` URIs (optional)
-
-Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto / hover.
-
-1. Confirm need: if `lib/std` is always resolvable via search paths, **skip** and leave this in Later.
-2. Otherwise map `std.*` require targets to a virtual URI scheme (e.g. `yarrow-std:io.yar`) and serve read-only content from the embedded sources for definition / hover.
-3. Do not allow edits to virtual buffers (or mark them non-writable). Diagnostics stay on user files.
-4. Document the scheme in the crate README.
-
-**Gate:** goto on a `std.io` require opens a buffer (virtual or real) showing the std module text. If skipped for lack of need, Done notes say so. `cargo clippy` green.
+v1 LSP stages are complete (Stage 20 canceled). Pick from **Later** if something blocks clients.
 
 ---
 
@@ -206,8 +201,8 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | textDocument sync                  | 1 ✅           | -                                          |
 | publishDiagnostics                 | 2 ✅; 25 ✅    | `check_source`, spans; cancel stale        |
 | documentSymbol                     | 3 ✅           | AST spans                                  |
-| definition                         | 4, 7, 22 ✅    | AST + require; core Stage 35 probes        |
-| hover                              | 5, 9, 22 ✅    | AST; `type_at`; def/require probes         |
+| definition                         | 4, 7, 22, 26 ✅ | AST + require; probes; virtual std fallback |
+| hover                              | 5, 9, 22, 26 ✅ | AST; `type_at`; def/require; virtual std   |
 | completion                         | 6 ✅           | grammar keywords + AST names               |
 | references                         | 7 ✅           | binding / name index                       |
 | formatting                         | 8 ✅           | `yarrow-fmt`                               |
@@ -223,6 +218,7 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | TCP + test harness                 | 19 ✅          | transport only                                     |
 | multi-root project check           | 21 ✅          | `check_project` (core Stage 28)                    |
 | analysis cancelation / latency     | 25 ✅          | gen tickets + `spawn_blocking`                     |
+| virtual `yarrow-std:` URIs         | 26 ✅          | embedded std when on-disk missing                  |
 | editor extensions                  | 20 ❌ canceled | separate repos later                       |
 | DAP / debug                        | Out of scope   | AOT/JIT debug                              |
 
