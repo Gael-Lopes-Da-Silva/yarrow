@@ -248,7 +248,7 @@ Stage 15 kept range format library-only for LSP. Scripts may want the same witho
 | Item                    | Notes                                                                |
 | ----------------------- | -------------------------------------------------------------------- |
 | Naming lints            | Belong in core warnings or a future `yarrow lint`, not silent format |
-| On-type format helpers  | LSP deferred; may need Stage 18 + smaller expansion units first      |
+| On-type format helpers  | LSP Stage 23: local indent after `end`+`\\n` (no fmt API yet) |
 | Format config file      | Only if multi-flag defaults become painful; guide must define it     |
 | Incremental / cached IR | After Stage 20 if parse dominates wall time                          |
 

@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–19, 21–22)
+### Landed (v1, Stages 0–19, 21–23)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
@@ -34,7 +34,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Navigation: go-to-definition, find references (same file + `require` cross-file)
 - Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
 - Completions: keywords + in-scope / imported names + `std.*` require paths
-- Document formatting via `yarrow-fmt` (full document + range; on-type deferred)
+- Document formatting via `yarrow-fmt` (full document + range + safe on-type after `end`)
 - Code actions / hover that surface `explain_code` for diagnostic codes
 - `LspConfig`, init options, `yarrow lsp` CLI wrapper
 - Signature help at postfix `name call` sites
@@ -43,6 +43,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 - Core `definition_at` probes for goto / hover (Stage 22; AST fallback on miss)
+- On-type formatting: `\n` after an `end` line aligns indent only (Stage 23)
 
 Stage 20 (editor extension packaging) was **canceled**; clients live in separate repos.
 
@@ -122,20 +123,20 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–22 landed; Stage 20 canceled                 |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–23 landed; Stage 20 canceled                 |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
 | Def / require probe | ✅     | Core Stage 35 + LSP Stage 22 consume `definition_at`          |
 | Cross-file resolve  | ⚠      | Probe + AST / `require`; project multi-root in Stage 21       |
-| `yarrow-fmt`        | ✅     | Full-doc best-effort + `format_range`; on-type still deferred |
+| `yarrow-fmt`        | ✅     | Full-doc best-effort + `format_range`; on-type is local indent |
 | CLI `yarrow lsp`    | ✅     | In-process `run_stdio_blocking` / `--listen`                  |
 
 ---
 
-## Landed (Stages 0–19, 21–22)
+## Landed (Stages 0–19, 21–23)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–22 are landed.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–23 are landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -162,30 +163,19 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 20    | Editor extensions - **canceled** (separate repos)           |
 | 21    | Project-aware multi-root via `projectRoots` + `check_project` |
 | 22    | Core `definition_at` for goto / hover; AST fallback on miss |
+| 23    | On-type formatting: `\n` after `end` aligns new-line indent |
 
 **Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
 
 **Stage 22 notes:** Prefer `CheckedProgram::definition_at` (core Stage 35) for `textDocument/definition` and hover “defined in …” / module path. Misses keep AST / require resolution. Harness: `definition-require` on `12_modules.yar` `greet` alias.
 
+**Stage 23 notes:** Advertise `documentOnTypeFormattingProvider` for `\n` only (honors `--no-format` / init `format: false`). When the previous line’s first word is `end` (including `end with T`), rewrite leading whitespace on the new line to match that line’s tab depth. No `format_range` / full reprint (fmt Stage 18 still open; mid-edit expansion stays unsafe). Other triggers and mid-token positions return null. Harness: `on-type-format`.
+
 ---
 
 ## Next
 
-Focus: on-type formatting / workspace pull / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
-
-### Stage 23 - On-type formatting
-
-Stage 17 deferred on-type: mid-edit buffers often fail to parse, and top-level `format_range` expansion is too aggressive for a keystroke.
-
-1. Prefer shipping after [`yarrow-fmt` Stage 18](../yarrow-fmt/PLAN.md) selective reprint (or prove a tiny safe subset without it).
-2. Advertise `documentOnTypeFormattingProvider` only for triggers that stay mechanical and local (candidate: `\n` when the previous non-ws token is `end` and best-effort / range fmt can align without rewriting the whole file). Skip mid-token and mid-identifier triggers.
-3. On parse / format failure: return null / empty edits; never corrupt the buffer.
-4. Honor `--no-format` / init `format: false` (omit capability).
-5. If no safe trigger exists, Done notes say deferred again with reason; do not ship a fighting formatter.
-
-**Gate:** either one harness (or documented manual) on-type edit yields a safe indent/align edit, **or** Done explicitly keeps on-type deferred. Range + full format unchanged. `cargo clippy` green.
-
----
+Focus: workspace pull diagnostics / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
 ### Stage 24 - Workspace pull diagnostics
 
@@ -247,7 +237,7 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | semanticTokens                     | 14 ✅          | tokens + AST                               |
 | rename                             | 15 ✅          | references / resolve (file-local)          |
 | workspaceSymbol                    | 16 ✅; 21 ✅   | open + requires; project roots via `check_project` |
-| rangeFormatting / onTypeFormatting | 17 ✅; 23      | `format_range`; on-type after fmt Stage 18         |
+| rangeFormatting / onTypeFormatting | 17 ✅; 23 ✅   | `format_range`; on-type = local indent after `end` |
 | textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache                |
 | workspace/diagnostic               | 24             | open / project roots only                          |
 | TCP + test harness                 | 19 ✅          | transport only                                     |
