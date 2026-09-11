@@ -17,8 +17,10 @@ use yarrow_core::parser::ast::{
 };
 use yarrow_core::{SourceFile, Span};
 
+use crate::ByteRange;
 use crate::FormatOptions;
 use crate::comment::{normalize_comment, trailing_on_line, trailing_suffix};
+use crate::ignore::{find_ignore_regions, has_ignore_markers};
 use crate::ir::{FormatIr, TriviaMap};
 use crate::layout::reorder_toplevel_indices;
 use crate::phrase::{expr_tokens, layout_expr_stmts, wrap_tokens};
@@ -28,6 +30,8 @@ use crate::require::{require_group_blank, require_sort_key};
 ///
 /// Emits tab indentation and a single blank line between top-level items.
 /// Idempotent when composed with hygiene / indent / blank on accepted inputs.
+/// When the file has ignore markers, file-layout reorder is skipped so markers
+/// stay paired; require runs that intersect an ignore region are not sorted.
 pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String {
     let mut p = Printer {
         file: &ir.file,
@@ -43,7 +47,11 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
     };
 
     let items = &ir.program.items;
-    if options.reorder_layout {
+    let source = ir.file.source.as_str();
+    let ignore_regions = find_ignore_regions(source);
+    // Reorder would detach begin/end markers from their region; skip it.
+    let reorder = options.reorder_layout && !has_ignore_markers(source);
+    if reorder {
         p.print_reordered_toplevel(items, options.sort_requires);
     } else {
         let mut i = 0;
@@ -54,7 +62,9 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
                 while i < items.len() && matches!(items[i].kind, StmtKind::Require { .. }) {
                     i += 1;
                 }
-                p.print_require_run(&items[start..i], start > 0, true);
+                let run = &items[start..i];
+                let sort = !run_intersects_ignore(run, &ignore_regions);
+                p.print_require_run(run, start > 0, sort);
                 continue;
             }
 
@@ -78,6 +88,13 @@ pub fn apply_construct_layout(ir: &FormatIr, options: &FormatOptions) -> String 
         p.out.push('\n');
     }
     p.out
+}
+
+fn run_intersects_ignore(run: &[Stmt], regions: &[ByteRange]) -> bool {
+    run.iter().any(|stmt| {
+        let span = ByteRange::new(stmt.span.lo, stmt.span.hi);
+        regions.iter().any(|r| r.intersects(span))
+    })
 }
 
 struct Printer<'a> {

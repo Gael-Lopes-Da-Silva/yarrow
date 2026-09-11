@@ -193,6 +193,9 @@ pub enum Cmd {
 
     /// Format Yarrow source to match the style guide.
     ///
+    /// Respects paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end`
+    /// regions (see `docs/STYLE_GUIDE.md`).
+    ///
     /// Delegates in-process to `yarrow_fmt` (same as the `yarrow-fmt` binary).
     /// Exit: 0 ok / already formatted; 1 would change (`--check`) or format
     /// failure; 2 usage / I/O.

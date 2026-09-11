@@ -10,6 +10,7 @@ use yarrow_core::Span;
 use yarrow_core::diagnostics::DiagnosticBatch;
 use yarrow_core::parser::ast::StmtKind;
 
+use crate::ignore::intersects_ignore;
 use crate::range::{ByteRange, cover_for_indices, spans_intersect};
 use crate::{FormatIr, FormatOptions, apply_source_hygiene, format_source};
 
@@ -49,6 +50,9 @@ pub fn selective_reprint(
             continue;
         }
         if error_ranges.iter().any(|err| cover.intersects(*err)) {
+            continue;
+        }
+        if intersects_ignore(cleaned, cover) {
             continue;
         }
         // Overlap with an earlier accepted cover → drop this item (skewed span).

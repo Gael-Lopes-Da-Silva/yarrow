@@ -33,6 +33,7 @@ Mechanical rewrite of parseable source:
 - Comment text preserved; spacing around `#` normalized where the guide is explicit (`# ` after hash; one space before trailing `#`)
 - Opt-in file-layout reorder; require sorting on by default (`--no-sort-requires` to disable)
 - Best-effort hygiene on incomplete parse; selective construct reprint when recovery spans are trustworthy (Stage 18)
+- Diff-friendly ignore regions via `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (Stage 19)
 
 ### Out of scope
 
@@ -56,7 +57,8 @@ source (.yar)
   → parse / parse_recovering (yarrow-core)
   → format IR (AST + TriviaMap)
   → printer (STYLE_GUIDE rules: construct → phrase wrap → indent → blanks → hygiene)
-    or hygiene-only / selective reprint when parse incomplete (`format_source_best_effort`)
+    or hygiene-only / selective reprint when parse incomplete (`format_source_best_effort`);
+      ignore regions restored from hygiened original after layout (Stage 19)
   → UTF-8 string / write back
 ```
 
@@ -108,7 +110,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–18 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -131,6 +133,7 @@ Stages 0–18 are complete. Historical stage write-ups were removed; git history
 | Stdlib + CI `--check`        | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`           |
 | Best-effort incomplete parse | Stage 17: hygiene subset + `Parser::parse_recovering`                          |
 | Selective construct reprint  | Stage 18: recovered top-level decls reprint when spans clear errors            |
+| Ignore regions               | Stage 19: `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end`              |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -138,30 +141,11 @@ Stages 0–18 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: ignore regions, then throughput. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
+Focus: throughput, then corpus width. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 18 - Selective construct reprint on recovered parse ✅
+### Stage 19 - Diff-friendly ignore regions ✅
 
-**Done:** No new core parser API. Trust model: recovered `Stmt` spans that do not overlap diagnostic primary spans, cover only inert gaps between neighbors, and pass `format_source` on the cover slice alone. `format_source_best_effort` splices those reprints into hygiened text; broken regions stay intact aside from LF / trailing-WS / final newline. Tokenize failure remains hygiene-only. Fixture: `crates/yarrow-fmt/fixtures/stage18_selective_reprint.yar`. Fully valid input still returns `best_effort: false`.
-
----
-
-### Stage 19 - Diff-friendly ignore regions
-
-Not in the style guide today. Only ship after the guide documents the convention so tools and humans agree.
-
-1. Amend [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md) (tooling blurb) with an explicit ignore syntax, prefer one of:
-   - whole-line `# yarrow-fmt-ignore` affecting the next top-level item, **or**
-   - paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` around a contiguous region
-     Pick one; document that ignored regions still get source hygiene (LF / trailing WS / final newline) unless the guide says otherwise.
-2. Implement skip of construct / indent / blank / require-sort / reorder passes inside ignored spans; preserve original text (plus agreed hygiene).
-3. `format_range` must not expand into or silently reformat ignored covers (document interaction: expand stops at ignore boundaries, or whole-file replace stays ignore-aware).
-4. CLI needs no new flag if comments drive behavior; mention in `--help` / style-guide tooling line.
-5. Fixture with a messy ignored block next to a formatted neighbor; idempotent.
-
-**Gate:** fixture proves ignored text is preserved (aside from documented hygiene) while neighbors format; `--check` on that file exits `0` after one format. Guide documents the syntax. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** Do not use ignore regions to paper over formatter bugs in the gate corpus; fix the printer instead.
+**Done:** Guide documents paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (own-line; optional trailing note). After construct/indent/blank, `restore_ignore_regions` splices hygiened original spans back so interiors stay byte-stable aside from LF / trailing-WS / final newline. Require runs intersecting an ignore region are not sorted; `--reorder-layout` is skipped when markers are present. `format_range` no-ops inside an ignore cover and otherwise stops expansion at ignore boundaries (middle unselected ignore → whole-file replace). Fixture: `crates/yarrow-fmt/fixtures/stage19_ignore_regions.yar`. CLI `--help` mentions the markers.
 
 ---
 
@@ -218,7 +202,7 @@ Stage 15 kept range format library-only for LSP. Scripts may want the same witho
 | Source files                           | Landed (3)                                |
 | Indentation and line width             | Landed (4, 8, 14)                         |
 | Blank lines                            | Landed (5)                                |
-| Comments                               | Landed (1, 9); ignore markers Stage 19    |
+| Comments                               | Landed (1, 9); ignore markers Stage 19 ✅ |
 | Naming                                 | Out of scope (core / lint)                |
 | File layout (order)                    | Landed (13, opt-in)                       |
 | Modules and `require`                  | Landed (6, 10, 14)                        |
@@ -229,7 +213,7 @@ Stage 15 kept range format library-only for LSP. Scripts may want the same witho
 | Control flow / Defer / Unsafe / Errors | Landed (7)                                |
 | Ownership / Stack hygiene              | Out of scope (semantics)                  |
 | Checklist                              | Landed layout rows; naming rows ignored   |
-| Tooling / ignore (new)                 | Stage 19                                  |
+| Tooling / ignore                       | Stage 19 ✅                               |
 
 ---
 

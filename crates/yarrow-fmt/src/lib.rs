@@ -5,14 +5,16 @@
 //!
 //! Stage 18: [`format_source_best_effort`] applies source hygiene on incomplete
 //! parses and selectively reprints recovered top-level declarations whose spans
-//! stay clear of error regions. Shared [`run_fmt`] for `yarrow-fmt` /
-//! `yarrow fmt`; [`format_range`] for span edits.
+//! stay clear of error regions. Stage 19: paired `# yarrow-fmt-ignore-begin` /
+//! `# yarrow-fmt-ignore-end` regions keep original text (plus hygiene). Shared
+//! [`run_fmt`] for `yarrow-fmt` / `yarrow fmt`; [`format_range`] for span edits.
 
 mod best_effort;
 mod blank;
 mod comment;
 mod driver;
 mod hygiene;
+mod ignore;
 mod indent;
 mod ir;
 mod layout;
@@ -26,6 +28,10 @@ pub use blank::apply_blank_lines;
 pub use comment::{normalize_comment, trailing_suffix};
 pub use driver::{FmtInput, run_fmt};
 pub use hygiene::apply_source_hygiene;
+pub use ignore::{
+    enclosing_ignore, find_ignore_regions, has_ignore_markers, intersects_ignore,
+    restore_ignore_regions, trim_cover_around_ignores,
+};
 pub use indent::apply_indent;
 pub use ir::{AttachedComment, Comment, CommentAttach, FormatIr, FormatIrParse, TriviaMap};
 pub use layout::{LayoutKind, layout_kind, reorder_toplevel_indices, reorder_toplevel_items};
@@ -162,7 +168,8 @@ pub fn build_format_ir(source: &str, path: &str) -> Result<FormatIr, FormatError
 ///
 /// Hygiene, construct layout (width wrap, comment spacing, require sort by
 /// default, optional file-layout reorder), tab indent / `end` alignment, then
-/// blank-line rules. Parse failures surface as [`FormatError::Parse`].
+/// blank-line rules. Ignore regions (Stage 19) are restored from the hygiened
+/// original after layout. Parse failures surface as [`FormatError::Parse`].
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     Ok(format_source_at(source, "<input>", options, false)?.text)
 }
@@ -217,8 +224,12 @@ fn format_source_at(
     let indented = apply_source_hygiene(&apply_indent(&ir, options));
     let ir = build_format_ir(&indented, path)?;
     let blanked = apply_blank_lines(&ir);
+    let text = apply_source_hygiene(&blanked);
+    // Stage 19: put ignored spans back from the hygiened original so layout
+    // passes cannot rewrite them. Markers must still round-trip as comments.
+    let text = apply_source_hygiene(&restore_ignore_regions(&cleaned, &text));
     Ok(FormattedSource {
-        text: apply_source_hygiene(&blanked),
+        text,
         best_effort: false,
     })
 }
