@@ -155,8 +155,9 @@ fn build_aot_archive(
     } else {
         aot_target_dir.join(profile_name)
     };
-    let archive = if target.is_some_and(|t| t.contains("windows"))
-        || (target.is_none() && env::var("TARGET").is_ok_and(|t| t.contains("windows")))
+    let archive = if target.is_some_and(|t| t.contains("windows") && t.contains("msvc"))
+        || (target.is_none()
+            && env::var("TARGET").is_ok_and(|t| t.contains("windows") && t.contains("msvc")))
     {
         profile_dir.join("yarrow_runtime_aot.lib")
     } else {

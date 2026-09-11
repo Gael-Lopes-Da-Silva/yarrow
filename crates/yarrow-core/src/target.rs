@@ -1,11 +1,10 @@
-//! AOT / object target triples (Stage 26 / 33 / 34).
+//! AOT / object target triples (Stage 26 / 33 / 34 / 39).
 //!
 //! Host linux-gnu remains the default. Supported classes:
 //! - the other linux-gnu architecture among `x86_64` and `aarch64` (Stage 26)
 //! - `*-linux-musl` for those same arches (Stage 33, static-friendly)
-//! - `x86_64-pc-windows-gnu` (COFF object emit) and `*-apple-darwin` (Mach-O
-//!   object emit) for Stage 34; executable link for those stays out of scope
-//!   on linux hosts
+//! - `x86_64-pc-windows-gnu` (COFF object emit; Stage 39 host→host exe on
+//!   Windows-gnu) and `*-apple-darwin` (Mach-O object emit; Darwin exe later)
 //!
 //! Unsupported triples fail with diagnostic `E397` (no panic).
 
@@ -21,10 +20,10 @@ const KNOWN_LINUX_GNU: &[&str] = &["x86_64-unknown-linux-gnu", "aarch64-unknown-
 /// Documented Stage 33 musl triples (same arches as gnu).
 const KNOWN_LINUX_MUSL: &[&str] = &["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
 
-/// Documented Stage 34 Windows COFF object triple (gnu ABI; object emit only).
+/// Documented Stage 34 / 39 Windows COFF triple (gnu ABI).
 const KNOWN_WINDOWS_GNU: &[&str] = &["x86_64-pc-windows-gnu"];
 
-/// Documented Stage 34 Mach-O object triples (object emit only on linux hosts).
+/// Documented Stage 34 Mach-O object triples (object emit only until Darwin host link).
 const KNOWN_APPLE_DARWIN: &[&str] = &["x86_64-apple-darwin", "aarch64-apple-darwin"];
 
 /// Canonical target for object emit and executable link.
@@ -102,7 +101,7 @@ impl TargetTriple {
         self.is_linux_gnu() || self.is_linux_musl()
     }
 
-    /// Windows GNU (MinGW) COFF targets (Stage 34 object emit).
+    /// Windows GNU (MinGW) COFF targets (Stage 34 object; Stage 39 host exe).
     pub fn is_windows_gnu(&self) -> bool {
         self.triple.operating_system == OperatingSystem::Windows
             && self.triple.environment == Environment::Gnu
@@ -125,9 +124,16 @@ impl TargetTriple {
         self.is_windows_gnu() || self.is_apple_darwin()
     }
 
-    /// Whether `link_executable` may succeed for this triple on a linux-gnu host.
+    /// Whether `link_executable` may succeed for this triple on the current host.
     pub fn supports_executable_link(&self) -> bool {
-        self.is_linux_elf()
+        if self.is_linux_elf() {
+            return cfg!(all(target_os = "linux", target_env = "gnu"));
+        }
+        if self.is_windows_gnu() {
+            // Stage 39: Windows-gnu host→host only (no fake linux cross-link).
+            return cfg!(all(target_os = "windows", target_env = "gnu")) && self.is_host();
+        }
+        false
     }
 
     /// Whether Yarrow AOT currently accepts this triple.

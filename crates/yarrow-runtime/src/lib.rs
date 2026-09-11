@@ -154,8 +154,10 @@ pub extern "C" fn yarrow_alloc(size: u64) -> u64 {
 ///
 /// Under `aot-exports` this is exported as the linker symbol `free`. Calling
 /// `libc::free` from that body would recurse into this same symbol, so on
-/// glibc we forward to `__libc_free` instead. Internal `libc::free` calls
-/// elsewhere bind to this export and then reach glibc through this trampoline.
+/// glibc we forward to `__libc_free` instead. On Windows we resolve UCRT
+/// `free` via `GetProcAddress` for the same reason. Internal `libc::free`
+/// calls elsewhere bind to this export and then reach the CRT through this
+/// trampoline.
 #[cfg_attr(feature = "aot-exports", unsafe(export_name = "free"))]
 pub extern "C" fn yarrow_free(ptr: u64) {
     unsafe {
@@ -166,11 +168,54 @@ pub extern "C" fn yarrow_free(ptr: u64) {
             }
             __libc_free(ptr as *mut libc::c_void);
         }
-        #[cfg(not(all(feature = "aot-exports", target_os = "linux", target_env = "gnu")))]
+        #[cfg(all(feature = "aot-exports", target_os = "windows"))]
+        {
+            windows_crt_free(ptr as *mut libc::c_void);
+        }
+        #[cfg(not(any(
+            all(feature = "aot-exports", target_os = "linux", target_env = "gnu"),
+            all(feature = "aot-exports", target_os = "windows"),
+        )))]
         {
             libc::free(ptr as *mut libc::c_void);
         }
     }
+}
+
+/// Resolve UCRT `free` at runtime so our exported `free` does not recurse.
+#[cfg(all(feature = "aot-exports", target_os = "windows"))]
+unsafe fn windows_crt_free(ptr: *mut libc::c_void) {
+    use std::sync::OnceLock;
+    type FreeFn = unsafe extern "C" fn(*mut libc::c_void);
+    static REAL_FREE: OnceLock<FreeFn> = OnceLock::new();
+
+    unsafe extern "system" {
+        fn LoadLibraryA(name: *const u8) -> *mut core::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut core::ffi::c_void,
+            name: *const u8,
+        ) -> *mut core::ffi::c_void;
+    }
+
+    let f = *REAL_FREE.get_or_init(|| unsafe {
+        // Prefer UCRT (MSYS2 UCRT64 / modern Rust). Fall back to msvcrt for
+        // older mingw64 toolchains so malloc/free stay on one CRT.
+        let mut module = LoadLibraryA(c"ucrtbase.dll".as_ptr().cast());
+        if module.is_null() {
+            module = LoadLibraryA(c"msvcrt.dll".as_ptr().cast());
+        }
+        assert!(
+            !module.is_null(),
+            "LoadLibraryA(ucrtbase.dll|msvcrt.dll) failed for free trampoline"
+        );
+        let sym = GetProcAddress(module, c"free".as_ptr().cast());
+        assert!(
+            !sym.is_null(),
+            "GetProcAddress(free) failed for free trampoline"
+        );
+        core::mem::transmute::<*mut core::ffi::c_void, FreeFn>(sym)
+    });
+    f(ptr);
 }
 
 /// Detach `handle` from whatever region it is attached to (no-op if none).
@@ -1018,8 +1063,16 @@ pub extern "C" fn yarrow_fs_open(path: u64, mode: i64) -> i64 {
     };
     match opts.open(&path) {
         Ok(file) => {
-            use std::os::fd::IntoRawFd;
-            file.into_raw_fd() as i64
+            #[cfg(unix)]
+            {
+                use std::os::fd::IntoRawFd;
+                file.into_raw_fd() as i64
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::IntoRawHandle;
+                file.into_raw_handle() as isize as i64
+            }
         }
         Err(err) => {
             let code = fs_map_io_error(&err);
@@ -1029,21 +1082,32 @@ pub extern "C" fn yarrow_fs_open(path: u64, mode: i64) -> i64 {
     }
 }
 
-/// Close a host fd. Returns `0` on success or `FS_ERR_*`. Negative / invalid
-/// fds are ignored so failed-open fallbacks (`fd -1`) are safe to close.
+/// Close a host fd / handle. Returns `0` on success or `FS_ERR_*`. Negative /
+/// invalid values are ignored so failed-open fallbacks (`fd -1`) are safe to
+/// close.
 #[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_close"))]
 pub extern "C" fn yarrow_fs_close(fd: i64) -> i64 {
     fs_set_error(0);
     if fd < 0 {
         return 0;
     }
-    let rc = unsafe { libc::close(fd as libc::c_int) };
-    if rc == 0 {
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::close(fd as libc::c_int) };
+        if rc == 0 {
+            0
+        } else {
+            let code = FS_ERR_IO;
+            fs_set_error(code);
+            code
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle, RawHandle};
+        // Dropping the File closes the HANDLE.
+        drop(unsafe { std::fs::File::from_raw_handle(fd as isize as RawHandle) });
         0
-    } else {
-        let code = FS_ERR_IO;
-        fs_set_error(code);
-        code
     }
 }
 
@@ -1051,7 +1115,6 @@ pub extern "C" fn yarrow_fs_close(fd: i64) -> i64 {
 #[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_write"))]
 pub extern "C" fn yarrow_fs_write(fd: i64, s: u64) -> i64 {
     use std::io::Write;
-    use std::os::fd::{FromRawFd, IntoRawFd};
 
     fs_set_error(0);
     if fd < 0 {
@@ -1066,9 +1129,7 @@ pub extern "C" fn yarrow_fs_write(fd: i64, s: u64) -> i64 {
         let str = &*(s as *const Str);
         std::slice::from_raw_parts(str.ptr, str.len)
     };
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) };
-    let result = file.write_all(bytes).and_then(|_| file.flush());
-    let _ = file.into_raw_fd();
+    let result = fs_with_file(fd, |file| file.write_all(bytes).and_then(|_| file.flush()));
     match result {
         Ok(()) => 0,
         Err(err) => {
@@ -1084,17 +1145,14 @@ pub extern "C" fn yarrow_fs_write(fd: i64, s: u64) -> i64 {
 #[cfg_attr(feature = "aot-exports", unsafe(export_name = "fs_read"))]
 pub extern "C" fn yarrow_fs_read(fd: i64) -> u64 {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, IntoRawFd};
 
     fs_set_error(0);
     if fd < 0 {
         fs_set_error(FS_ERR_INVALID);
         return fs_empty_string();
     }
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) };
     let mut buf = Vec::new();
-    let result = file.read_to_end(&mut buf);
-    let _ = file.into_raw_fd();
+    let result = fs_with_file(fd, |file| file.read_to_end(&mut buf));
     match result {
         Ok(_) => {
             if buf.is_empty() {
@@ -1108,6 +1166,30 @@ pub extern "C" fn yarrow_fs_read(fd: i64) -> u64 {
             fs_set_error(code);
             fs_empty_string()
         }
+    }
+}
+
+/// Borrow a host file descriptor / handle as a [`std::fs::File`] without
+/// closing it when the borrow ends.
+fn fs_with_file<T, F>(fd: i64, f: F) -> std::io::Result<T>
+where
+    F: FnOnce(&mut std::fs::File) -> std::io::Result<T>,
+{
+    #[cfg(unix)]
+    {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd as libc::c_int) };
+        let result = f(&mut file);
+        let _ = file.into_raw_fd();
+        result
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
+        let mut file = unsafe { std::fs::File::from_raw_handle(fd as isize as RawHandle) };
+        let result = f(&mut file);
+        let _ = file.into_raw_handle();
+        result
     }
 }
 

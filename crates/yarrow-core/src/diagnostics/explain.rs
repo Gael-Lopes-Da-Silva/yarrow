@@ -132,9 +132,10 @@ runtime; see docs/RUNTIME.md).",
         body: "\
 Object emit accepts linux-gnu / linux-musl (`x86_64` / `aarch64`), \
 `x86_64-pc-windows-gnu` (COFF), and `x86_64-apple-darwin` / \
-`aarch64-apple-darwin` (Mach-O). Executable link on linux hosts covers \
-linux-gnu / linux-musl only; Mach-O / Windows stay object-only (Stage 34). \
-Other triples (MSVC, WASM, ...) are rejected. JIT requires the host triple. Set \
+`aarch64-apple-darwin` (Mach-O). Executable link covers linux-gnu / linux-musl \
+on linux-gnu hosts, plus Windows-gnu host→host on a Windows-gnu toolchain \
+(Stage 39). Mach-O and non-host Windows stay object-only for now. Other triples \
+(MSVC, WASM, ...) are rejected. JIT requires the host triple. Set \
 `CompileOptions::target` to a supported value or leave it unset for the host.",
     },
     ExplainEntry {

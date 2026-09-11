@@ -110,7 +110,7 @@ DWARF includes a compilation unit for the source path, `DW_TAG_subprogram` entri
 
 JIT uses the same `opt_level` (default stays debug-friendly `None`). JIT does not emit DWARF.
 
-### Cross-compile triples (Stage 26 / 33 / 34)
+### Cross-compile triples (Stage 26 / 33 / 34 / 39)
 
 Object emit and executable link take an optional [`CompileOptions::target`](../../crates/yarrow-core/src/session.rs) ([`TargetTriple`](../../crates/yarrow-core/src/target.rs)). `None` means the host.
 
@@ -119,8 +119,8 @@ Object emit and executable link take an optional [`CompileOptions::target`](../.
 | Host (`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`) | Default object / executable path                                                                |
 | The other of those two                                           | Stage 26 cross: object emit always; link when archive + CRT are available                       |
 | `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`       | Stage 33 musl: object emit always; static executable link when musl CRT + archive are available |
-| `x86_64-pc-windows-gnu`                                          | Stage 34 COFF object emit (executable link `E397` on linux hosts)                               |
-| `x86_64-apple-darwin` / `aarch64-apple-darwin`                   | Stage 34 Mach-O object emit (executable link `E397` on linux hosts)                             |
+| `x86_64-pc-windows-gnu`                                          | Stage 34 COFF object emit; Stage 39 host→host PE exe on Windows-gnu (`E397` on other hosts)     |
+| `x86_64-apple-darwin` / `aarch64-apple-darwin`                   | Stage 34 Mach-O object emit (executable link `E397` until a Darwin host path lands)             |
 
 Unsupported triples (MSVC, WASM, other arches, …) fail with `E397` (no panic). JIT rejects a non-host `target` with `E397`. Object emit for aarch64 requires the `arm64` feature on `cranelift-codegen` (enabled by `yarrow_core`). DWARF debug info is emitted for ELF only; Mach-O / COFF objects skip DWARF for now.
 
@@ -160,7 +160,7 @@ cargo build -p yarrow_runtime_aot --target aarch64-unknown-linux-gnu
 export YARROW_RUNTIME_AOT_ARCHIVE_aarch64_unknown_linux_gnu=$PWD/target/aarch64-unknown-linux-gnu/debug/libyarrow_runtime_aot.a
 ```
 
-Example override for Windows-gnu (Stage 34 object / future link):
+Example override for Windows-gnu (Stage 34 object / Stage 39 host exe):
 
 ```bash
 cargo build -p yarrow_runtime_aot --target x86_64-pc-windows-gnu
@@ -176,7 +176,7 @@ export YARROW_RUNTIME_AOT_ARCHIVE_x86_64_pc_windows_gnu=$PWD/target/x86_64-pc-wi
 
 linux-gnu cross links stay dynamic (PIE + glibc dynamic linker). linux-musl links use **`-static`** with musl `crt1.o` / `crti.o` / `crtn.o` and `libc.a` (no gcc `crtbegin` / `crtend`). Point `YARROW_AOT_SYSROOT` at a musl prefix whose `lib/` holds those files (for example a Nix `musl-static-*` store path).
 
-Mach-O / Windows **executable** link (`ld64` / `link.exe` / mingw) is not wired on linux hosts yet: `compile_executable_source` returns `E397` and asks for `compile_object_source` instead. Runtime archives for those triples can still be built via `YARROW_BUILD_CROSS_AOT` or the env override above when the Rust target is installed.
+**Windows-gnu host→host (Stage 39):** on a Windows-gnu toolchain (MSYS2 UCRT64 / rustc `x86_64-pc-windows-gnu`), `compile_executable_source` links with MinGW `ld`/`lld` (`-m i386pep`), CRT `crt2.o` / `crtbegin.o` / `crtend.o`, and the usual MinGW + Rust import libs (`mingw32`, `msvcrt`, `ws2_32`, …). Discovery uses `gcc -print-file-name` or `YARROW_AOT_CRT_DIR` / `YARROW_AOT_SYSROOT`. Gate: `cargo run -p yarrow_core --example check_windows_exe` (CI: `.github/workflows/stage-39-windows-gnu-exe.yml`). linux hosts still return `E397` for Windows/Darwin **executable** link and keep object emit; Mach-O Darwin host→host is not wired yet.
 
 Missing archive → `E396`. Missing CRT / linker → `E394`. Unsupported triple / object-only executable → `E397`.
 
