@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--31).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--38).
 
 ## Execution model
 
@@ -439,7 +439,7 @@ Examples:
 - On `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` / `definition_at` on `answer` yield `ty = Some("i32")` and a non-empty `def_span` in that file.
 - On `docs/examples/valid/12_modules.yar`, `definition_at` on the `greet` alias (or the `"helpers.greet"` path string) yields `kind = Require`, `path = "helpers.greet"`, and `file_path` pointing at `helpers/greet.yar` when that file is on a search path.
 
-## Warnings (Stage 20 / 31)
+## Warnings (Stage 20 / 31 / 38)
 
 Successful `check_source` / `compile` may still populate [`CheckedProgram::warnings`](../crates/yarrow-core/src/session.rs). Warnings never fail the Session `Result`. Codes are explained via `explain_code` / CLI `yarrow explain`.
 
@@ -452,6 +452,9 @@ Successful `check_source` / `compile` may still populate [`CheckedProgram::warni
 | `W405` | Redundant parameter `copy` on a non-heap type                                                   |
 | `W406` | `require` path is both a nested module and a parent-module function (function wins)             |
 | `W407` | Statement after divergent control flow (`return`, both-`if` returns, `loop.break` / `continue`) |
+| `W408` | Empty `match` case arm (`case … end` with no statements)                                        |
+| `W409` | Empty `if` then branch                                                                          |
+| `W410` | Empty `unsafe … end` block                                                                      |
 
 Fixtures: [`docs/examples/warnings/`](examples/warnings/). Gate: `cargo run -p yarrow_core --example check_warnings`.
 

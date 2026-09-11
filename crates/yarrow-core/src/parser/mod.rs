@@ -560,9 +560,11 @@ impl Parser {
             {
                 let body = self.body(&[TokenKind::End])?;
                 self.expect(TokenKind::End, "expected 'end' after case block")?;
+                let end = self.prev_span();
                 cases.push(MatchCase {
                     kind: MatchCaseKind::Type(ty),
                     body,
+                    span: Span::from_location(location).merge(end),
                 });
                 continue;
             }
@@ -590,9 +592,11 @@ impl Parser {
                 .unwrap_or_else(|| (Expr::variable(""), Span::default()));
             let body = self.body(&[TokenKind::End])?;
             self.expect(TokenKind::End, "expected 'end' after case block")?;
+            let end = self.prev_span();
             cases.push(MatchCase {
                 kind: MatchCaseKind::Condition(condition),
                 body,
+                span: Span::from_location(location).merge(end),
             });
         }
 

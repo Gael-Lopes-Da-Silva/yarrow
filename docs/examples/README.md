@@ -4,7 +4,7 @@ Language illustrations for Yarrow. They follow [`GRAMMAR.md`](../GRAMMAR.md) and
 [`SYNTAX.md`](../SYNTAX.md), not the current compiler snapshot. The implementation
 is still catching up; treat these as the intended language shape.
 
-Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
+Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 / 38 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
 
 Formatter gate (`./scripts/fmt-check.sh` / `yarrow fmt --check`): [`valid/`](valid/), [`warnings/`](warnings/), [`project/`](project/), plus `crates/yarrow-core/lib/std` and the Stage 19 ignore-region fixture. [`invalid/`](invalid/) stays out of that gate (expected parse failures).
 
@@ -73,6 +73,8 @@ Interpreter (Stage 37): `01`–`15` except `00_grammar_tour.yar` interpret with 
 | [`warnings/02_never_written_and_copy.yar`](warnings/02_never_written_and_copy.yar) | `W404` never-written `mutable`, `W405` redundant `copy`           |
 | [`warnings/03_unreachable.yar`](warnings/03_unreachable.yar)                       | `W407` unreachable after `return`                                 |
 | [`warnings/04_require_ambiguous.yar`](warnings/04_require_ambiguous.yar)           | `W406` item-vs-module require ambiguity                           |
+| [`warnings/05_empty_match.yar`](warnings/05_empty_match.yar)                       | `W408` empty match case arm                                       |
+| [`warnings/06_empty_if_and_unsafe.yar`](warnings/06_empty_if_and_unsafe.yar)       | `W409` empty `if` then, `W410` empty `unsafe`                     |
 
 Gate: `cargo run -p yarrow_core --example check_warnings`.
 

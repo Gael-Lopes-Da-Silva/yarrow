@@ -134,7 +134,7 @@ Object emit accepts linux-gnu / linux-musl (`x86_64` / `aarch64`), \
 `x86_64-pc-windows-gnu` (COFF), and `x86_64-apple-darwin` / \
 `aarch64-apple-darwin` (Mach-O). Executable link on linux hosts covers \
 linux-gnu / linux-musl only; Mach-O / Windows stay object-only (Stage 34). \
-Other triples (MSVC, WASM, …) are rejected. JIT requires the host triple. Set \
+Other triples (MSVC, WASM, ...) are rejected. JIT requires the host triple. Set \
 `CompileOptions::target` to a supported value or leave it unset for the host.",
     },
     ExplainEntry {
@@ -193,6 +193,29 @@ the parent module and call the function through that scope.",
 A statement appears after divergent control flow (`return`, or both branches of \
 an `if` that return, or `loop.break` / `loop.continue`). It can never run. Remove \
 it or move it before the divergent statement.",
+    },
+    ExplainEntry {
+        code: "W408",
+        title: "empty match arm",
+        body: "\
+A `match` case arm has no statements between `case` and `end`. Selecting that \
+arm does nothing. Add a body, fold the case into `else`, or remove the arm if it \
+is not needed.",
+    },
+    ExplainEntry {
+        code: "W409",
+        title: "empty if then branch",
+        body: "\
+An `if` then-branch has no statements before `else` or `end`. Invert the \
+condition and keep only the other branch, or add the intended body.",
+    },
+    ExplainEntry {
+        code: "W410",
+        title: "empty unsafe block",
+        body: "\
+An `unsafe ... end` block contains no statements. Unsafe marks where raw pointers \
+and related ops are allowed; an empty block grants nothing. Remove it, or move \
+the unsafe operations inside.",
     },
 ];
 
