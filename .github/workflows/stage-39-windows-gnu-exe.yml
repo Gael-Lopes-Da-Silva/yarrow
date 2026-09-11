@@ -25,7 +25,6 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-rust
-            mingw-w64-x86_64-cargo
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-binutils
             mingw-w64-x86_64-pkgconf
