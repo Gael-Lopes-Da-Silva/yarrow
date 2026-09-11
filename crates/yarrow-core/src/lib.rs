@@ -14,8 +14,8 @@ pub mod tokenizer;
 pub use analysis::{DefIndex, DefKind, DefProbe, TypeIndex, TypeProbe};
 pub use compiler::{CompileError, Compiler, RunResult, std_module_source};
 pub use diagnostics::{
-    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, Severity,
-    SourceFile, Span, explain_code, format_explain, normalize_code, render,
+    ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, ICE_CODE,
+    Severity, SourceFile, Span, explain_code, format_explain, normalize_code, render,
 };
 pub use entry::{DEFAULT_ENTRY_NAME, PROCESS_MAIN_SYMBOL};
 pub use interpreter::{EvalContext, InterpretError, Interpreter, Value as InterpretValue};
@@ -30,7 +30,7 @@ pub use project::{
 pub use runtime::{RuntimeArchive, link_symbol_names, linkable_archive, linkable_archive_for};
 pub use session::{
     CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, OptLevel,
-    Session, SessionArtifact, SessionDiagnostics, render_batch,
+    Session, SessionArtifact, SessionDiagnostics, SessionFailureKind, render_batch,
 };
 pub use target::{TargetError, TargetTriple, supported_triple_names, supported_triples};
 pub use tokenizer::Token;

@@ -14,6 +14,12 @@ pub use span::Span;
 
 use crate::tokenizer::token::Location;
 
+/// Stable code for internal compiler errors (Stage 40).
+///
+/// Drivers (see `yarrow-cli` Stage 16) map a batch containing this code to exit
+/// `101`. Ordinary user / toolchain diagnostics stay exit `1`.
+pub const ICE_CODE: &str = "E999";
+
 /// How serious a diagnostic is.
 ///
 /// Errors fail the session; warnings (Stage 20) are reported on success and do
@@ -89,6 +95,22 @@ impl Diagnostic {
             notes: Vec::new(),
             helps: Vec::new(),
         }
+    }
+
+    /// Internal compiler error (`E999`). Not for user program mistakes.
+    pub fn ice(message: impl Into<String>) -> Self {
+        Self::error(ICE_CODE, message)
+            .with_note(
+                "this is an internal compiler error (ICE), not a problem in your program",
+            )
+            .with_help(
+                "please report this at https://github.com/Yarrow-Programming-Language/yarrow/issues with the command and source that triggered it",
+            )
+    }
+
+    /// Whether this diagnostic is an ICE (`E999`).
+    pub fn is_ice(&self) -> bool {
+        self.code == ICE_CODE
     }
 
     pub fn with_path(mut self, path: impl Into<String>) -> Self {

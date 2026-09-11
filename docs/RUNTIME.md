@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--38).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Internal compiler errors](#internal-compiler-errors-stage-40), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--38).
 
 ## Execution model
 
@@ -347,6 +347,25 @@ Fallback must be usable at the success type (coercion allowed).
 Inside `handle`, `match` with no prior subject dispatches on the error the same way union `match` dispatches on member types (grammar: cases compare or name error members). Elsewhere, ordinary value `match` uses bool conditions.
 
 Built-in and std error members (e.g. `error.OUT_OF_MEMORY`) are comparable tags across the program.
+
+---
+
+## Internal compiler errors (Stage 40)
+
+Session failures are ordinarily `SessionDiagnostics` batches (user / toolchain codes such as `E2xx`–`E3xx`). Drivers map those to exit `1`.
+
+An **internal compiler error** is tagged as diagnostic code **`E999`** (`ICE_CODE`). It means an invariant or API-boundary failure inside the compiler, not a mistake in the user’s program.
+
+| API | Role |
+| --- | ---- |
+| `Diagnostic::ice` / `CompileError::ice` | Build an `E999` diagnostic |
+| `SessionDiagnostics::is_ice` / `DiagnosticBatch::is_ice` | Detect ICE in a failed session |
+| `SessionDiagnostics::failure_kind` → `SessionFailureKind::Ice` \| `User` | Driver exit mapping (`101` vs `1`) |
+| `Session::debug_trigger_ice` | Documented gate hook (does not panic) |
+
+Selected API-boundary sites (for example JIT-only `get_finalized_function` on an object backend) return `E999` instead of panicking. The library does **not** blanket-catch panics; CLI Stage 16 may still use `catch_unwind` for unexpected aborts.
+
+Gate: `cargo run -p yarrow_core --example check_ice`. Explain: `yarrow explain E999`.
 
 ---
 

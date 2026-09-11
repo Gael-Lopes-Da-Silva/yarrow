@@ -99,10 +99,12 @@ impl CodeModule {
         }
     }
 
-    pub(crate) fn get_finalized_function(&self, func_id: FuncId) -> *const u8 {
+    pub(crate) fn get_finalized_function(&self, func_id: FuncId) -> CResult<*const u8> {
         match self {
-            Self::Jit(m) => m.get_finalized_function(func_id),
-            Self::Object(_) => panic!("get_finalized_function is JIT-only"),
+            Self::Jit(m) => Ok(m.get_finalized_function(func_id)),
+            Self::Object(_) => Err(CompileError::ice(
+                "get_finalized_function called on an object backend (JIT-only invariant)",
+            )),
         }
     }
 

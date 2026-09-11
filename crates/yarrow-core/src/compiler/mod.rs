@@ -1649,7 +1649,7 @@ impl Compiler {
         // A fallible entry returns an envelope `(env, payload)`. Run it and
         // surface a non-zero env as a runtime failure; success is void.
         if error_return(&return_tys)?.is_some() {
-            let ptr = self.module.get_finalized_function(id);
+            let ptr = self.module.get_finalized_function(id)?;
             unsafe {
                 let f: extern "C" fn() -> (i64, i64) = std::mem::transmute(ptr);
                 let (env, _payload) = f();
@@ -1663,7 +1663,7 @@ impl Compiler {
             }
             return Ok(RunResult::Void);
         }
-        let ptr = self.module.get_finalized_function(id);
+        let ptr = self.module.get_finalized_function(id)?;
         unsafe {
             match return_tys.as_slice() {
                 [] => {
@@ -1746,7 +1746,7 @@ impl Compiler {
                 "E361",
             )
         })?;
-        Ok(self.module.get_finalized_function(id) as usize)
+        Ok(self.module.get_finalized_function(id)? as usize)
     }
 
     fn finalize(&mut self) -> CResult<()> {
