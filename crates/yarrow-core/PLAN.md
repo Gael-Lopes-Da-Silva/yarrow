@@ -27,7 +27,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
 | Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings` |
 | Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30) |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (`x86_64` / `aarch64` linux-gnu and linux-musl) |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
 | Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393 |
@@ -42,7 +42,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 | Area        | Gap                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | Cross link needs matching archive + CRT / linker emulation; Mach-O / Windows later (Stage 34)               |
+| AOT         | Cross link needs matching archive + CRT / linker emulation; Mach-O / Windows executable link later (Stage 34 object-only on linux hosts) |
 | Interpret   | No regions / defer, unsafe / raw pointers, field `set`, or full `valid/**` parity (remaining E393 after Stage 32) |
 | Warnings    | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later |
 | Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
@@ -54,7 +54,7 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 ## Next (Phase G)
 
-Focus: Mach-O / Windows AOT (Stage 34). Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
+Focus: later backlog (interpreter parity, project CLI, optional linker). Keep Stage 27 deferred unless system linkers become fragile. Do not invent language features.
 
 ### Stage 27 - Bundled linker (optional) ⏭️ deferred
 
@@ -123,7 +123,7 @@ After Stage 26’s first non-host linux-gnu arch: widen linux targets before Mac
 
 **Done:** `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` accepted for object emit; static musl link when CRT + archive exist (`YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR`); `build.rs` optionally records musl archives under `YARROW_BUILD_CROSS_AOT`; gate example `check_cross`. Mach-O / Windows remain Stage 34.
 
-### Stage 34 - Mach-O / Windows AOT link
+### Stage 34 - Mach-O / Windows AOT link ✅
 
 Platform object formats beyond ELF, once the linux cross story is real.
 
@@ -134,12 +134,15 @@ Platform object formats beyond ELF, once the linux cross story is real.
 
 **Gate:** at least one non-ELF object (and executable if in scope) builds for a documented triple; host linux-gnu path unchanged. RUNTIME documents the matrix; Known gaps updated. `cargo clippy` green.
 
+**Done:** object emit for `x86_64-pc-windows-gnu` (COFF) and `x86_64-apple-darwin` / `aarch64-apple-darwin` (Mach-O); executable link returns `E397` on linux hosts (object-only); DWARF skipped for non-ELF; `build.rs` may soft-record archives under `YARROW_BUILD_CROSS_AOT`; gate `check_macho_coff`. MSVC and native Mach-O / PE link stay later.
+
 ---
 
 ## Later (backlog)
 
 | Item                         | Notes                                              |
 | ---------------------------- | -------------------------------------------------- |
+| Mach-O / Windows executable  | Stage 34 landed object-only; `ld64` / `link.exe` later |
 | Require-path / def index API | If Stage 30 stretch is skipped; fuller LSP navigate |
 | Interpreter full `valid/**`  | Finish remaining E393 after Stage 32 gate           |
 | Bundled linker               | Revisit Stage 27 only if PATH `ld`/`lld` is fragile |

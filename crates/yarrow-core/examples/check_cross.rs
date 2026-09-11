@@ -63,8 +63,8 @@ fn main() {
     assert!(names.iter().any(|n| n.contains("linux-gnu")));
     assert!(names.iter().any(|n| n.contains("linux-musl")));
 
-    // Unsupported class stays E397 (no panic).
-    let err = TargetTriple::parse("x86_64-pc-windows-msvc").expect_err("windows must be rejected");
+    // Unsupported class stays E397 (no panic). MSVC is not in the Stage 34 matrix.
+    let err = TargetTriple::parse("x86_64-pc-windows-msvc").expect_err("msvc must be rejected");
     assert!(
         err.message.contains("unsupported") || err.message.contains("E397"),
         "unexpected reject message: {}",

@@ -2,8 +2,8 @@
 //!
 //! - Embeds the std library under `lib/std/` into the binary.
 //! - Builds / records AOT runtime static archives for the host and, when the
-//!   Rust target is installed, Stage 26 / 33 cross triples (other linux-gnu
-//!   arch + host-arch linux-musl).
+//!   Rust target is installed, Stage 26 / 33 / 34 cross triples (other
+//!   linux-gnu arch, linux-musl, Windows-gnu, Apple Darwin).
 
 use std::env;
 use std::fs;
@@ -91,18 +91,25 @@ fn record_aot_runtime_archives() {
 }
 
 fn cross_triples_for(host: &str) -> Vec<&'static str> {
-    // Stage 26: other linux-gnu arch. Stage 33: host-arch linux-musl.
+    // Stage 26: other linux-gnu arch. Stage 33: musl. Stage 34: COFF / Mach-O
+    // archives when the Rust target is installed (object emit does not need them).
     if host.starts_with("x86_64-") && host.contains("linux") && host.contains("gnu") {
         vec![
             "aarch64-unknown-linux-gnu",
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-musl",
+            "x86_64-pc-windows-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
         ]
     } else if host.starts_with("aarch64-") && host.contains("linux") && host.contains("gnu") {
         vec![
             "x86_64-unknown-linux-gnu",
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
+            "x86_64-pc-windows-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
         ]
     } else {
         Vec::new()

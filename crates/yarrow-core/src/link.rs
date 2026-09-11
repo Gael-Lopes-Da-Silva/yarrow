@@ -4,6 +4,8 @@
 //! `clang` as a compile or link driver. CRT object paths may be discovered via
 //! `cc -print-file-name` when present (path lookup only), or via
 //! `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR` for cross targets (Stage 26 / 33).
+//! Stage 34 Mach-O / Windows targets accept object emit only; executable link
+//! returns `E397` on linux hosts (no `ld64` / `link.exe` path yet).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -69,6 +71,18 @@ pub fn link_executable(
         }
         if target.is_linux_musl() {
             return link_linux_musl(object_bytes, archive_bytes, target);
+        }
+        if target.is_non_elf_object() {
+            return Err(LinkError::new(
+                "E397",
+                format!(
+                    "AOT executable link is not available for '{}' on this host (Stage 34 is object emit only)",
+                    target.as_str()
+                ),
+            )
+            .with_help(
+                "use Session::compile_object_source for Mach-O / COFF; link executables on the target OS or stick to linux-gnu / linux-musl",
+            ));
         }
         Err(LinkError::new(
             "E397",

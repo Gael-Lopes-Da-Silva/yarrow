@@ -120,7 +120,7 @@ do not fall back to JIT for `--target object`.",
         title: "runtime archive unavailable",
         body: "\
 AOT link needs `libyarrow_runtime_aot` for the selected target triple. Rebuild \
-`yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` (host) or the Stage 26 / 33 \
+`yarrow-core` so `YARROW_RUNTIME_AOT_ARCHIVE` (host) or the Stage 26 / 33 / 34 \
 archive table points at a non-empty archive, or set \
 `YARROW_RUNTIME_AOT_ARCHIVE_<triple_with_underscores>` to an archive built with \
 `cargo build -p yarrow_runtime_aot --target <triple>` (same ABI as the host \
@@ -130,9 +130,11 @@ runtime; see docs/RUNTIME.md).",
         code: "E397",
         title: "unsupported or invalid AOT target",
         body: "\
-Object / executable emit accepts linux-gnu and linux-musl triples for \
-`x86_64` and `aarch64` (host plus Stage 26 / 33 cross). Mach-O, Windows, and \
-other triples are not supported yet. JIT requires the host triple. Set \
+Object emit accepts linux-gnu / linux-musl (`x86_64` / `aarch64`), \
+`x86_64-pc-windows-gnu` (COFF), and `x86_64-apple-darwin` / \
+`aarch64-apple-darwin` (Mach-O). Executable link on linux hosts covers \
+linux-gnu / linux-musl only; Mach-O / Windows stay object-only (Stage 34). \
+Other triples (MSVC, WASM, …) are rejected. JIT requires the host triple. Set \
 `CompileOptions::target` to a supported value or leave it unset for the host.",
     },
     ExplainEntry {
