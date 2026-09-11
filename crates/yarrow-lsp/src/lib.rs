@@ -70,6 +70,9 @@ pub use signature_help::signature_help as signature_help_at;
 pub use symbols::{document_symbols, workspace_symbols};
 
 /// Debounce window for rapid `didChange` before re-checking.
+///
+/// Fixed at 200ms (not client-configurable). Newer `didChange` bumps the
+/// per-URI / project generation so in-flight sleeps and checks are ignored.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Errors from starting or running the language server.
@@ -261,9 +264,15 @@ impl Backend {
             .any(|root| path_key(root) == key)
     }
 
+    /// Cache push/pull diagnostics. Refuses to overwrite a newer version.
     fn store_diagnostics(state: &ServerState, uri: &Uri, version: i32, items: Vec<Diagnostic>) {
         let result_id = format!("v{version}");
         if let Ok(mut cache) = state.diag_cache.lock() {
+            if let Some(existing) = cache.get(uri.as_str())
+                && existing.version > version
+            {
+                return;
+            }
             cache.insert(
                 uri.as_str().to_string(),
                 CachedDiagnostics {
@@ -272,6 +281,24 @@ impl Backend {
                     items,
                 },
             );
+        }
+    }
+
+    /// True when this analysis ticket is still the latest for `key` and (when
+    /// `uri`/`version` are set) the open buffer still matches that version.
+    fn analysis_still_current(
+        state: &ServerState,
+        key: &str,
+        ticket: u64,
+        uri: Option<&Uri>,
+        version: Option<i32>,
+    ) -> bool {
+        if Self::analysis_gen(state, key) != ticket {
+            return false;
+        }
+        match (uri, version) {
+            (Some(uri), Some(version)) => Self::open_version(state, uri) == Some(version),
+            _ => true,
         }
     }
 
@@ -445,6 +472,7 @@ impl Backend {
     }
 
     fn schedule_single_analysis(&self, uri: Uri, version: i32, debounce: bool) {
+        let key = uri.as_str().to_string();
         let ticket = self.bump_analysis_gen(&uri);
         let state = Arc::clone(&self.state);
         let client = self.client.clone();
@@ -452,7 +480,8 @@ impl Backend {
         tokio::spawn(async move {
             if debounce {
                 tokio::time::sleep(CHANGE_DEBOUNCE).await;
-                if Backend::analysis_gen(&state, uri.as_str()) != ticket {
+                if !Backend::analysis_still_current(&state, &key, ticket, Some(&uri), Some(version))
+                {
                     return;
                 }
             }
@@ -476,22 +505,24 @@ impl Backend {
                 .map(|g| *g)
                 .unwrap_or(PositionEncoding::Utf16);
             let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
-            let diagnostics = check_document(&uri, &text, encoding, &config);
-
+            let check_uri = uri.clone();
+            let diagnostics = match tokio::task::spawn_blocking(move || {
+                check_document(&check_uri, &text, encoding, &config)
+            })
+            .await
             {
-                let Ok(store) = state.documents.lock() else {
-                    return;
-                };
-                match store.get(&uri) {
-                    Some(doc) if doc.version == version => {}
-                    _ => return,
-                }
-                if Backend::analysis_gen(&state, uri.as_str()) != ticket {
-                    return;
-                }
+                Ok(items) => items,
+                Err(_) => return,
+            };
+
+            if !Backend::analysis_still_current(&state, &key, ticket, Some(&uri), Some(version)) {
+                return;
             }
 
             Backend::store_diagnostics(&state, &uri, version, diagnostics.clone());
+            if !Backend::analysis_still_current(&state, &key, ticket, Some(&uri), Some(version)) {
+                return;
+            }
             client
                 .publish_diagnostics(uri, diagnostics, Some(version))
                 .await;
@@ -515,14 +546,16 @@ impl Backend {
                 }
             }
 
-            if let Some((ref uri, version)) = trigger {
-                let Ok(store) = state.documents.lock() else {
-                    return;
-                };
-                match store.get(uri) {
-                    Some(doc) if doc.version == version => {}
-                    _ => return,
-                }
+            if let Some((ref uri, version)) = trigger
+                && !Backend::analysis_still_current(
+                    &state,
+                    PROJECT_ANALYSIS_KEY,
+                    ticket,
+                    Some(uri),
+                    Some(version),
+                )
+            {
+                return;
             }
 
             let encoding = state
@@ -532,7 +565,14 @@ impl Backend {
                 .unwrap_or(PositionEncoding::Utf16);
             let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
             let overlays = Backend::collect_overlays(&state);
-            let roots = check_project_roots(encoding, &config, &overlays);
+            let roots = match tokio::task::spawn_blocking(move || {
+                check_project_roots(encoding, &config, &overlays)
+            })
+            .await
+            {
+                Ok(roots) => roots,
+                Err(_) => return,
+            };
 
             if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
                 return;
@@ -540,6 +580,9 @@ impl Backend {
 
             let mut published: Vec<Uri> = Vec::new();
             for root in roots {
+                if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                    return;
+                }
                 let version = Backend::open_version(&state, &root.uri);
                 if let Some(v) = version {
                     Backend::store_diagnostics(&state, &root.uri, v, root.items.clone());
@@ -548,6 +591,10 @@ impl Backend {
                 client
                     .publish_diagnostics(root.uri, root.items, version)
                     .await;
+            }
+
+            if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                return;
             }
 
             // Clear diagnostics for roots that dropped from the configured set.
@@ -560,6 +607,9 @@ impl Backend {
                 Vec::new()
             };
             for uri in stale {
+                if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                    return;
+                }
                 Backend::clear_diagnostics_cache(&state, &uri);
                 client.publish_diagnostics(uri, Vec::new(), None).await;
             }
@@ -580,11 +630,34 @@ impl Backend {
                         }
                         doc.text.clone()
                     };
-                    let diagnostics = check_document(&uri, &text, encoding, &config);
-                    if Backend::analysis_gen(&state, PROJECT_ANALYSIS_KEY) != ticket {
+                    let check_uri = uri.clone();
+                    let diagnostics = match tokio::task::spawn_blocking(move || {
+                        check_document(&check_uri, &text, encoding, &config)
+                    })
+                    .await
+                    {
+                        Ok(items) => items,
+                        Err(_) => return,
+                    };
+                    if !Backend::analysis_still_current(
+                        &state,
+                        PROJECT_ANALYSIS_KEY,
+                        ticket,
+                        Some(&uri),
+                        Some(version),
+                    ) {
                         return;
                     }
                     Backend::store_diagnostics(&state, &uri, version, diagnostics.clone());
+                    if !Backend::analysis_still_current(
+                        &state,
+                        PROJECT_ANALYSIS_KEY,
+                        ticket,
+                        Some(&uri),
+                        Some(version),
+                    ) {
+                        return;
+                    }
                     client
                         .publish_diagnostics(uri, diagnostics, Some(version))
                         .await;

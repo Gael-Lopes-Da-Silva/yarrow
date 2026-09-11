@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–19, 21–24)
+### Landed (v1, Stages 0–19, 21–25)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
@@ -45,6 +45,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 - Core `definition_at` probes for goto / hover (Stage 22; AST fallback on miss)
 - On-type formatting: `\n` after an `end` line aligns indent only (Stage 23)
+- Analysis cancelation: version + generation tickets; checks on `spawn_blocking` (Stage 25)
 
 Stage 20 (editor extension packaging) was **canceled**; clients live in separate repos.
 
@@ -124,7 +125,7 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–24 landed; Stage 20 canceled                 |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–25 landed; Stage 20 canceled                 |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
@@ -135,9 +136,9 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 ---
 
-## Landed (Stages 0–19, 21–24)
+## Landed (Stages 0–19, 21–25)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–24 are landed.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–25 are landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -166,6 +167,7 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 22    | Core `definition_at` for goto / hover; AST fallback on miss |
 | 23    | On-type formatting: `\n` after `end` aligns new-line indent |
 | 24    | Workspace pull diagnostics (open + project roots)           |
+| 25    | Analysis cancelation / latency (version + gen; spawn_blocking) |
 
 **Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
 
@@ -175,25 +177,13 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 
 **Stage 24 notes:** Advertise `workspaceDiagnostics: true`. `workspace/diagnostic` reports open buffers and, in project mode, configured `projectRoots` (no unbounded walk). Reuses the Stage 18 uri+version cache / `resultId` for open docs; closed roots get a full report with `version: null`. `interFileDependencies` stays tied to project mode. Harness: `workspace-diagnostics`.
 
+**Stage 25 notes:** Debounce is fixed at 200ms (documented, not client-configurable). Per-URI / project generation tickets drop superseded sleeps and in-flight checks; publish and cache refuse older versions. `check_document` / `check_project_roots` run on `spawn_blocking` so the LSP loop stays responsive. No parallel module cache beyond Stage 21 `check_project`; no salsa / incremental IR. Harness: `rapid-edits`.
+
 ---
 
 ## Next
 
-Focus: analysis cancelation / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
-
-### Stage 25 - Analysis cancelation / latency polish
-
-Re-check on every debounced change is enough until latency hurts; then harden the request path without inventing salsa.
-
-1. Cancel or ignore stale in-flight checks when a newer `didChange` supersedes them (version-aware).
-2. Keep debounce configurable or documented; do not block the LSP event loop on long checks (spawn / async as the stack already allows).
-3. Optional: reuse module-load results across open files when Stage 21 project mode already shares a graph; do not add a parallel cache that disagrees with Session.
-4. No salsa / incremental IR unless profiling shows a clear win after 1–3; if skipped, Done notes say so.
-5. Harness or timing note optional; primary gate is correctness under rapid edits (no torn diagnostics for an older version after a newer check completes).
-
-**Gate:** open a file, apply two quick full-document changes with increasing versions; the last published / pulled diagnostics match the latest version only. `cargo clippy` green.
-
----
+Focus: optional virtual std URIs only if needed. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
 ### Stage 26 - Virtual `yarrow-std:` URIs (optional)
 
@@ -214,7 +204,7 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | ---------------------------------- | -------------- | ------------------------------------------ |
 | initialize / shutdown              | 0 ✅           | -                                          |
 | textDocument sync                  | 1 ✅           | -                                          |
-| publishDiagnostics                 | 2 ✅           | `check_source`, spans                      |
+| publishDiagnostics                 | 2 ✅; 25 ✅    | `check_source`, spans; cancel stale        |
 | documentSymbol                     | 3 ✅           | AST spans                                  |
 | definition                         | 4, 7, 22 ✅    | AST + require; core Stage 35 probes        |
 | hover                              | 5, 9, 22 ✅    | AST; `type_at`; def/require probes         |
@@ -232,6 +222,7 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | workspace/diagnostic               | 24 ✅          | open / project roots only                          |
 | TCP + test harness                 | 19 ✅          | transport only                                     |
 | multi-root project check           | 21 ✅          | `check_project` (core Stage 28)                    |
+| analysis cancelation / latency     | 25 ✅          | gen tickets + `spawn_blocking`                     |
 | editor extensions                  | 20 ❌ canceled | separate repos later                       |
 | DAP / debug                        | Out of scope   | AOT/JIT debug                              |
 

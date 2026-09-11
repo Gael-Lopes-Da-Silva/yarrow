@@ -13,6 +13,7 @@
  *   node crates/yarrow-lsp/scripts/harness.mjs project-missing-root
  *   node crates/yarrow-lsp/scripts/harness.mjs definition-require
  *   node crates/yarrow-lsp/scripts/harness.mjs on-type-format
+ *   node crates/yarrow-lsp/scripts/harness.mjs rapid-edits
  *
  * Env:
  *   YARROW_LSP_BIN  - server argv prefix (default: cargo run -q -p yarrow_lsp --)
@@ -35,6 +36,7 @@ const SCENARIOS = [
   "project-missing-root",
   "definition-require",
   "on-type-format",
+  "rapid-edits",
 ];
 
 function usage() {
@@ -510,6 +512,124 @@ async function scenarioOnTypeFormat(client) {
   client.notify("exit", null);
 }
 
+async function scenarioRapidEdits(client) {
+  // Gate: two quick full-document changes; last publish/pull match latest version only.
+  const validPath = path.join(REPO_ROOT, "docs/examples/valid/01_hello.yar");
+  const invalidPath = path.join(
+    REPO_ROOT,
+    "docs/examples/invalid/01_use_after_move.yar",
+  );
+  const valid = fs.readFileSync(validPath, "utf8");
+  const invalid = fs.readFileSync(invalidPath, "utf8");
+  const uri = fileUri(validPath);
+
+  await client.request("initialize", {
+    processId: null,
+    clientInfo: { name: "yarrow-lsp-harness", version: "0.1" },
+    capabilities: {},
+    rootUri: null,
+  });
+  client.notify("initialized", {});
+
+  client.notify("textDocument/didOpen", {
+    textDocument: {
+      uri,
+      languageId: "yarrow",
+      version: 1,
+      text: valid,
+    },
+  });
+  // Supersede with invalid then valid before debounce settles.
+  client.notify("textDocument/didChange", {
+    textDocument: { uri, version: 2 },
+    contentChanges: [{ text: invalid }],
+  });
+  client.notify("textDocument/didChange", {
+    textDocument: { uri, version: 3 },
+    contentChanges: [{ text: valid }],
+  });
+
+  const deadline = Date.now() + 10_000;
+  let sawV3 = false;
+  while (Date.now() < deadline) {
+    const pubs = client.notifications.filter(
+      (n) =>
+        n.method === "textDocument/publishDiagnostics" &&
+        n.params &&
+        sameFileUri(n.params.uri, uri),
+    );
+    if (pubs.some((n) => n.params.version === 3)) {
+      sawV3 = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (!sawV3) {
+    const pubs = client.notifications.filter(
+      (n) => n.method === "textDocument/publishDiagnostics",
+    );
+    throw new Error(
+      `expected publishDiagnostics version 3; got=${JSON.stringify(pubs)}`,
+    );
+  }
+
+  // Allow any in-flight stale task a chance to mis-publish, then assert order.
+  await new Promise((r) => setTimeout(r, 500));
+
+  const pubs = client.notifications.filter(
+    (n) =>
+      n.method === "textDocument/publishDiagnostics" &&
+      n.params &&
+      sameFileUri(n.params.uri, uri),
+  );
+  let maxSeen = -1;
+  for (const n of pubs) {
+    const v = n.params.version;
+    if (typeof v !== "number") continue;
+    if (v < maxSeen) {
+      throw new Error(
+        `torn diagnostics: publish v${v} after v${maxSeen}; pubs=${JSON.stringify(pubs)}`,
+      );
+    }
+    maxSeen = Math.max(maxSeen, v);
+  }
+  if (maxSeen !== 3) {
+    throw new Error(
+      `expected last publish version 3; maxSeen=${maxSeen} pubs=${JSON.stringify(pubs)}`,
+    );
+  }
+  const last = pubs[pubs.length - 1];
+  if (last.params.version !== 3) {
+    throw new Error(
+      `expected final publish version 3; got=${JSON.stringify(last)}`,
+    );
+  }
+  if (hasCode(last.params.diagnostics || [], "E373")) {
+    throw new Error(
+      `expected no E373 on latest valid buffer; got=${JSON.stringify(last)}`,
+    );
+  }
+
+  const report = await client.request("textDocument/diagnostic", {
+    textDocument: { uri },
+  });
+  const flat = digDiagnostics(report);
+  if (hasCode(flat, "E373")) {
+    throw new Error(
+      `expected pull diagnostics without E373 for v3; got=${JSON.stringify(report)}`,
+    );
+  }
+  const resultId = report?.resultId ?? report?.full?.resultId;
+  if (resultId != null && resultId !== "v3") {
+    throw new Error(
+      `expected pull resultId v3; got=${JSON.stringify(report)}`,
+    );
+  }
+
+  await client.request("shutdown", null);
+  client.notify("exit", null);
+}
+
 async function main() {
   const scenario = process.argv[2] || "pull-diagnostics";
   if (scenario === "-h" || scenario === "--help") usage();
@@ -537,6 +657,8 @@ async function main() {
       await scenarioDefinitionRequire(client);
     } else if (scenario === "on-type-format") {
       await scenarioOnTypeFormat(client);
+    } else if (scenario === "rapid-edits") {
+      await scenarioRapidEdits(client);
     }
 
     console.log(`harness ok: ${scenario} via tcp ${addr}`);
