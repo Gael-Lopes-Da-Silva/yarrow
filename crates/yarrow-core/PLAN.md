@@ -27,7 +27,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)                                                                              |
 | Warnings    | `W401`–`W410` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable / empty match arm / empty `if` then / empty `unsafe`); `CheckedProgram::warnings` |
 | Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `type_at` (30) + `definition_at` (35); ICE `E999` / `SessionFailureKind` (40) |
-| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
+| AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl + Stage 39 Windows-gnu host→host); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                                                                                        |
 | Interpret   | Stage 37 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 36 plus unsafe/`pointer<T>`/`move`/runes/`std.fs`; `00_grammar_tour.yar` remains out of scope (E393) |
@@ -43,7 +43,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 | Area       | Gap                                                                                                                      |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
-| AOT        | Cross link needs matching archive + CRT; Mach-O / Windows executable link is Stage 39 (**blocked**: needs Darwin or Windows-gnu native host / CI; no fake exe link on linux) |
+| AOT        | Cross link needs matching archive + CRT; Mach-O executable link still needs a Darwin host / CI; Windows-gnu host→host exe is Stage 39 ✅ |
 | Interpret  | `00_grammar_tour.yar` stays out of scope (mixed surface / `loop.break` and further tour forms); Stage 37 landed unsafe / pointers / move / fs |
 | Warnings   | `W401`–`W410` landed (Stage 38: empty match arm / empty `if` then / empty `unsafe`)                                      |
 | ICE        | `E999` / `SessionFailureKind` landed (Stage 40); CLI exit `101` consumption is [`yarrow-cli` Stage 16](../yarrow-cli/PLAN.md) |
@@ -56,7 +56,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 ## Next (Phase H)
 
-Focus: Mach-O / Windows executable link when a native Darwin or Windows-gnu host / CI agent is available (Stage 39, currently **blocked**). Stage 40 ICE tagging is done. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md) ✅. LSP Stage 22 consumes Stage 35 probes. CLI Stage 16 can consume `SessionFailureKind::Ice` → exit `101`.
+Focus: Darwin Mach-O executable link when a native macOS host / CI agent is available (Stage 39 Windows-gnu path ✅). Stage 40 ICE tagging is done. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md) ✅. LSP Stage 22 consumes Stage 35 probes. CLI Stage 16 can consume `SessionFailureKind::Ice` → exit `101`.
 
 ### Stage 35 - Require-path / definition probe API - **done**
 
@@ -108,7 +108,7 @@ Stage 31 left empty `match` arms and further low-noise lints for later.
 
 ---
 
-### Stage 39 - Mach-O / Windows executable link - **blocked**
+### Stage 39 - Mach-O / Windows executable link - **done** (Windows-gnu)
 
 Stage 34 landed object-only COFF / Mach-O on linux hosts (`E397` for exe). Finish executable link where a real linker + CRT / import story exists.
 
@@ -119,7 +119,7 @@ Stage 34 landed object-only COFF / Mach-O on linux hosts (`E397` for exe). Finis
 
 **Gate:** on the documented host (or documented CI), `compile_executable_source` for that triple produces a runnable binary for `docs/examples/valid/01_hello.yar` (or equivalent). Host linux-gnu path unchanged. Object-only path for the other Stage 34 triples still works. `cargo clippy` green.
 
-**Blocked:** no Darwin / Windows-gnu native agent in this environment (linux-gnu / NixOS host only; no `ld64` / MinGW / `link.exe`). Per stage notes, do not fake exe link on linux. Reopen when a macOS or Windows-gnu runner (or matching cross toolchain + CRT import story) is available.
+**Landed:** Windows-gnu host→host PE link via MinGW `ld`/`lld` + CRT (`crt2.o` / `crtbegin.o` / `crtend.o`); `YARROW_AOT_CRT_DIR` / `YARROW_AOT_SYSROOT` still apply; linux hosts keep `E397` for Windows/Darwin exe (no fake link). Gate example `check_windows_exe`; CI [`.github/workflows/stage-39-windows-gnu-exe.yml`](../../.github/workflows/stage-39-windows-gnu-exe.yml) (MSYS2 MinGW64). Mach-O / Darwin host→host remains backlog.
 
 ---
 
@@ -146,7 +146,7 @@ Helps [`yarrow-cli` Stage 16](../yarrow-cli/PLAN.md) distinguish internal bugs (
 | Bundled linker                   | Revisit Stage 27 only if PATH `ld`/`lld` is fragile                                |
 | Program argv API                 | Needs GRAMMAR / std design first; CLI object path already forwards OS argv         |
 | Language-level tests             | Needs GRAMMAR; CLI corpus driver is [`yarrow-cli` Stage 17](../yarrow-cli/PLAN.md) |
-| MSVC / more AOT triples          | After Stage 39’s first native exe path                                             |
+| MSVC / more AOT triples          | After Stage 39’s Windows-gnu path ✅; Mach-O Darwin host→host still open          |
 | Project compile / run multi-root | Check-only graph exists; multi-entry product story first                           |
 
 ---

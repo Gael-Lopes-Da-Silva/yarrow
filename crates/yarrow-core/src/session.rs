@@ -83,7 +83,8 @@ pub struct CompileOptions {
     /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu`,
     /// `x86_64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, or
     /// `x86_64-apple-darwin` for a non-host object. JIT rejects non-host
-    /// triples (`E397`). Mach-O / Windows are object-emit only on linux hosts.
+    /// triples (`E397`). Mach-O stays object-emit only; Windows-gnu executable
+    /// link is host→host on Windows-gnu (Stage 39).
     pub target: Option<crate::target::TargetTriple>,
 }
 
@@ -444,7 +445,8 @@ impl Session {
                     ),
                 )
                 .with_help(
-                    "use Session::compile_object_source for Mach-O / COFF; link executables on the target OS or stick to linux-gnu / linux-musl",
+                    "use Session::compile_object_source for Mach-O / non-host COFF; \
+                     Windows-gnu host→host exe needs a Windows-gnu toolchain (Stage 39 CI)",
                 )
                 .into_batch(self.options.error_limit),
             });

@@ -3,9 +3,11 @@
 //! Invokes a system linker (`ld` / `lld`). Does **not** use `cc` / `gcc` /
 //! `clang` as a compile or link driver. CRT object paths may be discovered via
 //! `cc -print-file-name` when present (path lookup only), or via
-//! `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR` for cross targets (Stage 26 / 33).
-//! Stage 34 Mach-O / Windows targets accept object emit only; executable link
-//! returns `E397` on linux hosts (no `ld64` / `link.exe` path yet).
+//! `YARROW_AOT_SYSROOT` / `YARROW_AOT_CRT_DIR` for cross targets (Stage 26 / 33 / 39).
+//!
+//! - linux-gnu hosts: linux-gnu / linux-musl executable link (Stage 19 / 26 / 33).
+//! - Windows-gnu hosts: host→host MinGW PE link (Stage 39).
+//! - Mach-O / Windows executable link from other hosts stays `E397` (object emit only).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,46 +66,101 @@ pub fn link_executable(
     archive_bytes: &[u8],
     target: &TargetTriple,
 ) -> Result<Vec<u8>, LinkError> {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        if target.is_linux_gnu() {
+    if target.is_linux_gnu() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
             return link_linux_gnu(object_bytes, archive_bytes, target);
         }
-        if target.is_linux_musl() {
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            let _ = (object_bytes, archive_bytes);
+            return Err(LinkError::new(
+                "E394",
+                "AOT linux-gnu executable link requires a linux-gnu host",
+            )
+            .with_help(
+                "use JIT (`ExecutionMode::Jit`) on this host, or link on a linux-gnu machine",
+            ));
+        }
+    }
+
+    if target.is_linux_musl() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
             return link_linux_musl(object_bytes, archive_bytes, target);
         }
-        if target.is_non_elf_object() {
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            let _ = (object_bytes, archive_bytes);
+            return Err(LinkError::new(
+                "E394",
+                "AOT linux-musl executable link requires a linux-gnu host",
+            )
+            .with_help(
+                "link musl executables on a linux-gnu host with musl CRT, or emit an object only",
+            ));
+        }
+    }
+
+    if target.is_windows_gnu() {
+        #[cfg(all(target_os = "windows", target_env = "gnu"))]
+        {
+            if target.is_host() {
+                return link_windows_gnu(object_bytes, archive_bytes, target);
+            }
+            let _ = (object_bytes, archive_bytes);
             return Err(LinkError::new(
                 "E397",
                 format!(
-                    "AOT executable link is not available for '{}' on this host (Stage 34 is object emit only)",
+                    "AOT executable link for '{}' is host→host only on Windows-gnu (no cross yet)",
                     target.as_str()
                 ),
             )
             .with_help(
-                "use Session::compile_object_source for Mach-O / COFF; link executables on the target OS or stick to linux-gnu / linux-musl",
+                "use the host triple, or Session::compile_object_source for non-host COFF",
             ));
         }
-        Err(LinkError::new(
+        #[cfg(not(all(target_os = "windows", target_env = "gnu")))]
+        {
+            let _ = (object_bytes, archive_bytes);
+            return Err(LinkError::new(
+                "E397",
+                format!(
+                    "AOT executable link is not available for '{}' on this host (Stage 39 is Windows-gnu host→host; Stage 34 object emit still works)",
+                    target.as_str()
+                ),
+            )
+            .with_help(
+                "use Session::compile_object_source for COFF, or link on a Windows-gnu host / CI runner",
+            ));
+        }
+    }
+
+    if target.is_apple_darwin() {
+        let _ = (object_bytes, archive_bytes);
+        return Err(LinkError::new(
             "E397",
             format!(
-                "AOT executable link does not support target '{}'",
+                "AOT executable link is not available for '{}' on this host (Mach-O stays object emit only; Darwin host path not wired yet)",
                 target.as_str()
             ),
         )
         .with_help(
-            "use a linux-gnu or linux-musl triple (x86_64 or aarch64) or emit an object only",
-        ))
+            "use Session::compile_object_source for Mach-O, or wait for a Darwin host→host link path",
+        ));
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-    {
-        let _ = (object_bytes, archive_bytes, target);
-        Err(LinkError::new(
-            "E394",
-            "AOT executable link is only supported on linux-gnu hosts",
-        )
-        .with_help("use JIT (`ExecutionMode::Jit`) on this host, or link on a linux-gnu machine"))
-    }
+
+    let _ = (object_bytes, archive_bytes);
+    Err(LinkError::new(
+        "E397",
+        format!(
+            "AOT executable link does not support target '{}'",
+            target.as_str()
+        ),
+    )
+    .with_help(
+        "use a linux-gnu / linux-musl triple on a linux-gnu host, Windows-gnu host→host, or emit an object only",
+    ))
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -165,7 +222,7 @@ fn link_linux_gnu(
     cmd.arg(&crt.crtend);
     cmd.arg(&crt.crtn);
 
-    run_linker(cmd, &linker, &out_path, target, emulation)
+    run_linker(cmd, &linker, &out_path, target, Some(emulation))
 }
 
 /// Static-friendly musl link (Stage 33). Prefer `-static` with musl CRT + `libc.a`.
@@ -220,16 +277,66 @@ fn link_linux_musl(
     }
     cmd.arg(&crt.crtn);
 
-    run_linker(cmd, &linker, &out_path, target, emulation)
+    run_linker(cmd, &linker, &out_path, target, Some(emulation))
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+/// Stage 39: native Windows-gnu (MinGW) host→host PE link via `ld` / `lld`.
+#[cfg(all(target_os = "windows", target_env = "gnu"))]
+fn link_windows_gnu(
+    object_bytes: &[u8],
+    archive_bytes: &[u8],
+    target: &TargetTriple,
+) -> Result<Vec<u8>, LinkError> {
+    let linker = find_mingw_linker()?;
+    let crt = MingwCrtFiles::discover(target)?;
+    let work = WorkDir::create()?;
+
+    let obj_path = work.path.join("program.o");
+    let arch_path = work.path.join("libyarrow_runtime_aot.a");
+    let out_path = work.path.join("a.exe");
+    fs::write(&obj_path, object_bytes)
+        .map_err(|e| LinkError::new("E395", format!("failed to write temporary object: {e}")))?;
+    fs::write(&arch_path, archive_bytes).map_err(|e| {
+        LinkError::new(
+            "E395",
+            format!("failed to write temporary runtime archive: {e}"),
+        )
+    })?;
+
+    let mut cmd = Command::new(&linker);
+    cmd.arg("-m").arg("i386pep");
+    cmd.arg("--subsystem").arg("console");
+    cmd.arg("-o").arg(&out_path);
+    cmd.arg(&crt.crt2);
+    cmd.arg(&crt.crtbegin);
+    if let Some(manifest) = &crt.default_manifest {
+        cmd.arg(manifest);
+    }
+    cmd.arg(&obj_path);
+    cmd.arg("--whole-archive");
+    cmd.arg(&arch_path);
+    cmd.arg("--no-whole-archive");
+    for dir in &crt.lib_dirs {
+        cmd.arg("-L").arg(dir);
+    }
+    // MinGW + Rust std system libs (order matters; match typical mingw-w64 link line).
+    for lib in [
+        "mingw32", "gcc_eh", "gcc", "moldname", "mingwex", "msvcrt", "pthread", "advapi32",
+        "shell32", "user32", "kernel32", "ws2_32", "userenv", "bcrypt", "ntdll",
+    ] {
+        cmd.arg(format!("-l{lib}"));
+    }
+    cmd.arg(&crt.crtend);
+
+    run_linker(cmd, &linker, &out_path, target, None)
+}
+
 fn run_linker(
     mut cmd: Command,
     linker: &Path,
     out_path: &Path,
     target: &TargetTriple,
-    emulation: &str,
+    emulation: Option<&str>,
 ) -> Result<Vec<u8>, LinkError> {
     let output = cmd.output().map_err(|e| {
         LinkError::new(
@@ -249,7 +356,11 @@ fn run_linker(
         } else {
             format!("linker exited with status {}", output.status)
         };
-        let help = if target.is_host() {
+        let help = if target.is_windows_gnu() {
+            "need MinGW `ld`/`lld` and CRT (crt2.o / crtbegin.o / crtend.o); set \
+             YARROW_AOT_CRT_DIR or YARROW_AOT_SYSROOT if discovery fails (see docs/RUNTIME.md)"
+                .to_string()
+        } else if target.is_host() {
             "need a system linker (`ld` / `lld`) and host libc/CRT; not a C toolchain compile step"
                 .to_string()
         } else if target.is_linux_musl() {
@@ -258,10 +369,15 @@ fn run_linker(
                  YARROW_AOT_CRT_DIR to a musl prefix; see docs/RUNTIME.md)",
                 target.as_str()
             )
-        } else {
+        } else if let Some(emulation) = emulation {
             format!(
                 "cross-link for '{}' needs a linker that supports `-m {emulation}` and matching CRT \
                  (set YARROW_AOT_SYSROOT or YARROW_AOT_CRT_DIR; see docs/RUNTIME.md)",
+                target.as_str()
+            )
+        } else {
+            format!(
+                "link for '{}' failed; check CRT / import libs (see docs/RUNTIME.md)",
                 target.as_str()
             )
         };
@@ -285,12 +401,14 @@ fn run_linker(
     Ok(bytes)
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn find_linker() -> Result<PathBuf, LinkError> {
     // Prefer a real linker binary. Never use cc/gcc/clang as the driver.
     const CANDIDATES: &[&str] = &["ld", "ld.lld", "lld", "ld.bfd", "ld.gold"];
     for name in CANDIDATES {
         if let Some(path) = which(name) {
             let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let base = base.strip_suffix(".exe").unwrap_or(base);
             if matches!(base, "cc" | "gcc" | "clang" | "c++" | "g++" | "clang++") {
                 continue;
             }
@@ -301,12 +419,40 @@ fn find_linker() -> Result<PathBuf, LinkError> {
         .with_help("install a system linker such as binutils `ld` or LLVM `lld` (a C compiler is not required)"))
 }
 
+#[cfg(all(target_os = "windows", target_env = "gnu"))]
+fn find_mingw_linker() -> Result<PathBuf, LinkError> {
+    const CANDIDATES: &[&str] = &["x86_64-w64-mingw32-ld", "ld", "ld.lld", "lld", "ld.bfd"];
+    for name in CANDIDATES {
+        if let Some(path) = which(name) {
+            let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let base = base.strip_suffix(".exe").unwrap_or(base);
+            if matches!(base, "cc" | "gcc" | "clang" | "c++" | "g++" | "clang++") {
+                continue;
+            }
+            return Ok(path);
+        }
+    }
+    Err(LinkError::new(
+        "E394",
+        "MinGW linker not found (`ld` / `x86_64-w64-mingw32-ld`)",
+    )
+    .with_help(
+        "install MinGW-w64 binutils (MSYS2: mingw-w64-x86_64-binutils) and ensure it is on PATH",
+    ))
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let exts: &[&str] = &["", ".exe", ".bat", ".cmd"];
+    #[cfg(not(windows))]
+    let exts: &[&str] = &[""];
     for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+        for ext in exts {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -418,14 +564,89 @@ impl MuslCrtFiles {
     }
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+/// MinGW-w64 CRT for Stage 39 Windows-gnu host→host PE link.
+#[cfg(all(target_os = "windows", target_env = "gnu"))]
+struct MingwCrtFiles {
+    crt2: PathBuf,
+    crtbegin: PathBuf,
+    crtend: PathBuf,
+    default_manifest: Option<PathBuf>,
+    lib_dirs: Vec<PathBuf>,
+}
+
+#[cfg(all(target_os = "windows", target_env = "gnu"))]
+impl MingwCrtFiles {
+    fn discover(target: &TargetTriple) -> Result<Self, LinkError> {
+        let crt2 = mingw_crt_file(target, "crt2.o", &["crt1.o"])?;
+        let crtbegin = mingw_crt_file(target, "crtbegin.o", &[])?;
+        let crtend = mingw_crt_file(target, "crtend.o", &[])?;
+        let default_manifest =
+            print_file_name(target, "default-manifest.o").filter(|p| p.is_file());
+
+        let mut lib_dirs = Vec::new();
+        collect_lib_dirs(
+            &mut lib_dirs,
+            [
+                &crt2,
+                &crtbegin,
+                &crtend,
+                default_manifest.as_ref().unwrap_or(&crt2),
+            ],
+        );
+        for name in [
+            "libgcc.a",
+            "libmingw32.a",
+            "libmsvcrt.a",
+            "libkernel32.a",
+            "libws2_32.a",
+        ] {
+            if let Some(p) = print_file_name(target, name).filter(|p| p.is_file()) {
+                push_parent(&mut lib_dirs, &p);
+            }
+        }
+
+        Ok(Self {
+            crt2,
+            crtbegin,
+            crtend,
+            default_manifest,
+            lib_dirs,
+        })
+    }
+}
+
+#[cfg(all(target_os = "windows", target_env = "gnu"))]
+fn mingw_crt_file(target: &TargetTriple, name: &str, alts: &[&str]) -> Result<PathBuf, LinkError> {
+    let mut tried = vec![name.to_string()];
+    if let Some(p) = print_file_name(target, name).filter(|p| p.is_file()) {
+        return Ok(p);
+    }
+    for alt in alts {
+        tried.push((*alt).to_string());
+        if let Some(p) = print_file_name(target, alt).filter(|p| p.is_file()) {
+            return Ok(p);
+        }
+    }
+    Err(LinkError::new(
+        "E394",
+        format!(
+            "missing MinGW CRT object for '{}' ({})",
+            target.as_str(),
+            tried.join(" / ")
+        ),
+    )
+    .with_help(
+        "install MinGW-w64 (MSYS2: mingw-w64-x86_64-gcc) or set YARROW_AOT_CRT_DIR to the \
+         directory with crt2.o / crtbegin.o / crtend.o (see docs/RUNTIME.md)",
+    ))
+}
+
 fn collect_lib_dirs<'a>(lib_dirs: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = &'a PathBuf>) {
     for p in paths {
         push_parent(lib_dirs, p);
     }
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn push_parent(lib_dirs: &mut Vec<PathBuf>, path: &Path) {
     if let Some(dir) = path.parent() {
         let dir = dir.to_path_buf();
@@ -484,7 +705,16 @@ fn print_file_name(target: &TargetTriple, name: &str) -> Option<PathBuf> {
     }
 
     let mut drivers: Vec<(String, Vec<String>)> = Vec::new();
-    if !target.is_host() {
+    if target.is_windows_gnu() {
+        for prefix in [
+            "x86_64-w64-mingw32-gcc",
+            "x86_64-w64-mingw32-cc",
+            "gcc",
+            "cc",
+        ] {
+            drivers.push((prefix.into(), Vec::new()));
+        }
+    } else if !target.is_host() {
         let t = target.as_str();
         // Prefixed cross compilers when present.
         for prefix in [
@@ -504,8 +734,10 @@ fn print_file_name(target: &TargetTriple, name: &str) -> Option<PathBuf> {
         drivers.push(("clang".into(), vec![format!("--target={t}")]));
         drivers.push(("cc".into(), vec![format!("--target={t}")]));
     }
-    drivers.push(("cc".into(), Vec::new()));
-    drivers.push(("gcc".into(), Vec::new()));
+    if !target.is_windows_gnu() {
+        drivers.push(("cc".into(), Vec::new()));
+        drivers.push(("gcc".into(), Vec::new()));
+    }
 
     for (driver, extra) in drivers {
         let mut cmd = Command::new(&driver);
