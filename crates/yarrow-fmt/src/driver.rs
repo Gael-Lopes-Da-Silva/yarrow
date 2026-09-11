@@ -4,6 +4,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use rayon::prelude::*;
+
 use crate::{
     FormatError, FormatOptions, MIN_MAX_WIDTH, collect_yar_paths, format_source,
     format_source_best_effort, load_and_format, write_formatted,
@@ -31,6 +33,10 @@ pub struct FmtInput {
 ///
 /// Rejects `--max-width` / `options.max_width` below [`MIN_MAX_WIDTH`] with
 /// exit `2`. Library callers of [`crate::format_source`] clamp instead.
+///
+/// Multi-file runs format independent paths in parallel (Stage 20). Per-file
+/// output bytes match sequential formatting; `--check` / stderr messages stay
+/// in sorted path order. Stdin and single-file paths stay sequential.
 pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
     if input.options.max_width < MIN_MAX_WIDTH {
         eprintln!(
@@ -66,20 +72,52 @@ pub fn run_fmt(program: &str, input: FmtInput) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let outcomes = format_files(&files, &input.options, input.best_effort);
+    report_file_outcomes(program, &files, &outcomes, input.check)
+}
+
+/// Format each path. Multi-file uses rayon; one file stays sequential.
+///
+/// Results are aligned with `files` (sorted path order from
+/// [`collect_yar_paths`]).
+fn format_files(
+    files: &[PathBuf],
+    options: &FormatOptions,
+    best_effort: bool,
+) -> Vec<Result<(String, String), FormatError>> {
+    if files.len() <= 1 {
+        return files
+            .iter()
+            .map(|path| load_and_format(path, options, best_effort))
+            .collect();
+    }
+
+    files
+        .par_iter()
+        .map(|path| load_and_format(path, options, best_effort))
+        .collect()
+}
+
+fn report_file_outcomes(
+    program: &str,
+    files: &[PathBuf],
+    outcomes: &[Result<(String, String), FormatError>],
+    check: bool,
+) -> ExitCode {
     let mut had_diff = false;
     let mut had_format_err = false;
     let mut had_io_err = false;
 
-    for path in &files {
-        match load_and_format(path, &input.options, input.best_effort) {
+    for (path, result) in files.iter().zip(outcomes.iter()) {
+        match result {
             Ok((original, formatted)) => {
                 if formatted == original {
                     continue;
                 }
-                if input.check {
+                if check {
                     eprintln!("would reformat {}", path.display());
                     had_diff = true;
-                } else if let Err(err) = write_formatted(path, &formatted) {
+                } else if let Err(err) = write_formatted(path, formatted) {
                     eprintln!("{program}: {err}");
                     match err {
                         FormatError::Io { .. } => had_io_err = true,

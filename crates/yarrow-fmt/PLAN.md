@@ -34,6 +34,7 @@ Mechanical rewrite of parseable source:
 - Opt-in file-layout reorder; require sorting on by default (`--no-sort-requires` to disable)
 - Best-effort hygiene on incomplete parse; selective construct reprint when recovery spans are trustworthy (Stage 18)
 - Diff-friendly ignore regions via `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (Stage 19)
+- Parallel multi-file driver (Stage 20); per-file bytes unchanged vs sequential
 
 ### Out of scope
 
@@ -60,6 +61,9 @@ source (.yar)
     or hygiene-only / selective reprint when parse incomplete (`format_source_best_effort`);
       ignore regions restored from hygiened original after layout (Stage 19)
   → UTF-8 string / write back
+
+multi-file `run_fmt` (Stage 20): independent paths formatted in parallel (rayon);
+  reporting / writes stay sorted-path order; stdin and single-file stay sequential
 ```
 
 Public surface:
@@ -110,7 +114,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–20 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -134,6 +138,7 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | Best-effort incomplete parse | Stage 17: hygiene subset + `Parser::parse_recovering`                          |
 | Selective construct reprint  | Stage 18: recovered top-level decls reprint when spans clear errors            |
 | Ignore regions               | Stage 19: `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end`              |
+| Parallel multi-file driver   | Stage 20: rayon over independent paths; sorted reporting                       |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -141,25 +146,11 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: throughput, then corpus width. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
+Focus: corpus width. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 19 - Diff-friendly ignore regions ✅
+### Stage 20 - Parallel directory fmt ✅
 
-**Done:** Guide documents paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (own-line; optional trailing note). After construct/indent/blank, `restore_ignore_regions` splices hygiened original spans back so interiors stay byte-stable aside from LF / trailing-WS / final newline. Require runs intersecting an ignore region are not sorted; `--reorder-layout` is skipped when markers are present. `format_range` no-ops inside an ignore cover and otherwise stops expansion at ignore boundaries (middle unselected ignore → whole-file replace). Fixture: `crates/yarrow-fmt/fixtures/stage19_ignore_regions.yar`. CLI `--help` mentions the markers.
-
----
-
-### Stage 20 - Parallel directory fmt
-
-Corpus + CI are green; parallelize only the multi-file driver path so large trees stay fast without changing format results.
-
-1. In `run_fmt` / path collection, format independent `.yar` files in parallel (e.g. rayon or equivalent already acceptable in-workspace). Keep deterministic **reporting order** (sorted paths) for `--check` messages and stderr.
-2. Do not parallelize within a single file. Shared options / stdin / single-file paths stay sequential.
-3. Preserve exit-code aggregation: any `1` / `2` wins as today; first hard usage error may still short-circuit if simpler.
-4. No change to `format_source` API. Document that output bytes per file are identical to sequential fmt.
-5. Optional stretch: reuse parsed `FormatIr` only if profiling shows parse dominate; otherwise skip.
-
-**Gate:** `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std` still exits `0` with the same would-change set as sequential (ideally none). Timing need not be asserted; a short note in Done that parallel path is default for multi-file is enough. `cargo clippy` green.
+**Done:** Multi-file `run_fmt` formats independent `.yar` paths with rayon; stdin and single-file stay sequential. Per-file output bytes are identical to sequential formatting. `--check` / stderr messages and writes remain in sorted path order from `collect_yar_paths`. Exit-code aggregation unchanged (any `1` / `2` wins). No `format_source` API change. Parallel path is the default for multi-file.
 
 ---
 
@@ -224,7 +215,7 @@ Stage 15 kept range format library-only for LSP. Scripts may want the same witho
 | Naming lints            | Belong in core warnings or a future `yarrow lint`, not silent format |
 | On-type format helpers  | LSP Stage 23: local indent after `end`+`\\n` (no fmt API yet) |
 | Format config file      | Only if multi-flag defaults become painful; guide must define it     |
-| Incremental / cached IR | After Stage 20 if parse dominates wall time                          |
+| Incremental / cached IR | After Stage 20 if parse dominates wall time (Stage 20 landed parallel files only) |
 
 ---
 
