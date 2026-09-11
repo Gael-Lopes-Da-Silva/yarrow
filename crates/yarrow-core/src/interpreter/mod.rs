@@ -1,11 +1,11 @@
-//! AST interpreter for checked Yarrow programs (Stages 13b / 21 / 32 / 36).
+//! AST interpreter for checked Yarrow programs (Stages 13b / 21 / 32 / 36 / 37).
 //!
 //! Design choice: **tree-walk** the checked AST with an explicit operand stack,
 //! calling into [`crate::runtime`] for heap strings, lists, maps, structs,
-//! unions, and regions. A stack bytecode VM can replace this later without
-//! changing the Session surface (`interpret_source` / [`EvalContext`]).
+//! unions, regions, and raw memory. A stack bytecode VM can replace this later
+//! without changing the Session surface (`interpret_source` / [`EvalContext`]).
 //!
-//! ## Corpus coverage (Stage 36)
+//! ## Corpus coverage (Stage 37)
 //!
 //! Interprets cleanly (stdout matches JIT `run --target jit`):
 //! - `docs/examples/valid/01_hello.yar`
@@ -15,17 +15,22 @@
 //! - `docs/examples/valid/05_control_flow.yar`
 //! - `docs/examples/valid/06_structs_and_enums.yar`
 //! - `docs/examples/valid/07_unions.yar`
+//! - `docs/examples/valid/08_ownership_borrow_move.yar`
 //! - `docs/examples/valid/09_regions_and_defer.yar`
 //! - `docs/examples/valid/10_errors.yar`
+//! - `docs/examples/valid/11_unsafe_pointers.yar`
 //! - `docs/examples/valid/12_modules.yar`
 //! - `docs/examples/valid/13_containers.yar`
+//! - `docs/examples/valid/14_io_and_string.yar`
+//! - `docs/examples/valid/15_fs.yar`
 //!
-//! Supported surface: Stage 32 plus `std.region` create / put / free, `defer`
-//! (reverse registration order at function scope exit), and struct field
-//! `set` (`point.x set`). Prefer host heap helpers (`region_*`, `free_value`).
+//! Supported surface: Stage 36 plus `unsafe` blocks, `pointer<T>` load/store
+//! and field access/`set`, `std.mem` (`@alloc`/`@free`), `move`, runes, and
+//! `std.fs` host helpers.
 //!
-//! Still out of scope (clear `E393`): unsafe / raw pointers, full `valid/**`
-//! parity (Stage 37).
+//! Interpret-out-of-scope: `docs/examples/valid/00_grammar_tour.yar` (tour
+//! mixes many surface forms; remaining gaps stay clear `E393` rather than
+//! inventing ops).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -38,7 +43,9 @@ use crate::parser::ast::{
     BinOp, EnumDecl, ErrorDecl, Expr, Function, Implement, MatchCase, MatchCaseKind, Primitive,
     Program, StackOp, Stmt, StmtKind, StructDecl, Type, TypeKind, UnOp, UnionDecl, Visibility,
 };
-use crate::parser::literals::{decode_float_literal, decode_int_literal, decode_string_literal};
+use crate::parser::literals::{
+    decode_float_literal, decode_int_literal, decode_rune_literal, decode_string_literal,
+};
 use crate::parser::parse;
 use crate::runtime::{
     self, FieldDesc, KIND_LIST, KIND_MAP, KIND_STRING, KIND_STRUCT, KIND_UNION,
@@ -48,6 +55,8 @@ use crate::tokenizer::Tokenizer;
 
 /// Kind tag used for fallible error envelopes on the interpreter stack.
 const KIND_ERROR: u64 = 0x51;
+/// Raw `pointer<T>` tag; pointee kind code lives in the high bits (`>> 8`).
+const KIND_PTR: u64 = 0x50;
 
 /// Runtime value on the interpreter operand stack / in a local.
 #[derive(Debug, Clone)]
@@ -562,6 +571,10 @@ impl Interpreter {
                 }
             }
             TypeKind::Reference { inner } => self.field_layout(inner),
+            TypeKind::Pointer { inner } => {
+                let (pk, _, _) = self.field_layout(inner)?;
+                Ok((KIND_PTR | (pk << 8), 8, 8))
+            }
             TypeKind::List { element } => {
                 let (ek, _, _) = self.field_layout(element)?;
                 Ok((KIND_LIST | (ek << 8), 8, 8))
@@ -902,7 +915,7 @@ impl Interpreter {
 
         if let Some(_payload_ty) = error_payload {
             // Fallible ABI: leave `(payload, env)` on the caller stack.
-            let (payload, env_tag) =
+            let (mut payload, env_tag) =
                 if matches!(local_stack.last().map(|s| s.kind), Some(KIND_ERROR)) {
                     let env = local_stack.pop().unwrap();
                     let tag = match env.value {
@@ -934,6 +947,7 @@ impl Interpreter {
                 } else {
                     (local_stack.pop().unwrap(), 0)
                 };
+            Self::claim_returned_heaps(std::slice::from_mut(&mut payload), &mut frame);
             self.run_deferred(
                 &mut local_stack,
                 &mut frame,
@@ -960,7 +974,7 @@ impl Interpreter {
             .iter()
             .filter(|t| !matches!(t.kind, TypeKind::Primitive(Primitive::Void)))
             .count();
-        let rets = if ret_n == 0 {
+        let mut rets = if ret_n == 0 {
             Vec::new()
         } else {
             if local_stack.len() < ret_n {
@@ -976,6 +990,7 @@ impl Interpreter {
             }
             local_stack.split_off(local_stack.len() - ret_n)
         };
+        Self::claim_returned_heaps(&mut rets, &mut frame);
         self.run_deferred(
             &mut local_stack,
             &mut frame,
@@ -990,6 +1005,46 @@ impl Interpreter {
         }
         stack.extend(rets);
         Ok(())
+    }
+
+    /// Transfer ownership of heap returns out of locals (matches JIT `moved`
+    /// on return) so scope exit does not free values the caller now owns.
+    fn claim_returned_heaps(rets: &mut [Slot], frame: &mut Frame) {
+        for ret in rets.iter_mut() {
+            match &mut ret.value {
+                Value::Heap { handle, owned } => {
+                    let h = *handle;
+                    for local in frame.locals.values_mut() {
+                        if let Value::Heap {
+                            handle: lh,
+                            owned: lo,
+                        } = &mut local.value
+                            && *lh == h
+                            && *lo
+                        {
+                            *lo = false;
+                            *owned = true;
+                        }
+                    }
+                }
+                Value::Str { handle, owned } => {
+                    let h = *handle;
+                    for local in frame.locals.values_mut() {
+                        if let Value::Str {
+                            handle: lh,
+                            owned: lo,
+                        } = &mut local.value
+                            && *lh == h
+                            && *lo
+                        {
+                            *lo = false;
+                            *owned = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Function-scope exit: run deferred bodies in reverse registration order.
@@ -1159,27 +1214,12 @@ impl Interpreter {
                     Expr::Member { base, member } => {
                         self.eval_expr(base, stack, frame, module, caller_fq, stmt.span)?;
                         let base_slot = self.pop(stack, stmt.span, "field set target")?;
-                        let sid = match base_slot.kind & 0xff {
-                            KIND_STRUCT => (base_slot.kind >> 8) as u32,
-                            _ => {
+                        let (handle, sid) = match self.struct_base_addr(&base_slot, stmt.span) {
+                            Ok(v) => v,
+                            Err(e) => {
                                 base_slot.drop_owned();
                                 slot.drop_owned();
-                                return Err(InterpretError::unsupported(
-                                    "field 'set' on non-struct",
-                                    stmt.span,
-                                ));
-                            }
-                        };
-                        let handle = match &base_slot.value {
-                            Value::Heap { handle, .. } => *handle,
-                            _ => {
-                                base_slot.drop_owned();
-                                slot.drop_owned();
-                                return Err(InterpretError::new(
-                                    "field 'set' requires a heap handle",
-                                    stmt.span,
-                                    "E340",
-                                ));
+                                return Err(e);
                             }
                         };
                         let field = self
@@ -1196,25 +1236,11 @@ impl Interpreter {
                             })?;
                         // Free previous union payload before overwrite (matches JIT).
                         if (field.kind & 0xff) == KIND_UNION {
-                            let old_bits = unsafe {
-                                let mut buf = 0u64;
-                                std::ptr::copy_nonoverlapping(
-                                    (handle as *const u8).add(field.offset as usize),
-                                    &mut buf as *mut u64 as *mut u8,
-                                    field.size as usize,
-                                );
-                                buf
-                            };
+                            let old_bits = read_bits_at(handle, field.offset, field.size);
                             free_value(old_bits, field.kind);
                         }
                         let bits = slot.value.as_bits().unwrap_or(0);
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                &bits as *const u64 as *const u8,
-                                (handle as *mut u8).add(field.offset as usize),
-                                field.size as usize,
-                            );
-                        }
+                        write_bits_at(handle, field.offset, field.size, bits);
                         // Field storage owns heap bits; do not drop the new value.
                         match slot.value {
                             Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
@@ -1285,11 +1311,53 @@ impl Interpreter {
                 frame.deferred.push(body.clone());
                 Ok(Flow::Next)
             }
+            StmtKind::Unsafe { body } => {
+                // Checker already enforced the unsafe boundary; interpret the body.
+                self.eval_body(body, stack, frame, module, caller_fq)
+            }
+            StmtKind::Move { target, source } => {
+                let taken = match source {
+                    Expr::Variable { name } => {
+                        let local = frame.locals.get_mut(name).ok_or_else(|| {
+                            InterpretError::new(
+                                format!("unknown variable '{name}'"),
+                                stmt.span,
+                                "E320",
+                            )
+                        })?;
+                        let taken = Slot {
+                            value: match &local.value {
+                                Value::Heap { handle, .. } => Value::Heap {
+                                    handle: *handle,
+                                    owned: true,
+                                },
+                                Value::Str { handle, .. } => Value::Str {
+                                    handle: *handle,
+                                    owned: true,
+                                },
+                                other => other.clone(),
+                            },
+                            kind: local.kind,
+                        };
+                        match &mut local.value {
+                            Value::Heap { owned, .. } | Value::Str { owned, .. } => {
+                                *owned = false;
+                            }
+                            _ => {}
+                        }
+                        taken
+                    }
+                    other => {
+                        self.eval_expr(other, stack, frame, module, caller_fq, stmt.span)?;
+                        self.pop(stack, stmt.span, "'move' source")?
+                    }
+                };
+                if let Some(old) = frame.locals.insert(target.clone(), taken) {
+                    old.drop_owned();
+                }
+                Ok(Flow::Next)
+            }
             StmtKind::Fallback { .. } => Ok(Flow::Next),
-            other => Err(InterpretError::unsupported(
-                format!("statement {other:?}"),
-                stmt.span,
-            )),
         }
     }
 
@@ -1666,6 +1734,15 @@ impl Interpreter {
                 });
                 Ok(())
             }
+            Expr::Rune { value } => {
+                let cp =
+                    decode_rune_literal(value).map_err(|m| InterpretError::new(m, span, "E363"))?;
+                stack.push(Slot {
+                    value: Value::Int(i64::from(cp)),
+                    kind: 11,
+                });
+                Ok(())
+            }
             Expr::Array(elems) => {
                 let mut out = Vec::with_capacity(elems.len());
                 for e in elems {
@@ -1776,30 +1853,15 @@ impl Interpreter {
                         return Ok(());
                     }
                 }
-                // Struct field access: evaluate base, load field.
+                // Struct field access: evaluate base, load field (heap struct or
+                // `pointer<Struct>` raw address).
                 self.eval_expr(base, stack, frame, module, caller_fq, span)?;
                 let base_slot = self.pop(stack, span, "field access")?;
-                let sid = match base_slot.kind & 0xff {
-                    KIND_STRUCT => (base_slot.kind >> 8) as u32,
-                    _ => {
-                        // Reference to struct has the struct kind already.
+                let (handle, sid) = match self.struct_base_addr(&base_slot, span) {
+                    Ok(v) => v,
+                    Err(e) => {
                         base_slot.drop_owned();
-                        return Err(InterpretError::new(
-                            format!("cannot access field '{member}' on non-struct"),
-                            span,
-                            "E340",
-                        ));
-                    }
-                };
-                let handle = match &base_slot.value {
-                    Value::Heap { handle, .. } => *handle,
-                    _ => {
-                        base_slot.drop_owned();
-                        return Err(InterpretError::new(
-                            "struct field access requires a heap handle",
-                            span,
-                            "E340",
-                        ));
+                        return Err(e);
                     }
                 };
                 let field = self
@@ -1810,15 +1872,7 @@ impl Interpreter {
                     .ok_or_else(|| {
                         InterpretError::new(format!("struct has no field '{member}'"), span, "E340")
                     })?;
-                let bits = unsafe {
-                    let mut buf = 0u64;
-                    std::ptr::copy_nonoverlapping(
-                        (handle as *const u8).add(field.offset as usize),
-                        &mut buf as *mut u64 as *mut u8,
-                        field.size as usize,
-                    );
-                    buf
-                };
+                let bits = read_bits_at(handle, field.offset, field.size);
                 base_slot.drop_owned();
                 stack.push(self.bits_to_slot_kind(bits, field.kind, false));
                 Ok(())
@@ -1974,6 +2028,47 @@ impl Interpreter {
                 stack.push(borrowed);
                 Ok(())
             }
+            Expr::ApplyLoad => self.eval_ptr_load(stack, span),
+            Expr::Load { inner } => {
+                self.eval_expr(inner, stack, frame, module, caller_fq, span)?;
+                self.eval_ptr_load(stack, span)
+            }
+            Expr::Store { addr, value } => {
+                self.eval_expr(addr, stack, frame, module, caller_fq, span)?;
+                self.eval_expr(value, stack, frame, module, caller_fq, span)?;
+                let val = self.pop(stack, span, "'store'")?;
+                let addr_slot = self.pop(stack, span, "'store'")?;
+                if (addr_slot.kind & 0xff) != KIND_PTR {
+                    addr_slot.drop_owned();
+                    val.drop_owned();
+                    return Err(InterpretError::new(
+                        "'store' requires a pointer target",
+                        span,
+                        "E341",
+                    ));
+                }
+                let pointee = addr_slot.kind >> 8;
+                let addr = match addr_slot.value.as_bits() {
+                    Some(a) => a,
+                    None => {
+                        addr_slot.drop_owned();
+                        val.drop_owned();
+                        return Err(InterpretError::new(
+                            "'store' requires a pointer address",
+                            span,
+                            "E341",
+                        ));
+                    }
+                };
+                let bits = val.value.as_bits().unwrap_or(0);
+                write_bits_at(addr, 0, pointee_byte_size(pointee), bits);
+                match val.value {
+                    Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                    other => other.drop_owned(),
+                }
+                addr_slot.drop_owned();
+                Ok(())
+            }
             Expr::Unwrap { inner } => {
                 self.eval_expr(inner, stack, frame, module, caller_fq, span)?;
                 self.eval_unwrap(stack, frame, span)
@@ -1994,6 +2089,83 @@ impl Interpreter {
             kind: 4,
         });
         Ok(())
+    }
+
+    /// `pointer<T> load`: pop a typed pointer and push the pointee bits.
+    fn eval_ptr_load(&self, stack: &mut Vec<Slot>, span: Span) -> IResult<()> {
+        let addr_slot = self.pop(stack, span, "'load'")?;
+        if (addr_slot.kind & 0xff) != KIND_PTR {
+            addr_slot.drop_owned();
+            return Err(InterpretError::new(
+                "'load' requires a pointer",
+                span,
+                "E341",
+            ));
+        }
+        let pointee = addr_slot.kind >> 8;
+        let addr = match addr_slot.value.as_bits() {
+            Some(a) => a,
+            None => {
+                addr_slot.drop_owned();
+                return Err(InterpretError::new(
+                    "'load' requires a pointer address",
+                    span,
+                    "E341",
+                ));
+            }
+        };
+        let bits = read_bits_at(addr, 0, pointee_byte_size(pointee));
+        addr_slot.drop_owned();
+        stack.push(self.bits_to_slot_kind(bits, pointee, false));
+        Ok(())
+    }
+
+    /// Address and struct id for field access/`set` on a heap struct or
+    /// `pointer<Struct>` raw address.
+    fn struct_base_addr(&self, base: &Slot, span: Span) -> IResult<(u64, u32)> {
+        match base.kind & 0xff {
+            KIND_STRUCT => {
+                let sid = (base.kind >> 8) as u32;
+                let handle = match &base.value {
+                    Value::Heap { handle, .. } => *handle,
+                    _ => {
+                        return Err(InterpretError::new(
+                            "struct field access requires a heap handle",
+                            span,
+                            "E340",
+                        ));
+                    }
+                };
+                Ok((handle, sid))
+            }
+            KIND_PTR => {
+                let pointee = base.kind >> 8;
+                if (pointee & 0xff) != KIND_STRUCT {
+                    return Err(InterpretError::new(
+                        "cannot access field through a non-struct pointer",
+                        span,
+                        "E340",
+                    ));
+                }
+                let sid = (pointee >> 8) as u32;
+                let addr = match base.value.as_bits() {
+                    Some(a) => a,
+                    None => {
+                        return Err(InterpretError::new(
+                            "pointer field access requires an address",
+                            span,
+                            "E340",
+                        ));
+                    }
+                };
+                Ok((addr, sid))
+            }
+            _ => Err(InterpretError::new(
+                "cannot access field on non-struct",
+                span,
+                "E340",
+            )),
+        }
     }
 
     fn eval_call(
@@ -2292,6 +2464,207 @@ impl Interpreter {
             }
             "print_newline" => {
                 runtime::yarrow_print_newline();
+                Ok(())
+            }
+            "alloc" => {
+                let size = self.pop(stack, span, "@alloc")?;
+                let n = match size.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@alloc' requires an integer size",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let ptr = runtime::yarrow_alloc(n);
+                stack.push(Slot {
+                    value: Value::Int(ptr as i64),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "free" => {
+                let ptr = self.pop(stack, span, "@free")?;
+                let addr = match ptr.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@free' requires a pointer address",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                runtime::yarrow_free(addr);
+                Ok(())
+            }
+            "load" => {
+                // Raw `@load`: read a 64-bit word at an address.
+                let addr = self.pop(stack, span, "@load")?;
+                let a = match addr.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@load' requires a pointer address",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let bits = read_bits_at(a, 0, 8);
+                stack.push(Slot {
+                    value: Value::Int(bits as i64),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "store" => {
+                // Raw `@store`: write a 64-bit word at an address.
+                let value = self.pop(stack, span, "@store")?;
+                let addr = self.pop(stack, span, "@store")?;
+                let a = match addr.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        value.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@store' requires a pointer address",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let bits = value.value.as_bits().unwrap_or(0);
+                write_bits_at(a, 0, 8, bits);
+                value.drop_owned();
+                Ok(())
+            }
+            "fs_open" => {
+                let mode = self.pop(stack, span, "@fs_open")?;
+                let path = self.pop(stack, span, "@fs_open")?;
+                let mode_n = match mode.value {
+                    Value::Int(n) => n,
+                    other => {
+                        other.drop_owned();
+                        path.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_open' requires a rune mode",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (handle, owned) = match path.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_open' requires a string path",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let fd = runtime::yarrow_fs_open(handle, mode_n);
+                if owned {
+                    free_value(handle, KIND_STRING);
+                }
+                stack.push(Slot {
+                    value: Value::Int(fd),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "fs_close" => {
+                let fd = self.pop(stack, span, "@fs_close")?;
+                let n = match fd.value {
+                    Value::Int(n) => n,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_close' requires an integer fd",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let rc = runtime::yarrow_fs_close(n);
+                stack.push(Slot {
+                    value: Value::Int(rc),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "fs_write" => {
+                let content = self.pop(stack, span, "@fs_write")?;
+                let fd = self.pop(stack, span, "@fs_write")?;
+                let n = match fd.value {
+                    Value::Int(n) => n,
+                    other => {
+                        other.drop_owned();
+                        content.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_write' requires an integer fd",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (handle, owned) = match content.value {
+                    Value::Str { handle, owned } => (handle, owned),
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_write' requires a string",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let rc = runtime::yarrow_fs_write(n, handle);
+                if owned {
+                    free_value(handle, KIND_STRING);
+                }
+                stack.push(Slot {
+                    value: Value::Int(rc),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "fs_read" => {
+                let fd = self.pop(stack, span, "@fs_read")?;
+                let n = match fd.value {
+                    Value::Int(n) => n,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'@fs_read' requires an integer fd",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let handle = runtime::yarrow_fs_read(n);
+                stack.push(Slot {
+                    value: Value::Str {
+                        handle,
+                        owned: true,
+                    },
+                    kind: KIND_STRING,
+                });
+                Ok(())
+            }
+            "fs_last_error" => {
+                let code = runtime::yarrow_fs_last_error();
+                stack.push(Slot {
+                    value: Value::Int(code),
+                    kind: 4,
+                });
                 Ok(())
             }
             "print_int" => {
@@ -3247,6 +3620,10 @@ impl Interpreter {
                 Some(KIND_MAP | (k << 8) | (v << 40))
             }
             TypeKind::Reference { inner } => self.type_kind_code(inner),
+            TypeKind::Pointer { inner } => {
+                let pk = self.type_kind_code(inner)?;
+                Some(KIND_PTR | (pk << 8))
+            }
             TypeKind::Named(name) => {
                 if let Some(k) = primitive_kind_code(name) {
                     return Some(k);
@@ -3266,7 +3643,6 @@ impl Interpreter {
                 None
             }
             TypeKind::Union(_) => Some(KIND_ERROR), // fallible binding rare
-            _ => None,
         }
     }
 
@@ -3455,6 +3831,35 @@ fn kind_elem_size(kind: u64) -> u32 {
         2 | 7 | 12 => 2,
         3 | 8 | 11 | 13 => 4,
         _ => 8,
+    }
+}
+
+fn pointee_byte_size(kind: u64) -> u32 {
+    match kind & 0xff {
+        KIND_STRUCT | KIND_UNION | KIND_LIST | KIND_MAP | KIND_STRING | KIND_PTR | KIND_ERROR => 8,
+        _ => kind_elem_size(kind),
+    }
+}
+
+fn read_bits_at(base: u64, offset: i32, size: u32) -> u64 {
+    unsafe {
+        let mut buf = 0u64;
+        std::ptr::copy_nonoverlapping(
+            (base as *const u8).add(offset as usize),
+            &mut buf as *mut u64 as *mut u8,
+            size as usize,
+        );
+        buf
+    }
+}
+
+fn write_bits_at(base: u64, offset: i32, size: u32, bits: u64) {
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            &bits as *const u64 as *const u8,
+            (base as *mut u8).add(offset as usize),
+            size as usize,
+        );
     }
 }
 

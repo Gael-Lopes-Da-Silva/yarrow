@@ -30,7 +30,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                                                                                        |
-| Interpret   | Stage 36 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 32 plus regions/`defer`/field `set`; unsafe / pointers still E393 until Stage 37 |
+| Interpret   | Stage 37 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 36 plus unsafe/`pointer<T>`/`move`/runes/`std.fs`; `00_grammar_tour.yar` remains out of scope (E393) |
 | Probes      | `TypeIndex` / `type_at`; `DefIndex` / `definition_at` (bindings + requires, root-only; Stage 35)                                                                               |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
@@ -44,7 +44,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | Area       | Gap                                                                                                                      |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
 | AOT        | Cross link needs matching archive + CRT; Mach-O / Windows executable link is Stage 39 (object-only today on linux hosts) |
-| Interpret  | Unsafe / pointers and remaining `valid/**` stay E393 until Stage 37; regions / defer / field `set` landed in Stage 36 |
+| Interpret  | `00_grammar_tour.yar` stays out of scope (mixed surface / `loop.break` and further tour forms); Stage 37 landed unsafe / pointers / move / fs |
 | Warnings   | `W401`–`W407` landed; empty `match` arm and further lints are Stage 38                                                   |
 | Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
@@ -55,7 +55,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 ## Next (Phase H)
 
-Focus: interpreter parity for remaining `valid/**` (Stage 37 unsafe/pointers), then AOT executable link on non-ELF and lint/ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
+Focus: warning catalog follow-ups (Stage 38), then AOT executable link on non-ELF and ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
 
 ### Stage 35 - Require-path / definition probe API - **done**
 
@@ -77,7 +77,7 @@ Close the Stage 32 E393 gaps that unblock the next corpus files without taking o
 
 ---
 
-### Stage 37 - Interpreter: unsafe / pointers + remaining `valid/**`
+### Stage 37 - Interpreter: unsafe / pointers + remaining `valid/**` - **done**
 
 Finish interpret parity for the rest of the JIT-runnable corpus, or document explicit out-of-scope files with reason.
 
@@ -87,6 +87,8 @@ Finish interpret parity for the rest of the JIT-runnable corpus, or document exp
 4. Coordinate with CLI `interpret` / REPL only if a new Session knob is required; default remains `interpret_source`.
 
 **Gate:** at least `11_unsafe_pointers.yar` and `08_ownership_borrow_move.yar` interpret with stdout matching JIT. Remaining E393 surface (if any) listed in Known gaps. JIT and object gates unchanged. `check_interpret` extended. `cargo clippy` green.
+
+**Landed:** `unsafe` bodies; `pointer<T>` load/store and field access/`set`; `@alloc`/`@free`/`@load`/`@store`; `move`; runes; `std.fs` host helpers; heap return ownership claimed from locals (matches JIT). Out of scope: `00_grammar_tour.yar` (`loop.break` and further tour forms stay E393).
 
 ---
 
