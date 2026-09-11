@@ -188,8 +188,9 @@ fn collect_workspace_from_text(
                 if let Some(queue) = require_queue.as_mut()
                     && let Some(target) =
                         modules::resolve_require_file(path, req, &config.search_paths)
+                    && let Some(disk) = target.path
                 {
-                    queue.push(target.path);
+                    queue.push(disk);
                 }
             }
             _ => {}

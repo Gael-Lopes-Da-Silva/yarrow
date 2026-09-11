@@ -12,7 +12,7 @@ pub mod target;
 pub mod tokenizer;
 
 pub use analysis::{DefIndex, DefKind, DefProbe, TypeIndex, TypeProbe};
-pub use compiler::{CompileError, Compiler, RunResult};
+pub use compiler::{CompileError, Compiler, RunResult, std_module_source};
 pub use diagnostics::{
     ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, Severity,
     SourceFile, Span, explain_code, format_explain, normalize_code, render,

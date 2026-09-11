@@ -26,6 +26,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower_lsp_server::jsonrpc::{Error as LspErrorRpc, Result as LspResult};
 use tower_lsp_server::ls_types::{
@@ -122,7 +123,12 @@ where
     I: tokio::io::AsyncRead + Unpin,
     O: tokio::io::AsyncWrite,
 {
-    let (service, socket) = LspService::new(move |client| Backend::new(client, config));
+    let (service, socket) = LspService::build(move |client| Backend::new(client, config))
+        .custom_method(
+            "workspace/textDocumentContent",
+            Backend::text_document_content,
+        )
+        .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
     Ok(())
 }
@@ -170,6 +176,18 @@ struct CachedDiagnostics {
 
 /// Generation key for multi-root project rechecks (shared across open buffers).
 const PROJECT_ANALYSIS_KEY: &str = "__project__";
+
+/// LSP 3.18-shaped params for `workspace/textDocumentContent` (custom method;
+/// `ls-types` 0.0.6 does not yet model this capability).
+#[derive(Debug, Deserialize)]
+struct TextDocumentContentParams {
+    uri: Uri,
+}
+
+#[derive(Debug, Serialize)]
+struct TextDocumentContentResult {
+    text: String,
+}
 
 struct ServerState {
     documents: Mutex<DocumentStore>,
@@ -448,6 +466,9 @@ impl Backend {
         }
 
         for uri in open_uris {
+            if modules::is_virtual_std_uri(&uri) {
+                continue;
+            }
             if let Some(path) = uri.to_file_path()
                 && reported_keys.contains(&path_key(path.as_ref()))
             {
@@ -463,12 +484,32 @@ impl Backend {
     }
 
     fn schedule_analysis(&self, uri: Uri, version: i32, debounce: bool) {
+        // Virtual std buffers are read-only views of embedded sources; no check.
+        if modules::is_virtual_std_uri(&uri) {
+            return;
+        }
         let config = self.config_snapshot();
         if config.project_mode() {
             self.schedule_project_analysis(Some((uri, version)), debounce);
         } else {
             self.schedule_single_analysis(uri, version, debounce);
         }
+    }
+
+    /// Serve embedded std text for `yarrow-std:` URIs (Stage 26).
+    async fn text_document_content(
+        &self,
+        params: TextDocumentContentParams,
+    ) -> LspResult<TextDocumentContentResult> {
+        let Some(text) = modules::source_for_std_uri(&params.uri) else {
+            return Err(LspErrorRpc::invalid_params(format!(
+                "unknown virtual document: {}",
+                params.uri.as_str()
+            )));
+        };
+        Ok(TextDocumentContentResult {
+            text: text.to_string(),
+        })
     }
 
     fn schedule_single_analysis(&self, uri: Uri, version: i32, debounce: bool) {
@@ -827,6 +868,13 @@ impl LanguageServer for Backend {
                         ..Default::default()
                     },
                 )),
+                // Stage 26: advertise `yarrow-std` content provider (ls-types has no
+                // typed `workspace.textDocumentContent` yet).
+                experimental: Some(serde_json::json!({
+                    "textDocumentContent": {
+                        "schemes": [modules::STD_URI_SCHEME]
+                    }
+                })),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -852,6 +900,11 @@ impl LanguageServer for Backend {
         params: DocumentDiagnosticParams,
     ) -> LspResult<DocumentDiagnosticReportResult> {
         let uri = params.text_document.uri;
+        if modules::is_virtual_std_uri(&uri) {
+            return Ok(DocumentDiagnosticReportResult::Report(empty_full_report(
+                Some("virtual-std".into()),
+            )));
+        }
         if let Some(id) = params.identifier.as_deref()
             && id != "yarrow"
         {
@@ -900,12 +953,20 @@ impl LanguageServer for Backend {
 
         let uri_str = doc.uri.as_str().to_string();
         let version = doc.version;
-        let len = doc.text.len();
+        let virtual_std = modules::is_virtual_std_uri(&doc.uri);
+        let text = if virtual_std && doc.text.is_empty() {
+            modules::source_for_std_uri(&doc.uri)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            doc.text
+        };
+        let len = text.len();
         {
             let Ok(mut store) = self.state.documents.lock() else {
                 return;
             };
-            store.open(doc.uri.clone(), version, doc.text);
+            store.open(doc.uri.clone(), version, text);
         }
 
         self.client
@@ -915,13 +976,25 @@ impl LanguageServer for Backend {
             )
             .await;
 
-        self.schedule_analysis(doc.uri, version, false);
+        if !virtual_std {
+            self.schedule_analysis(doc.uri, version, false);
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
         let uri_str = uri.as_str().to_string();
+
+        if modules::is_virtual_std_uri(&uri) {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("didChange ignored (read-only virtual std): {uri_str}"),
+                )
+                .await;
+            return;
+        }
 
         // Full sync: take the last change that replaces the whole document.
         let Some(text) = params
@@ -1244,6 +1317,9 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
         let uri = params.text_document.uri;
+        if modules::is_virtual_std_uri(&uri) {
+            return Ok(None);
+        }
         let text = {
             let Ok(store) = self.state.documents.lock() else {
                 return Ok(None);
@@ -1272,6 +1348,9 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
         let uri = params.text_document.uri;
+        if modules::is_virtual_std_uri(&uri) {
+            return Ok(None);
+        }
         let text = {
             let Ok(store) = self.state.documents.lock() else {
                 return Ok(None);
@@ -1369,6 +1448,9 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> LspResult<Option<PrepareRenameResponse>> {
         let uri = params.text_document.uri;
+        if modules::is_virtual_std_uri(&uri) {
+            return Ok(None);
+        }
         let position = params.position;
         let text = {
             let Ok(store) = self.state.documents.lock() else {
@@ -1394,6 +1476,11 @@ impl LanguageServer for Backend {
 
     async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
         let uri = params.text_document_position.text_document.uri;
+        if modules::is_virtual_std_uri(&uri) {
+            return Err(LspErrorRpc::invalid_params(
+                "cannot rename inside read-only virtual std buffers",
+            ));
+        }
         let position = params.text_document_position.position;
         let new_name = params.new_name;
         let text = {
