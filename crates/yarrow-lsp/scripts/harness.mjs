@@ -8,6 +8,7 @@
  * Usage (from repo root):
  *   node crates/yarrow-lsp/scripts/harness.mjs
  *   node crates/yarrow-lsp/scripts/harness.mjs pull-diagnostics
+ *   node crates/yarrow-lsp/scripts/harness.mjs workspace-diagnostics
  *   node crates/yarrow-lsp/scripts/harness.mjs project-roots
  *   node crates/yarrow-lsp/scripts/harness.mjs project-missing-root
  *   node crates/yarrow-lsp/scripts/harness.mjs definition-require
@@ -29,6 +30,7 @@ const LISTEN_RE = /listening on ([^\s]+)/;
 
 const SCENARIOS = [
   "pull-diagnostics",
+  "workspace-diagnostics",
   "project-roots",
   "project-missing-root",
   "definition-require",
@@ -247,6 +249,54 @@ async function scenarioPullDiagnostics(client) {
   if (!hasCode(flat, "E373")) {
     throw new Error(
       `expected E373 in pull diagnostics; got: ${JSON.stringify(report)}`,
+    );
+  }
+
+  await client.request("shutdown", null);
+  client.notify("exit", null);
+}
+
+async function scenarioWorkspaceDiagnostics(client) {
+  const fixture = path.join(
+    REPO_ROOT,
+    "docs/examples/invalid/01_use_after_move.yar",
+  );
+
+  const init = await client.request("initialize", {
+    processId: null,
+    clientInfo: { name: "yarrow-lsp-harness", version: "0.1" },
+    capabilities: {},
+    rootUri: null,
+  });
+  if (!init?.capabilities?.diagnosticProvider?.workspaceDiagnostics) {
+    throw new Error(
+      `expected diagnosticProvider.workspaceDiagnostics true; got: ${JSON.stringify(init?.capabilities?.diagnosticProvider)}`,
+    );
+  }
+
+  client.notify("initialized", {});
+  const uri = await openFile(client, fixture);
+
+  // Pull immediately (do not wait for publishDiagnostics).
+  const report = await client.request("workspace/diagnostic", {
+    previousResultIds: [],
+  });
+  const items = report?.items;
+  if (!Array.isArray(items) || items.length < 1) {
+    throw new Error(
+      `expected workspace/diagnostic items; got: ${JSON.stringify(report)}`,
+    );
+  }
+  const entry = items.find((it) => sameFileUri(it.uri, uri));
+  if (!entry) {
+    throw new Error(
+      `expected report for ${uri}; got: ${JSON.stringify(report)}`,
+    );
+  }
+  const flat = Array.isArray(entry.items) ? entry.items : [];
+  if (!hasCode(flat, "E373")) {
+    throw new Error(
+      `expected E373 in workspace pull; got: ${JSON.stringify(entry)}`,
     );
   }
 
@@ -477,6 +527,8 @@ async function main() {
 
     if (scenario === "pull-diagnostics") {
       await scenarioPullDiagnostics(client);
+    } else if (scenario === "workspace-diagnostics") {
+      await scenarioWorkspaceDiagnostics(client);
     } else if (scenario === "project-roots") {
       await scenarioProjectRoots(client);
     } else if (scenario === "project-missing-root") {

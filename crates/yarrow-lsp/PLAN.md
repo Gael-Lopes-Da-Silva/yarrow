@@ -23,7 +23,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–19, 21–23)
+### Landed (v1, Stages 0–19, 21–24)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - TCP `--listen host:port` transport (one client) + in-repo protocol harness
@@ -31,6 +31,7 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - Publish diagnostics from `Session::check_source` (and parse failures)
 - Optional multi-root `Session::check_project` via init `projectRoots`
 - Pull diagnostics (`textDocument/diagnostic`) with uri+version cache shared with push
+- Workspace pull diagnostics (`workspace/diagnostic`) for open buffers + project roots
 - Navigation: go-to-definition, find references (same file + `require` cross-file)
 - Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
 - Completions: keywords + in-scope / imported names + `std.*` require paths
@@ -123,7 +124,7 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 | Piece               | Status | Notes                                                         |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–23 landed; Stage 20 canceled                 |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 + 21–24 landed; Stage 20 canceled                 |
 | Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
 | Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
 | Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
@@ -134,9 +135,9 @@ Open documents + transitive `require` resolution cover the single-file case. Mul
 
 ---
 
-## Landed (Stages 0–19, 21–23)
+## Landed (Stages 0–19, 21–24)
 
-Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–23 are landed.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled. Stages 21–24 are landed.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -164,6 +165,7 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 | 21    | Project-aware multi-root via `projectRoots` + `check_project` |
 | 22    | Core `definition_at` for goto / hover; AST fallback on miss |
 | 23    | On-type formatting: `\n` after `end` aligns new-line indent |
+| 24    | Workspace pull diagnostics (open + project roots)           |
 
 **Stage 21 notes:** Init option `projectRoots: string[]` (absolute or cwd-relative). Default remains single-file `check_source`. Open buffers overlay on-disk roots; missing roots publish `E383`. `interFileDependencies` is true in project mode. Stretch (graph → workspace symbols) deferred. Harness: `project-roots`, `project-missing-root`.
 
@@ -171,25 +173,13 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 
 **Stage 23 notes:** Advertise `documentOnTypeFormattingProvider` for `\n` only (honors `--no-format` / init `format: false`). When the previous line’s first word is `end` (including `end with T`), rewrite leading whitespace on the new line to match that line’s tab depth. No `format_range` / full reprint (fmt Stage 18 still open; mid-edit expansion stays unsafe). Other triggers and mid-token positions return null. Harness: `on-type-format`.
 
+**Stage 24 notes:** Advertise `workspaceDiagnostics: true`. `workspace/diagnostic` reports open buffers and, in project mode, configured `projectRoots` (no unbounded walk). Reuses the Stage 18 uri+version cache / `resultId` for open docs; closed roots get a full report with `version: null`. `interFileDependencies` stays tied to project mode. Harness: `workspace-diagnostics`.
+
 ---
 
 ## Next
 
-Focus: workspace pull diagnostics / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
-
-### Stage 24 - Workspace pull diagnostics
-
-Stage 18 set `workspaceDiagnostics: false` and skipped `workspace/diagnostic`.
-
-1. Enable workspace pull only for **open documents** and, when Stage 21 project mode is on, configured project roots (not an unbounded disk walk).
-2. Advertise `workspaceDiagnostics: true` when implemented; answer `workspace/diagnostic` with per-document reports (or a documented partial report).
-3. Reuse the uri+version cache from Stage 18; avoid double-flicker with push.
-4. `interFileDependencies`: true only if Stage 21 actually rechecks related roots together; otherwise keep false and document.
-5. Harness scenario: workspace pull returns diagnostics for an open invalid fixture without waiting on publish.
-
-**Gate:** scripted `workspace/diagnostic` (or equivalent) sees `E373` (or known code) for the open invalid file. Text-document pull + push still work. `cargo clippy` green.
-
----
+Focus: analysis cancelation / latency. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
 ### Stage 25 - Analysis cancelation / latency polish
 
@@ -239,7 +229,7 @@ Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto 
 | workspaceSymbol                    | 16 ✅; 21 ✅   | open + requires; project roots via `check_project` |
 | rangeFormatting / onTypeFormatting | 17 ✅; 23 ✅   | `format_range`; on-type = local indent after `end` |
 | textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache                |
-| workspace/diagnostic               | 24             | open / project roots only                          |
+| workspace/diagnostic               | 24 ✅          | open / project roots only                          |
 | TCP + test harness                 | 19 ✅          | transport only                                     |
 | multi-root project check           | 21 ✅          | `check_project` (core Stage 28)                    |
 | editor extensions                  | 20 ❌ canceled | separate repos later                       |

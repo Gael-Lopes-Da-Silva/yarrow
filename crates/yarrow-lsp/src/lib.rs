@@ -44,8 +44,10 @@ use tower_lsp_server::ls_types::{
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     SignatureHelp, SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit,
-    UnchangedDocumentDiagnosticReport, Uri, WorkspaceEdit, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    UnchangedDocumentDiagnosticReport, Uri, WorkspaceDiagnosticParams, WorkspaceDiagnosticReport,
+    WorkspaceDiagnosticReportResult, WorkspaceDocumentDiagnosticReport, WorkspaceEdit,
+    WorkspaceFullDocumentDiagnosticReport, WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    WorkspaceUnchangedDocumentDiagnosticReport,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -351,6 +353,88 @@ impl Backend {
         })
     }
 
+    /// Workspace pull: open buffers plus configured project roots (no disk walk).
+    fn workspace_diagnostics_for(
+        state: &ServerState,
+        previous: &HashMap<String, String>,
+    ) -> Vec<WorkspaceDocumentDiagnosticReport> {
+        let encoding = state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
+
+        let open_uris: Vec<Uri> = {
+            let Ok(store) = state.documents.lock() else {
+                return Vec::new();
+            };
+            store
+                .snapshot_texts()
+                .into_iter()
+                .map(|(uri, _)| uri)
+                .collect()
+        };
+
+        let mut items = Vec::new();
+        let mut reported_keys = std::collections::HashSet::new();
+
+        if config.project_mode() {
+            let overlays = Self::collect_overlays(state);
+            let roots = check_project_roots(encoding, &config, &overlays);
+            for root in roots {
+                if let Some(path) = root.uri.to_file_path() {
+                    reported_keys.insert(path_key(path.as_ref()));
+                }
+                let version = Self::open_version(state, &root.uri);
+                if let Some(v) = version {
+                    Self::store_diagnostics(state, &root.uri, v, root.items.clone());
+                }
+                let result_id = version.map(|v| format!("v{v}"));
+                let prev = previous.get(root.uri.as_str()).map(String::as_str);
+                if let (Some(rid), Some(prev_id)) = (result_id.as_deref(), prev)
+                    && rid == prev_id
+                {
+                    items.push(WorkspaceDocumentDiagnosticReport::Unchanged(
+                        WorkspaceUnchangedDocumentDiagnosticReport {
+                            uri: root.uri,
+                            version: version.map(i64::from),
+                            unchanged_document_diagnostic_report:
+                                UnchangedDocumentDiagnosticReport {
+                                    result_id: rid.to_string(),
+                                },
+                        },
+                    ));
+                    continue;
+                }
+                items.push(WorkspaceDocumentDiagnosticReport::Full(
+                    WorkspaceFullDocumentDiagnosticReport {
+                        uri: root.uri,
+                        version: version.map(i64::from),
+                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                            result_id,
+                            items: root.items,
+                        },
+                    },
+                ));
+            }
+        }
+
+        for uri in open_uris {
+            if let Some(path) = uri.to_file_path()
+                && reported_keys.contains(&path_key(path.as_ref()))
+            {
+                continue;
+            }
+            let prev = previous.get(uri.as_str()).map(String::as_str);
+            let report = Self::diagnostics_for(state, &uri, prev);
+            let version = Self::open_version(state, &uri).map(i64::from);
+            items.push(doc_report_to_workspace(uri, version, report));
+        }
+
+        items
+    }
+
     fn schedule_analysis(&self, uri: Uri, version: i32, debounce: bool) {
         let config = self.config_snapshot();
         if config.project_mode() {
@@ -520,6 +604,32 @@ fn empty_full_report(result_id: Option<String>) -> DocumentDiagnosticReport {
     })
 }
 
+fn doc_report_to_workspace(
+    uri: Uri,
+    version: Option<i64>,
+    report: DocumentDiagnosticReport,
+) -> WorkspaceDocumentDiagnosticReport {
+    match report {
+        DocumentDiagnosticReport::Full(full) => {
+            WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
+                uri,
+                version,
+                full_document_diagnostic_report: full.full_document_diagnostic_report,
+            })
+        }
+        DocumentDiagnosticReport::Unchanged(unchanged) => {
+            WorkspaceDocumentDiagnosticReport::Unchanged(
+                WorkspaceUnchangedDocumentDiagnosticReport {
+                    uri,
+                    version,
+                    unchanged_document_diagnostic_report: unchanged
+                        .unchanged_document_diagnostic_report,
+                },
+            )
+        }
+    }
+}
+
 impl fmt::Debug for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Backend").finish_non_exhaustive()
@@ -639,7 +749,8 @@ impl LanguageServer for Backend {
                         identifier: Some("yarrow".into()),
                         // Project mode rechecks all configured roots together.
                         inter_file_dependencies: project_mode,
-                        workspace_diagnostics: false,
+                        // Open buffers + configured project roots only (Stage 24).
+                        workspace_diagnostics: true,
                         ..Default::default()
                     },
                 )),
@@ -678,6 +789,28 @@ impl LanguageServer for Backend {
         let report =
             Backend::diagnostics_for(&self.state, &uri, params.previous_result_id.as_deref());
         Ok(DocumentDiagnosticReportResult::Report(report))
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        params: WorkspaceDiagnosticParams,
+    ) -> LspResult<WorkspaceDiagnosticReportResult> {
+        if let Some(id) = params.identifier.as_deref()
+            && id != "yarrow"
+        {
+            return Ok(WorkspaceDiagnosticReportResult::Report(
+                WorkspaceDiagnosticReport { items: Vec::new() },
+            ));
+        }
+        let previous: HashMap<String, String> = params
+            .previous_result_ids
+            .into_iter()
+            .map(|p| (p.uri.as_str().to_string(), p.value))
+            .collect();
+        let items = Backend::workspace_diagnostics_for(&self.state, &previous);
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items },
+        ))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
