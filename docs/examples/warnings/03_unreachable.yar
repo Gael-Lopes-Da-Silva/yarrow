@@ -4,7 +4,6 @@
 "std.io" io require
 
 main function do
-	"alive" io.write_line call
-	return
+	"alive" io.write_line call return
 	"dead" io.write_line call
 end
