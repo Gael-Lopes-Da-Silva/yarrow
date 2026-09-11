@@ -138,6 +138,16 @@ Other triples (MSVC, WASM, ...) are rejected. JIT requires the host triple. Set 
 `CompileOptions::target` to a supported value or leave it unset for the host.",
     },
     ExplainEntry {
+        code: "E999",
+        title: "internal compiler error (ICE)",
+        body: "\
+The compiler hit an invariant or API-boundary failure that is not a mistake in \
+your program. Drivers should treat `E999` / `SessionDiagnostics::is_ice` as exit \
+`101` (distinct from ordinary diagnostics at exit `1`). This is not recoverable \
+by editing source; please report it with the command line and a minimal \
+reproducer. Gate: `cargo run -p yarrow_core --example check_ice`.",
+    },
+    ExplainEntry {
         code: "W401",
         title: "unused binding",
         body: "\

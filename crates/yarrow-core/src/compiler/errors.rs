@@ -18,6 +18,13 @@ impl CompileError {
         }
     }
 
+    /// Internal compiler error (`E999`) at an API / invariant boundary.
+    pub fn ice(message: impl Into<String>) -> Self {
+        Self {
+            diagnostic: Box::new(Diagnostic::ice(message).with_primary(Span::default(), "")),
+        }
+    }
+
     /// Build from a location (treated as a point span). Prefer [`Self::new`] with a real span.
     pub fn at(message: impl Into<String>, location: Location, code: impl Into<String>) -> Self {
         Self::new(message, Span::from_location(location), code)

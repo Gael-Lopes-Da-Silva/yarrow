@@ -35,8 +35,12 @@ impl ParseError {
     }
 
     pub fn into_diagnostic(self) -> crate::diagnostics::Diagnostic {
-        crate::diagnostics::Diagnostic::error(self.code, self.message)
-            .with_primary(Span::from_location(self.location), "")
+        let diag = if self.code == crate::diagnostics::ICE_CODE {
+            crate::diagnostics::Diagnostic::ice(self.message)
+        } else {
+            crate::diagnostics::Diagnostic::error(self.code, self.message)
+        };
+        diag.with_primary(Span::from_location(self.location), "")
     }
 }
 
@@ -455,7 +459,15 @@ impl Parser {
             TokenKind::Mutable => Mutability::Mutable,
             TokenKind::Const => Mutability::Const,
             TokenKind::Static => Mutability::Static,
-            _ => unreachable!(),
+            other => {
+                return Err(ParseError::new(
+                    format!(
+                        "internal error: parse_var_decl entered with unexpected token {other:?}"
+                    ),
+                    self.peek_location(),
+                    crate::diagnostics::ICE_CODE,
+                ));
+            }
         };
         self.advance();
 

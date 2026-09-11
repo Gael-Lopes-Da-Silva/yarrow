@@ -198,9 +198,62 @@ pub struct SessionDiagnostics {
     pub batch: DiagnosticBatch,
 }
 
+/// How drivers should classify a failed session (Stage 40).
+///
+/// Ordinary [`SessionDiagnostics`] map to exit `1`. An ICE (`E999`) maps to
+/// exit `101` so scripts can distinguish bugs from user errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFailureKind {
+    /// User / toolchain diagnostics (`E2xx`–`E3xx`, …).
+    User,
+    /// Internal compiler error (`E999`).
+    Ice,
+}
+
+impl SessionDiagnostics {
+    /// Whether this batch is an internal compiler error (`E999`).
+    pub fn is_ice(&self) -> bool {
+        self.batch.is_ice()
+    }
+
+    /// Classify for driver exit codes (Stage 40 / CLI Stage 16).
+    pub fn failure_kind(&self) -> SessionFailureKind {
+        if self.is_ice() {
+            SessionFailureKind::Ice
+        } else {
+            SessionFailureKind::User
+        }
+    }
+
+    /// Build a tagged ICE batch (does not panic). Used by the Stage 40 gate hook.
+    pub fn ice(
+        path: impl Into<String>,
+        source: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        let path = path.into();
+        let file = SourceFile::new(path.clone(), source.into());
+        let mut batch = DiagnosticBatch::with_limit(1);
+        batch.push(
+            Diagnostic::ice(detail)
+                .with_path(path)
+                .with_primary(Span::default(), ""),
+        );
+        Self { file, batch }
+    }
+}
+
 impl Session {
     pub fn new(options: CompileOptions) -> Self {
         Self { options }
+    }
+
+    /// Stage 40 gate: synthesize an ICE diagnostic without panicking.
+    ///
+    /// Ordinary Session APIs never mark user programs as ICE. Drivers map
+    /// [`SessionDiagnostics::is_ice`] / [`SessionFailureKind::Ice`] to exit `101`.
+    pub fn debug_trigger_ice(&self, detail: impl Into<String>) -> SessionDiagnostics {
+        SessionDiagnostics::ice(&self.options.source_path, String::new(), detail)
     }
 
     /// Tokenize source text without parsing or compiling.

@@ -76,6 +76,11 @@ impl DiagnosticBatch {
         self.error_count() > 0
     }
 
+    /// True when any diagnostic is an ICE (`E999`). Drivers map this to exit `101`.
+    pub fn is_ice(&self) -> bool {
+        self.items.iter().any(Diagnostic::is_ice)
+    }
+
     pub fn is_at_limit(&self) -> bool {
         self.error_count() >= self.limit
     }
