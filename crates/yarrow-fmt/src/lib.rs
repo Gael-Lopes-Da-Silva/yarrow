@@ -6,8 +6,10 @@
 //! Stage 18: [`format_source_best_effort`] applies source hygiene on incomplete
 //! parses and selectively reprints recovered top-level declarations whose spans
 //! stay clear of error regions. Stage 19: paired `# yarrow-fmt-ignore-begin` /
-//! `# yarrow-fmt-ignore-end` regions keep original text (plus hygiene). Shared
-//! [`run_fmt`] for `yarrow-fmt` / `yarrow fmt`; [`format_range`] for span edits.
+//! `# yarrow-fmt-ignore-end` regions keep original text (plus hygiene). Stage 20:
+//! multi-file [`run_fmt`] formats independent paths in parallel (same bytes as
+//! sequential; sorted reporting). Shared driver for `yarrow-fmt` / `yarrow fmt`;
+//! [`format_range`] for span edits.
 
 mod best_effort;
 mod blank;
