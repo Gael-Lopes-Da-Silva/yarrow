@@ -8,7 +8,7 @@ mod lsp;
 mod repl;
 mod run;
 
-pub use check::check_file;
+pub use check::check_files;
 pub use compile::compile_file;
 pub use dump::dump_file;
 pub use explain::explain_code;

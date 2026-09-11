@@ -152,11 +152,18 @@ pub enum Cmd {
         output: Option<std::path::PathBuf>,
     },
 
-    /// Compile a Yarrow source file and report diagnostics, without running `main`.
+    /// Check source without running `main`.
+    ///
+    /// One file uses a single-file session. Two or more paths are a multi-root
+    /// project check (`ProjectOptions` / `check_project`): shared `-L` search
+    /// paths, each root still its own compilation unit. No manifest.
+    ///
+    /// Example: `yarrow check root_a.yar root_b.yar`
     Check {
-        /// Source file to type-check / validate.
-        #[arg(value_name = "FILE")]
-        file: std::path::PathBuf,
+        /// Root `.yar` file(s). One path → single-file check; two or more →
+        /// project check.
+        #[arg(value_name = "FILE", num_args = 1.., required = true)]
+        files: Vec<std::path::PathBuf>,
 
         /// Top-level entry function name (default `main`).
         #[arg(long, value_name = "NAME", default_value = "main")]
