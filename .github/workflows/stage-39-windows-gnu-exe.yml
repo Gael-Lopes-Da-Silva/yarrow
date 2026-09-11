@@ -44,4 +44,8 @@ jobs:
         run: cargo run -p yarrow_core --example check_windows_exe
 
       - name: Clippy
-        run: cargo clippy -p yarrow_core --examples -- -D warnings
+        run: |
+          set -euo pipefail
+          echo "rustc host: $(rustc -vV | sed -n 's/^host: //p')"
+          cargo clippy -V
+          cargo clippy -p yarrow_core --examples -- -D warnings

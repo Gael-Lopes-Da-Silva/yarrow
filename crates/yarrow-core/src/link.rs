@@ -41,6 +41,13 @@ impl LinkError {
         self
     }
 
+    #[cfg_attr(
+        not(any(
+            all(target_os = "linux", target_env = "gnu"),
+            all(target_os = "windows", target_env = "gnu"),
+        )),
+        allow(dead_code)
+    )]
     fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
@@ -331,6 +338,10 @@ fn link_windows_gnu(
     run_linker(cmd, &linker, &out_path, target, None)
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn run_linker(
     mut cmd: Command,
     linker: &Path,
@@ -441,6 +452,10 @@ fn find_mingw_linker() -> Result<PathBuf, LinkError> {
     ))
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn which(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     #[cfg(windows)]
@@ -641,12 +656,20 @@ fn mingw_crt_file(target: &TargetTriple, name: &str, alts: &[&str]) -> Result<Pa
     ))
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn collect_lib_dirs<'a>(lib_dirs: &mut Vec<PathBuf>, paths: impl IntoIterator<Item = &'a PathBuf>) {
     for p in paths {
         push_parent(lib_dirs, p);
     }
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn push_parent(lib_dirs: &mut Vec<PathBuf>, path: &Path) {
     if let Some(dir) = path.parent() {
         let dir = dir.to_path_buf();
@@ -699,6 +722,10 @@ fn crt_file(target: &TargetTriple, name: &str, alts: &[&str]) -> Result<PathBuf,
 
 /// Locate a linker/CRT file. Prefer env overrides, then `cc -print-file-name`
 /// (optionally with `--target=`), then bare `cc` / `gcc`. Never compile with it.
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn print_file_name(target: &TargetTriple, name: &str) -> Option<PathBuf> {
     if let Some(p) = lookup_in_crt_env(name) {
         return Some(p);
@@ -763,6 +790,10 @@ fn print_file_name(target: &TargetTriple, name: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 fn lookup_in_crt_env(name: &str) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("YARROW_AOT_CRT_DIR") {
         let p = Path::new(&dir).join(name);
@@ -795,10 +826,18 @@ fn lookup_in_crt_env(name: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 struct WorkDir {
     path: PathBuf,
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 impl WorkDir {
     fn create() -> Result<Self, LinkError> {
         let nanos = SystemTime::now()
@@ -812,6 +851,10 @@ impl WorkDir {
     }
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "windows", target_env = "gnu"),
+))]
 impl Drop for WorkDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
