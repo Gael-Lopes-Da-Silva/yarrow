@@ -175,7 +175,7 @@ Stages 0–19 are complete. Historical stage write-ups were removed; git history
 
 **Stage 22 notes:** Prefer `CheckedProgram::definition_at` (core Stage 35) for `textDocument/definition` and hover “defined in …” / module path. Misses keep AST / require resolution. Harness: `definition-require` on `12_modules.yar` `greet` alias.
 
-**Stage 23 notes:** Advertise `documentOnTypeFormattingProvider` for `\n` only (honors `--no-format` / init `format: false`). When the previous line’s first word is `end` (including `end with T`), rewrite leading whitespace on the new line to match that line’s tab depth. No `format_range` / full reprint (fmt Stage 18 still open; mid-edit expansion stays unsafe). Other triggers and mid-token positions return null. Harness: `on-type-format`.
+**Stage 23 notes:** Advertise `documentOnTypeFormattingProvider` for `\n` only (honors `--no-format` / init `format: false`). When the previous line’s first word is `end` (including `end with T`), rewrite leading whitespace on the new line to match that line’s tab depth. No `format_range` / full reprint on type (fmt Stage 18 selective reprint is full-doc best-effort only; mid-edit expansion stays unsafe). Other triggers and mid-token positions return null. Harness: `on-type-format`.
 
 **Stage 24 notes:** Advertise `workspaceDiagnostics: true`. `workspace/diagnostic` reports open buffers and, in project mode, configured `projectRoots` (no unbounded walk). Reuses the Stage 18 uri+version cache / `resultId` for open docs; closed roots get a full report with `version: null`. `interFileDependencies` stays tied to project mode. Harness: `workspace-diagnostics`.
 

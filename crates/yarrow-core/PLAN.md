@@ -49,7 +49,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
 | LSP assist | Typed-at-span + definition / require probes landed (Stage 35); LSP consumption is [`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md) |
-| Formatter  | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene via `parse_recovering`; selective reprint is [`yarrow-fmt` Stage 18](../yarrow-fmt/PLAN.md) |
+| Formatter  | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene + selective top-level reprint ([`yarrow-fmt` Stage 18](../yarrow-fmt/PLAN.md)) |
 
 ---
 

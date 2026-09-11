@@ -206,8 +206,9 @@ impl FormatIr {
 pub enum FormatIrParse {
     /// Clean parse; safe for full construct reprint.
     Complete(FormatIr),
-    /// Recovered AST plus diagnostics. Tooling may inspect `ir` but must not
-    /// treat it as authoritative for rewrite (Stage 17: hygiene only).
+    /// Recovered AST plus diagnostics. Stage 18 may selectively reprint
+    /// top-level declarations whose spans clear error regions and re-format
+    /// cleanly alone; other regions stay hygiene-only.
     Partial {
         ir: FormatIr,
         file: SourceFile,

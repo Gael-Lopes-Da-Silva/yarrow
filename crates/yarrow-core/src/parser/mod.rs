@@ -86,10 +86,9 @@ impl Parser {
     /// any syntax diagnostics (capped). Callers that need a clean AST should use
     /// [`Self::parse`] instead.
     ///
-    /// Used by tooling (e.g. `yarrow-fmt` best-effort hygiene) that must not
-    /// invent a second parser. The recovered program may omit or skew broken
-    /// regions; do not treat it as authoritative for rewrite without extra
-    /// checks.
+    /// Used by tooling (e.g. `yarrow-fmt` best-effort) that must not invent a
+    /// second parser. Recovered statements may omit or skew broken regions;
+    /// callers that rewrite must validate spans (see `yarrow-fmt` Stage 18).
     pub fn parse_recovering(&mut self) -> (Program, DiagnosticBatch) {
         let items = match self.body(&[TokenKind::Eof]) {
             Ok(items) => items,

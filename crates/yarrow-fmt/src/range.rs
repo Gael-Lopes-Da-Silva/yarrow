@@ -166,11 +166,11 @@ fn ceil_char_boundary(source: &str, mut i: usize) -> usize {
     i
 }
 
-fn spans_intersect(span: Span, range: ByteRange) -> bool {
+pub(crate) fn spans_intersect(span: Span, range: ByteRange) -> bool {
     span.lo < range.end && range.start < span.hi
 }
 
-fn end_line(file: &SourceFile, span: Span) -> usize {
+pub(crate) fn end_line(file: &SourceFile, span: Span) -> usize {
     if span.hi == 0 {
         return span.line;
     }
@@ -183,7 +183,7 @@ fn trim_indent(line: &str) -> &str {
 
 /// Start line (1-based) of the cover for `items[idx]`, including leading
 /// own-line comments after the last blank above the item (printer rules).
-fn item_cover_start_line(file: &SourceFile, items: &[Stmt], idx: usize) -> usize {
+pub(crate) fn item_cover_start_line(file: &SourceFile, items: &[Stmt], idx: usize) -> usize {
     let stmt = &items[idx];
     let lo = if idx == 0 {
         1
@@ -236,7 +236,7 @@ fn item_cover_start_line(file: &SourceFile, items: &[Stmt], idx: usize) -> usize
     hi
 }
 
-fn item_cover_end_offset(file: &SourceFile, source: &str, stmt: &Stmt) -> usize {
+pub(crate) fn item_cover_end_offset(file: &SourceFile, source: &str, stmt: &Stmt) -> usize {
     let line = end_line(file, stmt.span);
     let next_line = line.saturating_add(1);
     if next_line <= file.line_count() + 1 {
@@ -245,7 +245,9 @@ fn item_cover_end_offset(file: &SourceFile, source: &str, stmt: &Stmt) -> usize 
     source.len()
 }
 
-fn cover_for_indices(ir: &FormatIr, first: usize, last: usize) -> ByteRange {
+/// Byte cover for top-level `items[first..=last]`, including leading comments
+/// on the first item and the newline after the last item's final line.
+pub(crate) fn cover_for_indices(ir: &FormatIr, first: usize, last: usize) -> ByteRange {
     let file = &ir.file;
     let source = file.source.as_str();
     let items = &ir.program.items;
