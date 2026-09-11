@@ -18,7 +18,7 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 | `executable` | Object emit + system `ld`/`lld` link with the runtime archive                     |
 | `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)                   |
 
-`Session::interpret_source` covers the Stage 21 corpus plus Stage 32 fixtures (`06` structs/enums/methods, `07` unions, `10` errors/`unwrap`/`handle`, `13` lists/maps) and Stage 36 (`09` regions/`defer`, struct field `set`) with stdout matching JIT. Unsafe/pointers and remaining `valid/**` stay `E393` until Stage 37. Gate: `cargo run -p yarrow_core --example check_interpret`.
+`Session::interpret_source` covers Stage 21–36 plus Stage 37 (`08` ownership/`move`, `11` unsafe/`pointer<T>`/`std.mem`, `14` io/string, `15` fs) with stdout matching JIT. `00_grammar_tour.yar` stays interpret-out-of-scope (`E393`). Gate: `cargo run -p yarrow_core --example check_interpret`.
 
 ### Default backend (Stage 29)
 

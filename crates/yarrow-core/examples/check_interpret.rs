@@ -1,4 +1,5 @@
-//! Stage 36 gate: interpreter corpus toward JIT parity (regions / defer / field set).
+//! Stage 37 gate: interpreter corpus toward JIT parity (unsafe / pointers /
+//! move / fs / remaining `valid/**` except the grammar tour).
 //!
 //! ```bash
 //! cargo run -p yarrow_core --example check_interpret
@@ -81,5 +82,15 @@ end with i32
 "#,
     );
 
-    println!("ok: interpret Stage 21 + Stage 32 + Stage 36 fixtures");
+    // Stage 37: ownership move, unsafe/pointers, io/string, fs
+    for rel in [
+        "docs/examples/valid/08_ownership_borrow_move.yar",
+        "docs/examples/valid/11_unsafe_pointers.yar",
+        "docs/examples/valid/14_io_and_string.yar",
+        "docs/examples/valid/15_fs.yar",
+    ] {
+        interpret_ok(repo, rel);
+    }
+
+    println!("ok: interpret Stage 21 + Stage 32 + Stage 36 + Stage 37 fixtures");
 }
