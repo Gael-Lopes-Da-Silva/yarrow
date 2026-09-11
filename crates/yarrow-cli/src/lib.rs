@@ -22,10 +22,19 @@ mod diagnostics;
 pub use args::{Cli, Cmd, TargetKind};
 
 use std::ffi::OsString;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
+
+use yarrow_core::{CompileOptions, Session};
+
+use crate::diagnostics::{EXIT_ICE, report_caught_panic, report_session_failure};
 
 /// Main entry point. Accepts anything convertible to an iterator of OS
 /// strings so it is easy to test with `&[&str]` slices.
+///
+/// Unexpected panics from command dispatch are caught and reported as an
+/// internal compiler error (exit `101`). Ordinary session diagnostics stay
+/// exit `1` unless tagged ICE (`E999` → `101`).
 pub fn run<I, S>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = S>,
@@ -41,6 +50,40 @@ where
             return ExitCode::from(code);
         }
     };
+
+    // Documented Stage 16 gate hooks (not for normal use).
+    // `YARROW_DEBUG_ICE=panic` → catch_unwind path; `session` → E999 → 101.
+    match std::env::var("YARROW_DEBUG_ICE").ok().as_deref() {
+        Some("panic") => {
+            // Fall through into catch_unwind so the banner + 101 path runs.
+        }
+        Some("session") => {
+            let session = Session::new(CompileOptions::new("<debug-ice>"));
+            let diags = session.debug_trigger_ice("YARROW_DEBUG_ICE=session");
+            return report_session_failure(&diags, cli.global.color.to_core());
+        }
+        _ => {}
+    }
+
+    // Suppress the default panic dump; we print a rustc-style ICE banner instead.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let caught = catch_unwind(AssertUnwindSafe(|| dispatch(cli)));
+    std::panic::set_hook(prev_hook);
+
+    match caught {
+        Ok(code) => code,
+        Err(payload) => {
+            report_caught_panic(&*payload);
+            ExitCode::from(EXIT_ICE)
+        }
+    }
+}
+
+fn dispatch(cli: Cli) -> ExitCode {
+    if std::env::var("YARROW_DEBUG_ICE").ok().as_deref() == Some("panic") {
+        panic!("deliberate ICE panic (YARROW_DEBUG_ICE=panic)");
+    }
 
     match (cli.cmd, cli.file) {
         (

@@ -8,7 +8,7 @@ use yarrow_core::{CompileOptions, ExecutionMode, Session};
 
 use crate::args::GlobalArgs;
 use crate::commands::print_run_result;
-use crate::diagnostics::render_batch;
+use crate::diagnostics::report_session_failure;
 
 /// Check and interpret `file`, printing any return value from the entry.
 ///
@@ -56,9 +56,6 @@ pub fn interpret_file(
             print_run_result(result);
             ExitCode::SUCCESS
         }
-        Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            ExitCode::from(1)
-        }
+        Err(diags) => report_session_failure(&diags, color),
     }
 }

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use yarrow_core::{CompileOptions, ExecutionMode, Session, SourceFile, Token};
 
 use crate::args::{EmitKind, GlobalArgs};
-use crate::diagnostics::render_batch;
+use crate::diagnostics::report_session_failure;
 
 /// Print tokens, AST, or Cranelift IR for `file` on stdout.
 pub fn dump_file(file: &Path, emit: EmitKind, global: &GlobalArgs) -> ExitCode {
@@ -46,30 +46,21 @@ pub fn dump_file(file: &Path, emit: EmitKind, global: &GlobalArgs) -> ExitCode {
                 print!("{}", format_tokens(&file, &tokens));
                 ExitCode::SUCCESS
             }
-            Err(diags) => {
-                eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                ExitCode::from(1)
-            }
+            Err(diags) => report_session_failure(&diags, color),
         },
         EmitKind::Ast => match session.parse_source(source) {
             Ok((_file, program)) => {
                 println!("{program:#?}");
                 ExitCode::SUCCESS
             }
-            Err(diags) => {
-                eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                ExitCode::from(1)
-            }
+            Err(diags) => report_session_failure(&diags, color),
         },
         EmitKind::Ir => match session.compile_source(source) {
             Ok(artifact) => {
                 print!("{}", artifact.emit_ir());
                 ExitCode::SUCCESS
             }
-            Err(diags) => {
-                eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-                ExitCode::from(1)
-            }
+            Err(diags) => report_session_failure(&diags, color),
         },
     }
 }

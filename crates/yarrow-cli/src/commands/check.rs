@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use yarrow_core::{CompileOptions, ExecutionMode, ProjectOptions, Session};
 
 use crate::args::GlobalArgs;
-use crate::diagnostics::render_batch;
+use crate::diagnostics::{render_batch, report_session_failure};
 
 /// Check one file (`Session::check_source`) or several roots (`check_project`).
 ///
@@ -56,10 +56,7 @@ fn check_file(file: &Path, entry_name: &str, global: &GlobalArgs) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            ExitCode::from(1)
-        }
+        Err(diags) => report_session_failure(&diags, color),
     }
 }
 
@@ -69,8 +66,7 @@ fn check_project(roots: &[std::path::PathBuf], entry_name: &str, global: &Global
     let mut opts = match ProjectOptions::from_root_paths(roots) {
         Ok(opts) => opts,
         Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            return ExitCode::from(1);
+            return report_session_failure(&diags, color);
         }
     };
     for p in &global.search_paths {
@@ -93,9 +89,6 @@ fn check_project(roots: &[std::path::PathBuf], entry_name: &str, global: &Global
             }
             ExitCode::SUCCESS
         }
-        Err(diags) => {
-            eprint!("{}", render_batch(&diags.batch, &diags.file, color));
-            ExitCode::from(1)
-        }
+        Err(diags) => report_session_failure(&diags, color),
     }
 }
