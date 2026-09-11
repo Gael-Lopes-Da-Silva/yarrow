@@ -32,6 +32,7 @@ Mechanical rewrite of parseable source:
 - Construct layout: `require`, types, `implement`, functions, `if`/`match`/`for`/`defer`/`unsafe`, calls, containers
 - Comment text preserved; spacing around `#` normalized where the guide is explicit (`# ` after hash; one space before trailing `#`)
 - Opt-in file-layout reorder; require sorting on by default (`--no-sort-requires` to disable)
+- Best-effort hygiene on incomplete parse; selective construct reprint when recovery spans are trustworthy (Stage 18)
 
 ### Out of scope
 
@@ -43,7 +44,7 @@ Mechanical rewrite of parseable source:
 | Tabs vs spaces as a config knob | Style guide fixes tabs; formatter always emits tabs            |
 | Editor format-on-save wiring    | Editor / LSP client; server already exposes full-doc format    |
 
-**Idempotence:** `format(format(src)) == format(src)` for accepted inputs.
+**Idempotence:** `format(format(src)) == format(src)` for accepted inputs (fully parsed subset only when best-effort).
 
 ---
 
@@ -55,7 +56,7 @@ source (.yar)
   → parse / parse_recovering (yarrow-core)
   → format IR (AST + TriviaMap)
   → printer (STYLE_GUIDE rules: construct → phrase wrap → indent → blanks → hygiene)
-    or hygiene-only when parse incomplete (`format_source_best_effort`)
+    or hygiene-only / selective reprint when parse incomplete (`format_source_best_effort`)
   → UTF-8 string / write back
 ```
 
@@ -89,17 +90,17 @@ pub fn format_range(source: &str, span: ByteRange, options: &FormatOptions) -> R
 
 CLI (`yarrow-fmt` and `yarrow fmt`):
 
-| Mode                 | Behavior                                           |
-| -------------------- | -------------------------------------------------- |
-| default              | Format files in place                              |
-| `--check`            | Exit non-zero if any file would change             |
-| `--stdin`            | Read stdin, write formatted stdout                 |
-| `--max-width N`      | Soft wrap width (default 100; min 20)              |
-| `--sort-requires`    | Force-on require sorting (default already on)      |
-| `--no-sort-requires` | Keep top-level require source order                |
-| `--reorder-layout`   | Opt-in top-level file-layout reorder               |
-| `--best-effort`      | On parse failure, hygiene only (leave broken text) |
-| paths / dirs         | `.yar` files; recurse directories                  |
+| Mode                 | Behavior                                         |
+| -------------------- | ------------------------------------------------ |
+| default              | Format files in place                            |
+| `--check`            | Exit non-zero if any file would change           |
+| `--stdin`            | Read stdin, write formatted stdout               |
+| `--max-width N`      | Soft wrap width (default 100; min 20)            |
+| `--sort-requires`    | Force-on require sorting (default already on)    |
+| `--no-sort-requires` | Keep top-level require source order              |
+| `--reorder-layout`   | Opt-in top-level file-layout reorder             |
+| `--best-effort`      | On parse failure, hygiene (and Stage 18 reprint) |
+| paths / dirs         | `.yar` files; recurse directories                |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
 
@@ -107,7 +108,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–12 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–17 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -136,128 +137,120 @@ Stages 0–12 are complete. Historical stage write-ups were removed; git history
 
 ## Next
 
-Focus: backlog only (naming lints, ignore regions, parallel fmt) when need appears. Do not invent layout rules absent from the style guide.
+Focus: deepen best-effort recovery, then ignore regions and throughput. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 13 - File layout reorder (opt-in) ✅
+### Stage 18 - Selective construct reprint on recovered parse
 
-Style-guide **File layout**. High churn; keep **opt-in** so default format stays diff-quiet.
+Stage 17 left construct / indent / blanks fail-closed on incomplete parse because recovered spans were not trustworthy. Editors still only get hygiene on broken buffers.
 
-Recommended module order:
+1. Coordinate with `yarrow-core`: recovered AST (or statement / item spans) must be mapped reliably enough to reprint **unbroken** regions without shifting broken text. If core cannot expose trustworthy covers yet, land a short design note in Done and keep this stage open / blocked; do not invent a second parser here.
+2. Extend `format_source_best_effort` so that, when recovery succeeds partially:
+   - always apply source hygiene (as today)
+   - reprint construct / indent / blanks only for contiguous recovered top-level items (or documented smaller units) whose spans do not overlap error regions
+   - leave broken slices byte-identical aside from hygiene
+3. Keep `FormattedSource { best_effort: true }` whenever any region was skipped or only hygiened. `format_source` stays strict (full parse or `FormatError::Parse`).
+4. Idempotence: second best-effort pass must not churn the recovered subset; broken text must not grow/shrink except via hygiene.
+5. Update fixtures / gate example; LSP full-doc path keeps calling best-effort (gains selective reprint automatically). [`yarrow-lsp` Stage 23](../yarrow-lsp/PLAN.md) on-type may depend on this.
 
-1. File comment (optional)
-2. Top-level `require` lines (std then local; sorting gated by `sort_requires`, default on)
-3. Type declarations (`struct` / `enum` / `union` / `error`)
-4. `Type implement` blocks (prefer immediately after the type they extend when both move together)
-5. Private helpers
-6. Public API functions
-7. `main` last (entry files only)
-
-Tasks:
-
-1. Add `FormatOptions::reorder_layout` (default **false**) and CLI `--reorder-layout`.
-2. Reorder only **top-level** items; never pull function-local requires or nested decls to file scope.
-3. Move each item with its attached leading own-line comments; preserve relative order inside the same category when the guide does not distinguish further (stable sort).
-4. Keep a single blank line between top-level items after the move (reuse blank-line pass).
-5. Document that visibility (`public` / private helpers) is inferred from existing AST flags / keywords, not guessed from names.
-
-**Gate:** fixture with shuffled types / implements / helpers / `main` reorders to the guide sequence when the option is enabled; disabled path preserves order. Idempotent either way. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** `layout` module (`layout_kind`, `reorder_toplevel_indices`); construct layout attaches leading comments in source order then emits guide order; matching `implement` follows its type; orphan implements after types; `Other` before `main`. CLI `--reorder-layout` on `yarrow-fmt` and `yarrow fmt`. Fixture `fixtures/stage13_layout.yar`. Default remains off.
+**Gate:** a deliberately broken fixture gets hygiene plus at least one recovered top-level item reprinted to match full `format_source` on that item alone; the broken region remains intact (aside from LF / trailing-WS). A fully valid file still fully formats with `best_effort: false`. If core recovery spans are unavailable, Done notes say blocked. `cargo fmt && cargo check && cargo clippy` green for whatever landed.
 
 ---
 
-### Stage 14 - Defaults and option polish ✅
+### Stage 19 - Diff-friendly ignore regions
 
-Stage 10 left require sorting opt-in. Width is already configurable; tabs are not.
+Not in the style guide today. Only ship after the guide documents the convention so tools and humans agree.
 
-1. Flip `FormatOptions::sort_requires` default to **true** once Stage 13 (or corpus) shows diffs are acceptable; add `--no-sort-requires` (and keep `--sort-requires` as an explicit no-op / force-on for scripts).
-2. Leave `max_width` default at 100; document that values below a small floor (e.g. 20) are clamped or rejected with a clear usage error.
-3. Do **not** add a spaces-indent option. Reject or ignore any future indent-style config; printer always emits tabs.
-4. Update CLI help, style-guide tooling blurb if defaults change, and this plan’s Architecture snippet.
-5. Re-run `yarrow fmt` over `docs/examples/valid` (and Stage 15 corpus if already landed) so `--check` stays green under the new defaults.
+1. Amend [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md) (tooling blurb) with an explicit ignore syntax, prefer one of:
+   - whole-line `# yarrow-fmt-ignore` affecting the next top-level item, **or**
+   - paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` around a contiguous region
+     Pick one; document that ignored regions still get source hygiene (LF / trailing WS / final newline) unless the guide says otherwise.
+2. Implement skip of construct / indent / blank / require-sort / reorder passes inside ignored spans; preserve original text (plus agreed hygiene).
+3. `format_range` must not expand into or silently reformat ignored covers (document interaction: expand stops at ignore boundaries, or whole-file replace stays ignore-aware).
+4. CLI needs no new flag if comments drive behavior; mention in `--help` / style-guide tooling line.
+5. Fixture with a messy ignored block next to a formatted neighbor; idempotent.
 
-**Gate:** default `format_source` sorts requires without a flag; `--no-sort-requires` preserves require order; `--max-width` still soft-wraps. Idempotent. `cargo fmt && cargo check && cargo clippy` green.
+**Gate:** fixture proves ignored text is preserved (aside from documented hygiene) while neighbors format; `--check` on that file exits `0` after one format. Guide documents the syntax. `cargo fmt && cargo check && cargo clippy` green.
 
-**Notes:** `sort_requires` default **true**; CLI `--sort-requires` / `--no-sort-requires`; `MIN_MAX_WIDTH` (20) rejected by `run_fmt`, clamped via `FormatOptions::effective_max_width` in the library; `DEFAULT_MAX_WIDTH` (100). No spaces-indent option. Style guide tooling blurb updated. Require-run printer keeps comments above the first require as a block header when there is no separating blank (so default sort does not bury file comments). Corpus re-bootstrapped under new defaults.
-
----
-
-### Stage 15 - Range / span format API ✅
-
-Unblocks [`yarrow-lsp` Stage 17](../yarrow-lsp/PLAN.md) (`rangeFormatting` / optional on-type). Full-document format stays the source of truth; do not ship a second pretty-printer.
-
-1. Add a library entry point, e.g. `format_range(source, span, options) -> Result<FormatRangeEdit, FormatError>` (exact names flexible), that either:
-   - formats the whole file via `format_source` and returns the rewritten slice / text edits intersecting `span`, **or**
-   - expands `span` to enclosing top-level item boundaries when a naive intersect would break indent / blanks, and documents that expansion.
-2. Return enough data for LSP `TextEdit`s (byte or line/column ranges in the original buffer). Prefer one contiguous replacement when simpler and still correct.
-3. On parse failure: return `FormatError::Parse` (LSP maps to empty edits); never partially corrupt the buffer.
-4. Keep the API usable without writing files; binary / `yarrow fmt` need not expose range mode in this stage.
-
-**Gate:** fixture with a messy contiguous region; range format yields edits confined to (or documented expansion of) that region and matches full-doc format for the rewritten slice. Second call on the result is a no-op. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** `ByteRange` + `FormatRangeEdit` (`range`, `new_text`, `expanded`, `apply` / `is_noop`); `format_range` runs full `format_source`, expands to enclosing top-level items (leading comments after the last blank; fills holes for one contiguous cover); require runs expand together when `sort_requires`; `reorder_layout` or hygiene-shifted buffers fall back to whole-file replace. Replacement text is the matching item cover in the formatted buffer (identity by require path / type / implement target / function name). No CLI range mode. Fixture `fixtures/stage15_range.yar`; example `examples/stage15_gate.rs`.
+**Notes:** Do not use ignore regions to paper over formatter bugs in the gate corpus; fix the printer instead.
 
 ---
 
-### Stage 16 - Stdlib corpus + CI `--check` ✅
+### Stage 20 - Parallel directory fmt
 
-Stage 12 gated `docs/examples/valid`. Widen the always-green surface and make CI enforce it.
+Corpus + CI are green; parallelize only the multi-file driver path so large trees stay fast without changing format results.
 
-1. Bootstrap-format `crates/yarrow-core/lib/std/**/*.yar` (commit results).
-2. Document the gate set in notes: at least `docs/examples/valid` and `lib/std`.
-3. Add a CI step (or script invoked by CI) that runs `yarrow fmt --check` on that set and fails the job on exit `1`.
-4. Do not silently format `docs/examples/invalid/**` (parse failures are expected).
+1. In `run_fmt` / path collection, format independent `.yar` files in parallel (e.g. rayon or equivalent already acceptable in-workspace). Keep deterministic **reporting order** (sorted paths) for `--check` messages and stderr.
+2. Do not parallelize within a single file. Shared options / stdin / single-file paths stay sequential.
+3. Preserve exit-code aggregation: any `1` / `2` wins as today; first hard usage error may still short-circuit if simpler.
+4. No change to `format_source` API. Document that output bytes per file are identical to sequential fmt.
+5. Optional stretch: reuse parsed `FormatIr` only if profiling shows parse dominate; otherwise skip.
 
-**Gate:** `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std` exits `0`. CI job fails if a `.yar` in that set drifts. `cargo fmt && cargo check && cargo clippy` green.
-
-**Notes:** Gate set is `docs/examples/valid` and `crates/yarrow-core/lib/std` only (`invalid/**` excluded). `lib/std` bootstrap-formatted. Shared script [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh); CI workflow [`.github/workflows/fmt-check.yml`](../../.github/workflows/fmt-check.yml) runs it on push/PR to `main`.
+**Gate:** `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std` still exits `0` with the same would-change set as sequential (ideally none). Timing need not be asserted; a short note in Done that parallel path is default for multi-file is enough. `cargo clippy` green.
 
 ---
 
-### Stage 17 - Best-effort format on partial parse ✅
+### Stage 21 - Widen fmt-check corpus
 
-Today v1 requires a successful parse. Editors often want hygiene / indent on broken buffers.
+Stage 16 gates `valid/**` + `lib/std`. Other parseable trees drift silently.
 
-1. Coordinate with `yarrow-core`: needs an error-tolerant / recovery parse policy that still yields a partial AST (or token stream with statement boundaries). Do not invent a second parser in this crate. If core has no recovery API yet, mark this stage **blocked** and stop after a short design note.
-2. Define a safe subset when parse is incomplete: source hygiene always; indent / blanks only where structure is unambiguous; skip construct reprint for broken regions (leave original text).
-3. Extend `FormatError` or return a structured “partial success” only if callers can distinguish full vs best-effort (LSP must not replace the buffer with a worse partial). Prefer: succeed with a flag, or fail closed like today until recovery is trustworthy.
-4. Idempotence applies only to the fully-parsed subset; document limits.
+1. Bootstrap-format and add to [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh) / CI any of these that parse cleanly today:
+   - `docs/examples/warnings/**`
+   - `docs/examples/project/**` (and nested helpers)
+   - fmt-owned fixtures under this crate once present
+2. Keep `docs/examples/invalid/**` excluded (expected parse failures).
+3. Document the gate set in this plan’s Landed corpus row and examples README if it lists fmt.
+4. Do not silently “fix” invalid examples by formatting them into validity.
 
-**Gate:** one deliberately broken fixture gets LF / trailing-WS / final-newline cleanup without deleting the broken region; a fully valid file still fully formats. If core recovery is unavailable, Done notes say blocked and this stage stays open. `cargo fmt && cargo check && cargo clippy` green for whatever landed.
+**Gate:** `./scripts/fmt-check.sh` exits `0` on the widened set; CI fails on drift. `cargo fmt && cargo check && cargo clippy` green.
 
-**Notes:** Core already recovered internally but discarded the AST; Stage 17 exposes `Parser::parse_recovering` / `Session::parse_source_recovering` and `FormatIr::parse_recovering`. Safe incomplete subset is **hygiene only** (`FormattedSource { best_effort: true }`); construct / indent / blanks stay fail-closed because recovered spans are not yet trustworthy for rewrite. `format_source` remains strict; `format_source_best_effort` + CLI `--best-effort`; LSP full-doc format uses best-effort so editors get LF / trailing-WS cleanup on broken buffers. Fixture `fixtures/stage17_broken.yar`; example `examples/stage17_gate.rs`. Future: selective construct reprint of recovered regions once error spans are mapped reliably.
+---
+
+### Stage 22 - CLI range mode (optional)
+
+Stage 15 kept range format library-only for LSP. Scripts may want the same without the language server.
+
+1. Add a narrow CLI surface, e.g. `yarrow-fmt --range START:END` (byte offsets) or `--range-start` / `--range-end`, usable with `--stdin` or a single file.
+2. Print the replacement text or a documented edit encoding; prefer matching `FormatRangeEdit` semantics (expansion included).
+3. On parse failure: exit `1` with a clear message (same as full format); never half-write the file.
+4. Wire through `yarrow fmt` the same flags. Document that editors should keep using LSP `rangeFormatting`.
+
+**Gate:** formatting a span of a messy fixture via CLI yields the same `new_text` as `format_range` for that span; full-file default path unchanged. `cargo clippy` green.
+
+**Skip if unused:** if no agent / script need appears after Stage 18–21, leave this in Later and mark Next accordingly.
 
 ---
 
 ## Mapping: style guide → stages
 
-| Style guide section                    | Stages                                            |
-| -------------------------------------- | ------------------------------------------------- |
-| Principles                             | Design only                                       |
-| Source files                           | Landed (3)                                        |
-| Indentation and line width             | Landed (4, 8); width floor / defaults Stage 14 ✅ |
-| Blank lines                            | Landed (5)                                        |
-| Comments                               | Landed (1, 9)                                     |
-| Naming                                 | Out of scope (core / lint)                        |
-| File layout (order)                    | Stage 13 ✅ (opt-in)                              |
-| Modules and `require`                  | Landed (6, 10); default sort Stage 14 ✅          |
-| Visibility                             | Landed (print as written); Stage 13 order         |
-| Types / Functions / Variables          | Landed (6)                                        |
-| Stack phrases and operators            | Landed (8)                                        |
-| Literals and containers                | Landed (6)                                        |
-| Control flow / Defer / Unsafe / Errors | Landed (7)                                        |
-| Ownership / Stack hygiene              | Out of scope (semantics)                          |
-| Checklist                              | Landed layout rows; naming rows ignored           |
+| Style guide section                    | Stages                                    |
+| -------------------------------------- | ----------------------------------------- |
+| Principles                             | Design only                               |
+| Source files                           | Landed (3)                                |
+| Indentation and line width             | Landed (4, 8, 14)                         |
+| Blank lines                            | Landed (5)                                |
+| Comments                               | Landed (1, 9); ignore markers Stage 19    |
+| Naming                                 | Out of scope (core / lint)                |
+| File layout (order)                    | Landed (13, opt-in)                       |
+| Modules and `require`                  | Landed (6, 10, 14)                        |
+| Visibility                             | Landed (print as written); Stage 13 order |
+| Types / Functions / Variables          | Landed (6)                                |
+| Stack phrases and operators            | Landed (8)                                |
+| Literals and containers                | Landed (6)                                |
+| Control flow / Defer / Unsafe / Errors | Landed (7)                                |
+| Ownership / Stack hygiene              | Out of scope (semantics)                  |
+| Checklist                              | Landed layout rows; naming rows ignored   |
+| Tooling / ignore (new)                 | Stage 19                                  |
 
 ---
 
 ## Later (backlog)
 
-| Item                         | Notes                                                                 |
-| ---------------------------- | --------------------------------------------------------------------- |
-| Naming lints                 | Belong in core warnings or a future `yarrow lint`, not silent format  |
-| Diff-friendly ignore regions | Only if real need (`yarrow-fmt-ignore` style); not in the guide today |
-| Parallel / incremental fmt   | Premature until corpus + CI pain shows up                             |
+| Item                    | Notes                                                                |
+| ----------------------- | -------------------------------------------------------------------- |
+| Naming lints            | Belong in core warnings or a future `yarrow lint`, not silent format |
+| On-type format helpers  | LSP deferred; may need Stage 18 + smaller expansion units first      |
+| Format config file      | Only if multi-flag defaults become painful; guide must define it     |
+| Incremental / cached IR | After Stage 20 if parse dominates wall time                          |
 
 ---
 
@@ -268,6 +261,6 @@ Today v1 requires a successful parse. Editors often want hygiene / indent on bro
 - Update this file when a stage gate lands (mark ✅, short notes; do not re-expand history).
 - Do not reimplement the language grammar in this crate; parse via `yarrow-core`.
 - Do not type-check or run programs as part of format.
-- Never use `-` in comments or docs added by this work.
+- In comments and documentation, never use `—` (em dash); use ASCII hyphen or rephrase.
 - Format only through this crate’s API from CLI / LSP; never a second pretty-printer.
 - If core needs trivia / recovery / API changes, land them in `yarrow-core` with a note here and in the core plan as needed.

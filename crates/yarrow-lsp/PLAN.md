@@ -42,21 +42,18 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next)
-
-- No further LSP stages planned in this repo for now. Server Stages 0–19 are the v1 surface.
+Stage 20 (editor extension packaging) was **canceled**; clients live in separate repos.
 
 ### Out of scope
 
-| Concern                               | Why                                                              |
-| ------------------------------------- | ---------------------------------------------------------------- |
-| Full project / workspace index        | Core is single-file + `require`; no multi-root project graph yet |
-| Incremental / salsa analysis          | Premature; re-check open docs on change is enough for now        |
-| Debug Adapter Protocol                | Separate product; AOT/JIT debug story is Phase F                 |
-| Silent semantic rename across crates  | Needs stable name resolution API; never guess                    |
-| Snippet / AI rewrite actions          | Not mechanical language support                                  |
-| Non-`.yar` / markdown embedded        | Skip until requested                                             |
-| Editor extensions (VS Code / Zed / …) | Live in separate repos later; not in the main compiler tree      |
+| Concern                               | Why                                                         |
+| ------------------------------------- | ----------------------------------------------------------- |
+| Package-manager / manifest invent     | Language has no project file; roots are explicit paths only |
+| Silent semantic rename across modules | Stage 15 stays conservative; never guess                    |
+| Debug Adapter Protocol                | Separate product; AOT/JIT debug is not an LSP feature       |
+| Snippet / AI rewrite actions          | Not mechanical language support                             |
+| Non-`.yar` / markdown embedded        | Skip until requested                                        |
+| Editor extensions (VS Code / Zed / …) | Live in separate repos later; not in the main compiler tree |
 
 **Transport:** stdio is the default. TCP (`--listen`) is for tests / remote clients (Stage 19).
 
@@ -67,12 +64,13 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 ```text
 editor  ←stdio JSON-RPC→  yarrow-lsp
                             ├── DocumentStore (uri → text + version)
-                            ├── Analysis (Session::parse_source / check_source)
+                            ├── Analysis (Session::parse_source / check_source
+                            │             / check_project when multi-root)
                             ├── PositionMap (LSP ↔ core Span / SourceFile)
                             ├── Features (diag, hover, def, refs, symbols, complete,
                             │             format, codeAction, signature, inlay, …)
                             ├── yarrow_core::Session
-                            └── yarrow_fmt::format_source
+                            └── yarrow_fmt::format_source / format_range
 ```
 
 Public / binary surface:
@@ -110,31 +108,32 @@ On `didOpen` / `didChange` (debounced):
 
 1. Update buffer text.
 2. Build `CompileOptions` with `source_path` from URI, search paths from init options / workspace folders.
-3. Call `check_source` (or parse-only on failure path).
-4. Map `DiagnosticBatch` → `PublishDiagnosticsParams` (and answer pull requests in Stage 18).
+3. Call `check_source` (or `check_project` when Stage 21 multi-root mode applies).
+4. Map `DiagnosticBatch` → `PublishDiagnosticsParams` (and answer pull requests).
 5. Cache last successful parse / check artifact for hover, navigation, inlays, tokens.
 
-No background whole-workspace crawl. Open documents + transitive `require` resolution during check are enough until a real project index exists.
+Open documents + transitive `require` resolution cover the single-file case. Multi-root project check is Stage 21 (core graph already exists).
 
 ---
 
 ## Current state
 
-| Piece              | Status | Notes                                                                  |
-| ------------------ | ------ | ---------------------------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 19: TCP + protocol harness                                       |
-| Core Session API   | ✅     | `parse_source` / `check_source` + spans                                |
-| Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table                      |
-| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)                              |
-| Cross-file resolve | ⚠      | Works via `require` paths; no project index API                        |
-| `yarrow-fmt`       | ✅     | Full-doc `format_source_best_effort`; `format_range` (fmt Stage 15/17) |
-| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                                        |
+| Piece               | Status | Notes                                                         |
+| ------------------- | ------ | ------------------------------------------------------------- |
+| `yarrow-lsp` crate  | ✅     | Stages 0–19 landed; Stage 20 canceled                         |
+| Core Session API    | ✅     | `parse_source` / `check_source` / `check_project` + spans     |
+| Core diagnostics    | ✅     | `Diagnostic` / `Severity` / codes / explain table             |
+| Typed hover data    | ✅     | `CheckedProgram::type_at` (core Stage 30)                     |
+| Def / require probe | ⏳     | Core Stage 35; LSP Stage 22 consumes it                       |
+| Cross-file resolve  | ⚠      | AST + `require` today; project multi-root is Stage 21         |
+| `yarrow-fmt`        | ✅     | Full-doc best-effort + `format_range`; on-type still deferred |
+| CLI `yarrow lsp`    | ✅     | In-process `run_stdio_blocking` / `--listen`                  |
 
 ---
 
-## Landed (Stages 0–17)
+## Landed (Stages 0–19)
 
-Stages 0–17 are complete. Historical stage write-ups for 0–16 were removed; git history keeps them. Stage 17 remains below for context until the next plan collapse.
+Stages 0–19 are complete. Historical stage write-ups were removed; git history keeps them. Stage 20 (editor extensions) was canceled.
 
 | Stage | Capability                                                  |
 | ----- | ----------------------------------------------------------- |
@@ -156,102 +155,143 @@ Stages 0–17 are complete. Historical stage write-ups for 0–16 were removed; 
 | 15    | File-local rename (`prepareRename` + `rename`)              |
 | 16    | Workspace symbols (`workspace/symbol` over open + requires) |
 | 17    | Range formatting via `format_range` (on-type deferred)      |
+| 18    | Pull diagnostics (`textDocument/diagnostic`; workspace off) |
+| 19    | TCP `--listen` + `scripts/harness.mjs`                      |
+| 20    | Editor extensions - **canceled** (separate repos)           |
 
 ---
 
-## Stages
+## Next
 
-### Stage 17 - Range format and on-type format ✅
+Focus: project-aware analysis (core graph ready), then richer probes / on-type / workspace pull. Prefer harness scenarios over ad-hoc scripts. Do not invent language features or a package manifest.
 
-Narrow formatting after full-document format is solid (Stage 8).
+### Stage 21 - Project-aware multi-root analysis
 
-1. `textDocument/rangeFormatting`: format the selected range. Prefer formatting the whole file via `format_source` and intersecting edits with the range, **or** a fmt API that accepts a span if one is added; do not ship a second pretty-printer.
-2. If intersecting full-doc edits is lossy for indentation context, expand the range to enclosing top-level item boundaries and document that behavior.
-3. Optional `textDocument/onTypeFormatting` for trigger characters that the style guide makes mechanical (e.g. `\n` after `end` alignment only if fmt can express it safely). Skip triggers that would fight the user mid-token.
-4. On parse / format failure: return null / empty edits; never partially corrupt the buffer (same as Stage 8).
-5. Honor existing `format` enable flag from `LspConfig`; when format is disabled, omit these capabilities too.
+Core Stage 28 already exposes `ProjectOptions` / `check_project` / `ModuleGraph`. The server still checks one buffer at a time.
 
-**Gate:** range format on a messy contiguous region in a parseable buffer yields edits confined to (or documented expansion of) that region and matching `format_source` for the rewritten slice. Idempotent second request yields empty. On-type either lands with one safe trigger or is explicitly deferred in the Done notes with reason.
+1. Define when multi-root mode applies: e.g. init option `projectRoots: string[]`, or all `.yar` roots listed under workspace folders when explicitly configured. Default stays single-file `check_source` (no surprise whole-folder crawl).
+2. On change to any open root (or shared require), run `Session::check_project` with those roots + `LspConfig` search paths; publish diagnostics for every root URI (and clear stale diags when a root drops).
+3. Prefer overlaying open-buffer text for roots that are open; on-disk read for roots that are not. Do not invent a lockfile.
+4. Optional stretch: feed `CheckedProject.graph` into workspace symbols / completion module paths; omit if it clutters this stage.
+5. Align with [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md) root-list semantics where practical (same paths, no manifest).
+6. Add a harness scenario on `docs/examples/project/` (both roots open or configured).
 
-**Done:** `textDocument/rangeFormatting` via `yarrow_fmt::format_range` (expands to enclosing top-level item cover; same style as full-doc). Parse failure → null. Idempotent second request → empty edits. `--no-format` / init `format: false` omits range formatting too. On-type deferred: mid-edit buffers often fail to parse, and top-level expansion is too aggressive for a keystroke.
+**Gate:** with project roots set to `docs/examples/project/root_a.yar` and `root_b.yar`, the server reports no errors (or only fixture-known warnings) for both; a missing root surfaces `E383` (or equivalent) as a diagnostic, not a hang. Single-file open without project roots unchanged. `cargo clippy` green.
 
----
-
-### Stage 18 - Pull diagnostics (LSP 3.17) ✅
-
-Support clients that prefer pull over (or in addition to) push.
-
-1. Advertise `diagnosticProvider` (identifier e.g. `yarrow`) with inter-file support off unless cheap.
-2. Implement `textDocument/diagnostic` using the same `check_document` path as publish; return `FullDocumentDiagnosticReport` (or unchanged related if version matches).
-3. Keep existing push on open/change for editors that still expect it; avoid double-flicker when the client uses both (prefer answering pull from cache keyed by uri + version).
-4. Workspace pull (`workspace/diagnostic`) is optional: only open documents, or skip and document.
-5. Preserve diagnostic `code`, severity, and related information already mapped in Stage 2.
-
-**Gate:** scripted client requests `textDocument/diagnostic` on `docs/examples/invalid/01_use_after_move.yar` and receives at least one diagnostic with code `E373` (or the file’s known code) without relying on a prior `publishDiagnostics` wait. Push path still works for open.
-
-**Done:** `diagnosticProvider` identifier `yarrow`; `interFileDependencies` / `workspaceDiagnostics` false (workspace pull skipped). `textDocument/diagnostic` uses `check_document` and a uri+version cache shared with push (`result_id` = `v{version}`; matching `previousResultId` → unchanged). Push on open/change unchanged. Scripted gate: open fixture → pull → `E373` without waiting on publish.
+**Notes:** No background crawl of the entire disk. Inter-file pull diagnostics (`workspaceDiagnostics`) stays Stage 24.
 
 ---
 
-### Stage 19 - TCP transport and protocol test harness ✅
+### Stage 22 - Core definition / require-path probes
 
-Make automated LSP gates reliable without ad-hoc one-off scripts each stage.
+Navigation and hover still walk AST / require paths. Core Stage 35 adds stable definition / require probes; this stage consumes them.
 
-1. Add a `--listen host:port` (or `--tcp`) mode alongside default `--stdio`; same `LspConfig` flags otherwise.
-2. Factor JSON-RPC framing so stdio and TCP share one server backend.
-3. Provide a small in-repo harness (Node, Rust, or shell + `nc`) under `crates/yarrow-lsp/` or `tools/` that: starts the server, runs initialize → open fixture → assert one capability → shutdown.
-4. Migrate at least one existing gate (diagnostics or explain code action) onto the harness so future stages reuse it.
-5. Document how to run the harness in the crate README (short). Do not require a real editor for CI-style checks.
+1. **Blocked** until [`yarrow-core` Stage 35](../yarrow-core/PLAN.md) lands. If probes are missing, keep AST fallbacks and leave this stage open.
+2. Prefer probe results for:
+   - `textDocument/definition` when the probe returns a span / path
+   - hover “defined in …” / require target path when available
+3. Misses fall back to today’s AST / require resolution (no empty regression).
+4. Never fabricate modules. Cross-file targets must resolve to real URIs (`file://` or Stage 26 virtual std).
+5. Harness scenario: definition or hover on a binding / require in `12_modules.yar` (or project fixture) asserts a non-empty location.
 
-**Gate:** `yarrow lsp --listen 127.0.0.1:0` (or documented flag) accepts one harness run that passes initialize + one feature assert. Stdio path unchanged. README blurb exists. `cargo clippy` green.
-
-**Done:** `--listen HOST:PORT` on `yarrow-lsp` and `yarrow lsp` (port `0` = ephemeral; prints `yarrow-lsp: listening on …` then accepts one client). `run_tcp_with` / `run_tcp_blocking` share `run_with_streams` with stdio. Harness: `crates/yarrow-lsp/scripts/harness.mjs` (default scenario `pull-diagnostics` → `E373` on `01_use_after_move.yar`). Stdio unchanged.
+**Gate:** scripted client gets a `Location` (or hover text including the resolved path) from a known require / binding using the probe path. Existing typed hover / definition fixtures still pass. `cargo clippy` green.
 
 ---
 
-### Stage 20 - Editor extension packaging (VS Code / Zed) ❌ canceled
+### Stage 23 - On-type formatting
 
-Canceled: editor extensions and other external packaging will live in separate repos created later, not in this compiler tree. The language server stays editor-agnostic (`yarrow lsp` / `yarrow-lsp`); clients are out of scope here.
+Stage 17 deferred on-type: mid-edit buffers often fail to parse, and top-level `format_range` expansion is too aggressive for a keystroke.
+
+1. Prefer shipping after [`yarrow-fmt` Stage 18](../yarrow-fmt/PLAN.md) selective reprint (or prove a tiny safe subset without it).
+2. Advertise `documentOnTypeFormattingProvider` only for triggers that stay mechanical and local (candidate: `\n` when the previous non-ws token is `end` and best-effort / range fmt can align without rewriting the whole file). Skip mid-token and mid-identifier triggers.
+3. On parse / format failure: return null / empty edits; never corrupt the buffer.
+4. Honor `--no-format` / init `format: false` (omit capability).
+5. If no safe trigger exists, Done notes say deferred again with reason; do not ship a fighting formatter.
+
+**Gate:** either one harness (or documented manual) on-type edit yields a safe indent/align edit, **or** Done explicitly keeps on-type deferred. Range + full format unchanged. `cargo clippy` green.
+
+---
+
+### Stage 24 - Workspace pull diagnostics
+
+Stage 18 set `workspaceDiagnostics: false` and skipped `workspace/diagnostic`.
+
+1. Enable workspace pull only for **open documents** and, when Stage 21 project mode is on, configured project roots (not an unbounded disk walk).
+2. Advertise `workspaceDiagnostics: true` when implemented; answer `workspace/diagnostic` with per-document reports (or a documented partial report).
+3. Reuse the uri+version cache from Stage 18; avoid double-flicker with push.
+4. `interFileDependencies`: true only if Stage 21 actually rechecks related roots together; otherwise keep false and document.
+5. Harness scenario: workspace pull returns diagnostics for an open invalid fixture without waiting on publish.
+
+**Gate:** scripted `workspace/diagnostic` (or equivalent) sees `E373` (or known code) for the open invalid file. Text-document pull + push still work. `cargo clippy` green.
+
+---
+
+### Stage 25 - Analysis cancelation / latency polish
+
+Re-check on every debounced change is enough until latency hurts; then harden the request path without inventing salsa.
+
+1. Cancel or ignore stale in-flight checks when a newer `didChange` supersedes them (version-aware).
+2. Keep debounce configurable or documented; do not block the LSP event loop on long checks (spawn / async as the stack already allows).
+3. Optional: reuse module-load results across open files when Stage 21 project mode already shares a graph; do not add a parallel cache that disagrees with Session.
+4. No salsa / incremental IR unless profiling shows a clear win after 1–3; if skipped, Done notes say so.
+5. Harness or timing note optional; primary gate is correctness under rapid edits (no torn diagnostics for an older version after a newer check completes).
+
+**Gate:** open a file, apply two quick full-document changes with increasing versions; the last published / pulled diagnostics match the latest version only. `cargo clippy` green.
+
+---
+
+### Stage 26 - Virtual `yarrow-std:` URIs (optional)
+
+Only if embedded / packaged std has no reliable on-disk `lib/std` path for goto / hover.
+
+1. Confirm need: if `lib/std` is always resolvable via search paths, **skip** and leave this in Later.
+2. Otherwise map `std.*` require targets to a virtual URI scheme (e.g. `yarrow-std:io.yar`) and serve read-only content from the embedded sources for definition / hover.
+3. Do not allow edits to virtual buffers (or mark them non-writable). Diagnostics stay on user files.
+4. Document the scheme in the crate README.
+
+**Gate:** goto on a `std.io` require opens a buffer (virtual or real) showing the std module text. If skipped for lack of need, Done notes say so. `cargo clippy` green.
 
 ---
 
 ## Mapping: LSP features → stages
 
-| LSP capability                     | Stages         | Core / fmt dependency                           |
-| ---------------------------------- | -------------- | ----------------------------------------------- |
-| initialize / shutdown              | 0 ✅           | -                                               |
-| textDocument sync                  | 1 ✅           | -                                               |
-| publishDiagnostics                 | 2 ✅           | `check_source`, spans                           |
-| documentSymbol                     | 3 ✅           | AST spans                                       |
-| definition                         | 4, 7 ✅        | AST + require resolution                        |
-| hover                              | 5, 9 ✅        | AST; `type_at`                                  |
-| completion                         | 6 ✅           | grammar keywords + AST names                    |
-| references                         | 7 ✅           | binding / name index                            |
-| formatting                         | 8 ✅           | `yarrow-fmt`                                    |
-| codeAction / explain               | 11 ✅          | `explain_code`                                  |
-| signatureHelp                      | 12 ✅          | AST + `type_at`                                 |
-| inlayHint                          | 13 ✅          | `TypeIndex` probes                              |
-| semanticTokens                     | 14 ✅          | tokens + AST                                    |
-| rename                             | 15 ✅          | references / resolve                            |
-| workspaceSymbol                    | 16 ✅          | open buffers + require ASTs                     |
-| rangeFormatting / onTypeFormatting | 17 ✅          | `yarrow-fmt` (`format_range`; on-type deferred) |
-| textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache             |
-| TCP + test harness                 | 19 ✅          | transport only                                  |
-| editor extensions                  | 20 ❌ canceled | separate repos later                            |
-| DAP / debug                        | Out of scope   | AOT/JIT debug                                   |
+| LSP capability                     | Stages         | Core / fmt dependency                      |
+| ---------------------------------- | -------------- | ------------------------------------------ |
+| initialize / shutdown              | 0 ✅           | -                                          |
+| textDocument sync                  | 1 ✅           | -                                          |
+| publishDiagnostics                 | 2 ✅           | `check_source`, spans                      |
+| documentSymbol                     | 3 ✅           | AST spans                                  |
+| definition                         | 4, 7 ✅; 22    | AST + require; core Stage 35 probes        |
+| hover                              | 5, 9 ✅; 22    | AST; `type_at`; def/require probes         |
+| completion                         | 6 ✅           | grammar keywords + AST names               |
+| references                         | 7 ✅           | binding / name index                       |
+| formatting                         | 8 ✅           | `yarrow-fmt`                               |
+| codeAction / explain               | 11 ✅          | `explain_code`                             |
+| signatureHelp                      | 12 ✅          | AST + `type_at`                            |
+| inlayHint                          | 13 ✅          | `TypeIndex` probes                         |
+| semanticTokens                     | 14 ✅          | tokens + AST                               |
+| rename                             | 15 ✅          | references / resolve (file-local)          |
+| workspaceSymbol                    | 16 ✅; 21      | open + requires; optional project graph    |
+| rangeFormatting / onTypeFormatting | 17 ✅; 23      | `format_range`; on-type after fmt Stage 18 |
+| textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache        |
+| workspace/diagnostic               | 24             | open / project roots only                  |
+| TCP + test harness                 | 19 ✅          | transport only                             |
+| multi-root project check           | 21             | `check_project` (core Stage 28)            |
+| editor extensions                  | 20 ❌ canceled | separate repos later                       |
+| DAP / debug                        | Out of scope   | AOT/JIT debug                              |
 
 ---
 
 ## Later (backlog)
 
-| Item                            | Notes                                              |
-| ------------------------------- | -------------------------------------------------- |
-| Full project / multi-root index | Blocked on core project graph; do not fake in LSP  |
-| Cross-crate silent rename       | Explicitly refused; Stage 15 stays conservative    |
-| Incremental / salsa analysis    | Only if check latency becomes a real pain          |
-| Virtual `yarrow-std:` URIs      | Only if embedded std has no on-disk `lib/std` path |
-| DAP / debug adapter             | Separate product                                   |
-| Markdown / embedded `.yar`      | Skip until requested                               |
+| Item                        | Notes                                                 |
+| --------------------------- | ----------------------------------------------------- |
+| Cross-module silent rename  | Explicitly refused; Stage 15 stays conservative       |
+| Salsa / full incremental IR | Only if Stage 25 still too slow                       |
+| DAP / debug adapter         | Separate product                                      |
+| Markdown / embedded `.yar`  | Skip until requested                                  |
+| Editor extensions           | Separate repos (Stage 20 canceled here)               |
+| Call / type hierarchy       | Needs richer core index; do not fake from names alone |
 
 ---
 
@@ -259,7 +299,7 @@ Canceled: editor extensions and other external packaging will live in separate r
 
 - Prefer minimal diffs that pass the **current** stage gate.
 - Do not add tests unless explicitly asked; use scripted LSP messages + `docs/examples/**` as gates (prefer `scripts/harness.mjs` from Stage 19).
-- Update this file when a stage gate lands (mark done, short notes; do not re-expand history). When a whole phase is done, collapse finished stages into **Landed** the same way Stages 0–11 were.
+- Update this file when a stage gate lands (mark done, short notes; do not re-expand history). When a whole phase is done, collapse finished stages into **Landed** the same way Stages 0–19 were.
 - No tokenizer / parser / typechecker logic here beyond calling `yarrow-core`.
 - Format only through `yarrow-fmt`, never a second pretty-printer.
 - In comments and documentation, never use `—` (em dash); use ASCII hyphen or rephrase.
