@@ -1,13 +1,13 @@
-//! AST interpreter for checked Yarrow programs (Stages 13b / 21 / 32).
+//! AST interpreter for checked Yarrow programs (Stages 13b / 21 / 32 / 36).
 //!
 //! Design choice: **tree-walk** the checked AST with an explicit operand stack,
-//! calling into [`crate::runtime`] for heap strings, lists, maps, structs, and
-//! unions. A stack bytecode VM can replace this later without changing the
-//! Session surface (`interpret_source` / [`EvalContext`]).
+//! calling into [`crate::runtime`] for heap strings, lists, maps, structs,
+//! unions, and regions. A stack bytecode VM can replace this later without
+//! changing the Session surface (`interpret_source` / [`EvalContext`]).
 //!
-//! ## Corpus coverage (Stage 32)
+//! ## Corpus coverage (Stage 36)
 //!
-//! Interprets cleanly (stdout matches JIT `run`):
+//! Interprets cleanly (stdout matches JIT `run --target jit`):
 //! - `docs/examples/valid/01_hello.yar`
 //! - `docs/examples/valid/02_arithmetic_and_stack.yar`
 //! - `docs/examples/valid/03_variables_and_typeof.yar`
@@ -15,17 +15,17 @@
 //! - `docs/examples/valid/05_control_flow.yar`
 //! - `docs/examples/valid/06_structs_and_enums.yar`
 //! - `docs/examples/valid/07_unions.yar`
+//! - `docs/examples/valid/09_regions_and_defer.yar`
 //! - `docs/examples/valid/10_errors.yar`
 //! - `docs/examples/valid/12_modules.yar`
 //! - `docs/examples/valid/13_containers.yar`
 //!
-//! Supported surface: Stage 21 plus structs / `implement` methods / enums,
-//! named unions + type-dispatch `match`, lists / hashmaps + `std.list` /
-//! `std.map` intrinsics, custom `error` types, fallible `|T Err|` calls,
-//! `unwrap`, and `handle` + fallback.
+//! Supported surface: Stage 32 plus `std.region` create / put / free, `defer`
+//! (reverse registration order at function scope exit), and struct field
+//! `set` (`point.x set`). Prefer host heap helpers (`region_*`, `free_value`).
 //!
-//! Still out of scope (clear `E393`): regions / defer, unsafe / raw pointers,
-//! field `set`, full `valid/**` parity beyond the Stage 32 gate.
+//! Still out of scope (clear `E393`): unsafe / raw pointers, full `valid/**`
+//! parity (Stage 37).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -41,8 +41,8 @@ use crate::parser::ast::{
 use crate::parser::literals::{decode_float_literal, decode_int_literal, decode_string_literal};
 use crate::parser::parse;
 use crate::runtime::{
-    self, KIND_LIST, KIND_MAP, KIND_STRING, KIND_STRUCT, KIND_UNION, UNION_PAYLOAD_OFFSET,
-    UNION_TAG_OFFSET, free_value,
+    self, FieldDesc, KIND_LIST, KIND_MAP, KIND_STRING, KIND_STRUCT, KIND_UNION,
+    UNION_PAYLOAD_OFFSET, UNION_TAG_OFFSET, free_value,
 };
 use crate::tokenizer::Tokenizer;
 
@@ -231,6 +231,8 @@ struct LoopCtx {
 struct Frame {
     locals: HashMap<String, Slot>,
     loops: Vec<LoopCtx>,
+    /// `defer` bodies, run in reverse registration order at function scope exit.
+    deferred: Vec<Vec<Stmt>>,
     /// Payload type of this frame's fallible `|T Err|` return, when present.
     error_payload: Option<MemberTy>,
     /// Set by `unwrap` when propagating an error out of a fallible function.
@@ -510,6 +512,17 @@ impl Interpreter {
         size = (size + (align - 1)) & !(align - 1);
         if size == 0 {
             size = 1;
+        }
+        let descs: Vec<FieldDesc> = fields
+            .iter()
+            .map(|f| FieldDesc {
+                offset: f.offset as u32,
+                _pad: 0,
+                kind: f.kind,
+            })
+            .collect();
+        unsafe {
+            runtime::yarrow_register_struct_descs(id, descs.as_ptr(), descs.len() as u64);
         }
         self.structs.push(StructInfo {
             name: d.name.clone(),
@@ -864,6 +877,7 @@ impl Interpreter {
         let mut frame = Frame {
             locals: HashMap::new(),
             loops: Vec::new(),
+            deferred: Vec::new(),
             error_payload: error_payload.clone(),
             pending_error_return: None,
         };
@@ -920,6 +934,12 @@ impl Interpreter {
                 } else {
                     (local_stack.pop().unwrap(), 0)
                 };
+            self.run_deferred(
+                &mut local_stack,
+                &mut frame,
+                entry.module.as_deref(),
+                &entry.fq,
+            )?;
             while let Some(v) = local_stack.pop() {
                 v.drop_owned();
             }
@@ -940,10 +960,8 @@ impl Interpreter {
             .iter()
             .filter(|t| !matches!(t.kind, TypeKind::Primitive(Primitive::Void)))
             .count();
-        if ret_n == 0 {
-            while let Some(v) = local_stack.pop() {
-                v.drop_owned();
-            }
+        let rets = if ret_n == 0 {
+            Vec::new()
         } else {
             if local_stack.len() < ret_n {
                 return Err(InterpretError::new(
@@ -956,18 +974,39 @@ impl Interpreter {
                     "E328",
                 ));
             }
-            let rets = local_stack.split_off(local_stack.len() - ret_n);
-            while let Some(v) = local_stack.pop() {
-                v.drop_owned();
-            }
-            for (_, slot) in frame.locals.drain() {
-                slot.drop_owned();
-            }
-            stack.extend(rets);
-            return Ok(());
+            local_stack.split_off(local_stack.len() - ret_n)
+        };
+        self.run_deferred(
+            &mut local_stack,
+            &mut frame,
+            entry.module.as_deref(),
+            &entry.fq,
+        )?;
+        while let Some(v) = local_stack.pop() {
+            v.drop_owned();
         }
         for (_, slot) in frame.locals.drain() {
             slot.drop_owned();
+        }
+        stack.extend(rets);
+        Ok(())
+    }
+
+    /// Function-scope exit: run deferred bodies in reverse registration order.
+    fn run_deferred(
+        &mut self,
+        stack: &mut Vec<Slot>,
+        frame: &mut Frame,
+        module: Option<&str>,
+        caller_fq: &str,
+    ) -> IResult<()> {
+        while let Some(body) = frame.deferred.pop() {
+            let flow = self.eval_body(&body, stack, frame, module, caller_fq)?;
+            if flow == Flow::Return {
+                // Nested return from a defer is ignored for stack shaping; the
+                // outer function already committed its return values.
+                break;
+            }
         }
         Ok(())
     }
@@ -1092,29 +1131,106 @@ impl Interpreter {
                 Ok(Flow::Next)
             }
             StmtKind::Set { target, value } => {
-                let Expr::Variable { name } = target else {
-                    return Err(InterpretError::unsupported(
-                        "complex 'set' target",
-                        stmt.span,
-                    ));
-                };
                 if let Some(e) = value {
                     self.eval_expr(e, stack, frame, module, caller_fq, stmt.span)?;
                 }
                 let mut slot = self.pop(stack, stmt.span, "set")?;
-                let old = frame.locals.get(name).cloned().ok_or_else(|| {
-                    InterpretError::new(format!("unknown variable '{name}'"), stmt.span, "E320")
-                })?;
-                // When assigning into a union variable, wrap the raw member.
-                if (old.kind & 0xff) == KIND_UNION {
-                    slot = self.wrap_union_value(slot, (old.kind >> 8) as u32, stmt.span)?;
-                } else {
-                    slot.kind = old.kind;
+                match target {
+                    Expr::Variable { name } => {
+                        let old = frame.locals.get(name).cloned().ok_or_else(|| {
+                            InterpretError::new(
+                                format!("unknown variable '{name}'"),
+                                stmt.span,
+                                "E320",
+                            )
+                        })?;
+                        // When assigning into a union variable, wrap the raw member.
+                        if (old.kind & 0xff) == KIND_UNION {
+                            slot =
+                                self.wrap_union_value(slot, (old.kind >> 8) as u32, stmt.span)?;
+                        } else {
+                            slot.kind = old.kind;
+                        }
+                        if let Some(old) = frame.locals.insert(name.clone(), slot) {
+                            old.drop_owned();
+                        }
+                        Ok(Flow::Next)
+                    }
+                    Expr::Member { base, member } => {
+                        self.eval_expr(base, stack, frame, module, caller_fq, stmt.span)?;
+                        let base_slot = self.pop(stack, stmt.span, "field set target")?;
+                        let sid = match base_slot.kind & 0xff {
+                            KIND_STRUCT => (base_slot.kind >> 8) as u32,
+                            _ => {
+                                base_slot.drop_owned();
+                                slot.drop_owned();
+                                return Err(InterpretError::unsupported(
+                                    "field 'set' on non-struct",
+                                    stmt.span,
+                                ));
+                            }
+                        };
+                        let handle = match &base_slot.value {
+                            Value::Heap { handle, .. } => *handle,
+                            _ => {
+                                base_slot.drop_owned();
+                                slot.drop_owned();
+                                return Err(InterpretError::new(
+                                    "field 'set' requires a heap handle",
+                                    stmt.span,
+                                    "E340",
+                                ));
+                            }
+                        };
+                        let field = self
+                            .structs
+                            .get(sid as usize)
+                            .and_then(|s| s.fields.iter().find(|f| f.name == *member))
+                            .cloned()
+                            .ok_or_else(|| {
+                                InterpretError::new(
+                                    format!("struct has no field '{member}'"),
+                                    stmt.span,
+                                    "E340",
+                                )
+                            })?;
+                        // Free previous union payload before overwrite (matches JIT).
+                        if (field.kind & 0xff) == KIND_UNION {
+                            let old_bits = unsafe {
+                                let mut buf = 0u64;
+                                std::ptr::copy_nonoverlapping(
+                                    (handle as *const u8).add(field.offset as usize),
+                                    &mut buf as *mut u64 as *mut u8,
+                                    field.size as usize,
+                                );
+                                buf
+                            };
+                            free_value(old_bits, field.kind);
+                        }
+                        let bits = slot.value.as_bits().unwrap_or(0);
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                &bits as *const u64 as *const u8,
+                                (handle as *mut u8).add(field.offset as usize),
+                                field.size as usize,
+                            );
+                        }
+                        // Field storage owns heap bits; do not drop the new value.
+                        match slot.value {
+                            Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                            other => other.drop_owned(),
+                        }
+                        base_slot.drop_owned();
+                        Ok(Flow::Next)
+                    }
+                    _ => {
+                        slot.drop_owned();
+                        Err(InterpretError::unsupported(
+                            "complex 'set' target",
+                            stmt.span,
+                        ))
+                    }
                 }
-                if let Some(old) = frame.locals.insert(name.clone(), slot) {
-                    old.drop_owned();
-                }
-                Ok(Flow::Next)
             }
             StmtKind::If {
                 condition,
@@ -1165,7 +1281,11 @@ impl Interpreter {
                 caller_fq,
                 stmt.span,
             ),
-            StmtKind::Fallback { .. } | StmtKind::Defer { .. } => Ok(Flow::Next),
+            StmtKind::Defer { body } => {
+                frame.deferred.push(body.clone());
+                Ok(Flow::Next)
+            }
+            StmtKind::Fallback { .. } => Ok(Flow::Next),
             other => Err(InterpretError::unsupported(
                 format!("statement {other:?}"),
                 stmt.span,
@@ -1985,7 +2105,10 @@ impl Interpreter {
     fn is_std_intrinsic(&self, fq: &str) -> bool {
         matches!(
             fq,
-            "std.list::push_last"
+            "std.region::create"
+                | "std.region::put"
+                | "std.region::free"
+                | "std.list::push_last"
                 | "std.list::len"
                 | "std.list::get"
                 | "std.list::put"
@@ -1997,6 +2120,82 @@ impl Interpreter {
 
     fn eval_std_intrinsic(&mut self, fq: &str, stack: &mut Vec<Slot>, span: Span) -> IResult<()> {
         match fq {
+            "std.region::create" => {
+                let handle = runtime::yarrow_region_new();
+                stack.push(Slot {
+                    value: Value::Int(handle as i64),
+                    kind: 4,
+                });
+                Ok(())
+            }
+            "std.region::free" => {
+                let region = self.pop(stack, span, "region.free")?;
+                let handle = match region.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        return Err(InterpretError::new(
+                            "'region.free' requires a region handle",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                runtime::yarrow_region_free(handle);
+                Ok(())
+            }
+            "std.region::put" => {
+                let region = self.pop(stack, span, "region.put")?;
+                let value = self.pop(stack, span, "region.put")?;
+                let region_handle = match region.value {
+                    Value::Int(n) => n as u64,
+                    other => {
+                        other.drop_owned();
+                        value.drop_owned();
+                        return Err(InterpretError::new(
+                            "'region.put' requires a region handle",
+                            span,
+                            "E372",
+                        ));
+                    }
+                };
+                let (val_handle, kind) = match &value.value {
+                    Value::Str { handle, .. } => (*handle, KIND_STRING),
+                    Value::Heap { handle, .. } => (*handle, value.kind),
+                    other => {
+                        let msg = format!(
+                            "'region.put' requires a reference, struct, array, string or container, got {other:?}"
+                        );
+                        value.drop_owned();
+                        return Err(InterpretError::new(msg, span, "E372"));
+                    }
+                };
+                // Region takes ownership; stack must not free the value.
+                match &value.value {
+                    Value::Str { owned: true, .. } | Value::Heap { owned: true, .. } => {}
+                    other => {
+                        // Non-owned borrow from a local: still attach the handle.
+                        let _ = other;
+                    }
+                }
+                runtime::yarrow_region_register(val_handle, kind, region_handle);
+                // Push a borrow of the attached value (matches JIT put_region).
+                stack.push(Slot {
+                    value: match value.value {
+                        Value::Str { handle, .. } => Value::Str {
+                            handle,
+                            owned: false,
+                        },
+                        Value::Heap { handle, .. } => Value::Heap {
+                            handle,
+                            owned: false,
+                        },
+                        other => other,
+                    },
+                    kind: value.kind,
+                });
+                Ok(())
+            }
             "std.list::push_last" => {
                 let value = self.pop(stack, span, "list.push_last")?;
                 let list = self.pop(stack, span, "list.push_last")?;

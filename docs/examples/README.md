@@ -36,7 +36,7 @@ Formatter gate (`./scripts/fmt-check.sh` / `yarrow fmt --check`): [`valid/`](val
 | [`valid/14_io_and_string.yar`](valid/14_io_and_string.yar)                 | `std.io` write helpers, `std.string` len / join / concat / compare               |
 | [`valid/15_fs.yar`](valid/15_fs.yar)                                       | `std.fs` open / write / read / close on a temp file                              |
 
-Interpreter (Stage 32): `01`–`07`, `10`, `12`, `13` interpret with stdout matching JIT. Gate: `cargo run -p yarrow_core --example check_interpret`. Regions / unsafe / remaining files stay `E393`.
+Interpreter (Stage 36): `01`–`07`, `09`, `10`, `12`, `13` interpret with stdout matching JIT (regions/`defer`/field `set`). Gate: `cargo run -p yarrow_core --example check_interpret`. Unsafe / remaining files stay `E393` until Stage 37.
 
 ## Invalid programs
 
