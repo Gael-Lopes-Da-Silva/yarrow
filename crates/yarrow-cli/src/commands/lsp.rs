@@ -1,4 +1,8 @@
 //! `yarrow lsp` - thin in-process wrapper around `yarrow_lsp` (stdio or TCP).
+//!
+//! Global `-q` suppresses the startup banner. Bound TCP listen address still
+//! prints (harnesses need it). `--color` is a no-op: the LSP crate has no
+//! color knob.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

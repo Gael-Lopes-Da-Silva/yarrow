@@ -46,7 +46,7 @@ pub fn interpret_file(
     opts.entry_name = entry_name.to_string();
     opts.mode = ExecutionMode::Interpret;
 
-    if global.verbose {
+    if global.progress() {
         eprintln!("interpreting {path} (entry {entry_name})");
     }
 

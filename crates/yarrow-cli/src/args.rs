@@ -30,7 +30,12 @@ pub struct Cli {
 /// Flags that apply to every subcommand.
 #[derive(Debug, Clone, clap::Args)]
 pub struct GlobalArgs {
-    /// Force color output (always / never / auto).
+    /// When to color diagnostics: `always`, `never`, or `auto` (default).
+    ///
+    /// With `auto`, `NO_COLOR` forces never; `CLICOLOR_FORCE` / `FORCE_COLOR`
+    /// (set and non-empty) force always. Explicit `always` / `never` win over
+    /// env. Does not color `fmt` / `lsp` child output (those APIs have no
+    /// color knob).
     #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
     pub color: ColorArg,
 
@@ -42,13 +47,25 @@ pub struct GlobalArgs {
     #[arg(short = 'L', long = "search-path", global = true, value_name = "DIR")]
     pub search_paths: Vec<std::path::PathBuf>,
 
-    /// Suppress non-diagnostic driver output.
+    /// Suppress driver chatter (`wrote …`, repl banners, `-v` progress).
+    ///
+    /// Never suppresses diagnostics or `explain` / `dump` payload on stdout.
+    /// `fmt` has no quiet API; its check/error lines still print.
     #[arg(short = 'q', long, global = true)]
     pub quiet: bool,
 
-    /// Enable extra driver progress messages on stderr.
+    /// Extra driver progress on stderr (`running …`, dump kind, etc.).
+    ///
+    /// Ignored when `-q` is set. Does not change exit codes or hide errors.
     #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
+}
+
+impl GlobalArgs {
+    /// Whether to emit optional progress lines on stderr (`-v` and not `-q`).
+    pub fn progress(&self) -> bool {
+        self.verbose && !self.quiet
+    }
 }
 
 /// Intermediate form printed by `dump --emit`.

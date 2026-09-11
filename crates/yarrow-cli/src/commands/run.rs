@@ -62,7 +62,7 @@ fn run_jit(
     opts.entry_name = entry_name.to_string();
     opts.mode = ExecutionMode::Jit;
 
-    if global.verbose {
+    if global.progress() {
         eprintln!("running {path} (target jit, entry {entry_name})");
     }
 
@@ -112,7 +112,7 @@ fn run_object(
     opts.entry_name = entry_name.to_string();
     opts.mode = ExecutionMode::Object;
 
-    if global.verbose {
+    if global.progress() {
         eprintln!("running {path} (target object, entry {entry_name})");
     }
 
@@ -133,7 +133,7 @@ fn run_object(
         }
     };
 
-    if global.verbose {
+    if global.progress() {
         eprintln!(
             "exec {} with {} program arg(s)",
             exe.path.display(),

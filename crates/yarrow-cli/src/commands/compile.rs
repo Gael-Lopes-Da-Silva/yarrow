@@ -43,7 +43,7 @@ pub fn compile_file(
                 return ExitCode::from(2);
             }
             opts.mode = ExecutionMode::Jit;
-            if global.verbose {
+            if global.progress() {
                 eprintln!("compiling {path} (target jit)");
             }
             let session = Session::new(opts);
@@ -61,7 +61,7 @@ pub fn compile_file(
                 let out = output
                     .map(PathBuf::from)
                     .unwrap_or_else(|| default_object_path(file));
-                if global.verbose {
+                if global.progress() {
                     eprintln!(
                         "compiling {path} (target object, emit object) -> {}",
                         out.to_string_lossy()
@@ -81,7 +81,7 @@ pub fn compile_file(
                 let out = output
                     .map(PathBuf::from)
                     .unwrap_or_else(|| default_exe_path(file));
-                if global.verbose {
+                if global.progress() {
                     eprintln!(
                         "compiling {path} (target object, emit exe) -> {}",
                         out.to_string_lossy()

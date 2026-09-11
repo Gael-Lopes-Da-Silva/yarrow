@@ -70,7 +70,7 @@ pub fn run_repl(global: &GlobalArgs) -> ExitCode {
             break;
         }
 
-        eval_line(&session, &mut ctx, trimmed, color, global.verbose);
+        eval_line(&session, &mut ctx, trimmed, color, global.progress());
         let _ = io::stdout().flush();
     }
 
@@ -82,7 +82,7 @@ fn eval_line(
     ctx: &mut EvalContext,
     line: &str,
     color: ColorChoice,
-    verbose: bool,
+    progress: bool,
 ) {
     let mut source = if looks_like_program(line) {
         format!("{line}\n")
@@ -90,7 +90,7 @@ fn eval_line(
         wrap_as_main(line, None)
     };
 
-    if verbose {
+    if progress {
         eprintln!("repl source:\n{source}");
     }
 
@@ -115,7 +115,7 @@ fn eval_line(
 
     if let Some(ty) = unused_stack_type(&checked.warnings) {
         source = wrap_as_main(line, Some(&ty));
-        if verbose {
+        if progress {
             eprintln!("repl promote end with {ty}:\n{source}");
         }
         checked = match session.check_source(source) {

@@ -6,7 +6,7 @@ use crate::args::GlobalArgs;
 
 /// Print the long-form help for a diagnostic code, or exit 2 if unknown.
 pub fn explain_code(code: &str, global: &GlobalArgs) -> ExitCode {
-    if global.verbose {
+    if global.progress() {
         eprintln!("looking up diagnostic {code}");
     }
     match yarrow_core::explain_code(code) {

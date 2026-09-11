@@ -7,7 +7,9 @@ use super::{Diagnostic, Label, Severity, SourceFile, Span};
 pub enum ColorChoice {
     Always,
     Never,
-    /// Color when stderr is a TTY and `NO_COLOR` is unset.
+    /// Env-aware default: `NO_COLOR` → off; `CLICOLOR_FORCE` / `FORCE_COLOR`
+    /// (set and non-empty) → on; otherwise color (best-effort, no TTY probe).
+    /// Explicit [`Always`] / [`Never`] ignore these env vars.
     Auto,
 }
 
@@ -20,12 +22,26 @@ impl ColorChoice {
                 if std::env::var_os("NO_COLOR").is_some() {
                     return false;
                 }
+                if env_force_color() {
+                    return true;
+                }
                 // Best-effort: assume color if we cannot probe; drivers may
                 // override with Always/Never.
                 true
             }
         }
     }
+}
+
+fn env_force_color() -> bool {
+    for key in ["CLICOLOR_FORCE", "FORCE_COLOR"] {
+        if let Some(v) = std::env::var_os(key)
+            && !v.is_empty()
+        {
+            return true;
+        }
+    }
+    false
 }
 
 struct Style {
