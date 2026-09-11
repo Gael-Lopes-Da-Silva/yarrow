@@ -30,7 +30,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
 | Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                                                                                        |
-| Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393  |
+| Interpret   | Stage 36 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 32 plus regions/`defer`/field `set`; unsafe / pointers still E393 until Stage 37 |
 | Probes      | `TypeIndex` / `type_at`; `DefIndex` / `definition_at` (bindings + requires, root-only; Stage 35)                                                                               |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
@@ -44,7 +44,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | Area       | Gap                                                                                                                      |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
 | AOT        | Cross link needs matching archive + CRT; Mach-O / Windows executable link is Stage 39 (object-only today on linux hosts) |
-| Interpret  | Regions / defer, unsafe / pointers, field `set`, and remaining `valid/**` stay E393 until Stages 36–37                   |
+| Interpret  | Unsafe / pointers and remaining `valid/**` stay E393 until Stage 37; regions / defer / field `set` landed in Stage 36 |
 | Warnings   | `W401`–`W407` landed; empty `match` arm and further lints are Stage 38                                                   |
 | Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
@@ -55,13 +55,13 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 ## Next (Phase H)
 
-Focus: interpreter parity for remaining `valid/**`, then AOT executable link on non-ELF and lint/ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
+Focus: interpreter parity for remaining `valid/**` (Stage 37 unsafe/pointers), then AOT executable link on non-ELF and lint/ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
 
 ### Stage 35 - Require-path / definition probe API - **done**
 
 `CheckedProgram::definition_at` / `DefIndex` on the root file: binding and function definition spans (use sites point back), plus `require` alias / path string → resolved module path and optional on-disk `file_path`. Root-only (required-module bodies not indexed). Documented in [`docs/RUNTIME.md`](../../docs/RUNTIME.md). Stretch (multi-file index) deferred to LSP + project graph.
 
-### Stage 36 - Interpreter: regions, defer, field `set`
+### Stage 36 - Interpreter: regions, defer, field `set` - **done**
 
 Close the Stage 32 E393 gaps that unblock the next corpus files without taking on unsafe yet.
 
@@ -72,6 +72,8 @@ Close the Stage 32 E393 gaps that unblock the next corpus files without taking o
 5. Do not claim full `valid/**` parity until Stage 37.
 
 **Gate:** `09_regions_and_defer.yar` interprets with stdout matching JIT `run --target jit`. Field `set` used by that path (or a minimal adjacent fixture) no longer returns E393. Stage 32 gate files still pass. `cargo run -p yarrow_core --example check_interpret` green (extended). `cargo clippy` green.
+
+**Landed:** `std.region::{create,put,free}` intrinsics call `yarrow_region_*`; `defer` runs at function scope exit in reverse order; struct field `set` stores through member targets; interpreter registers `FieldDesc` tables so region free of structs is safe.
 
 ---
 
