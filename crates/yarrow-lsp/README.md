@@ -1,28 +1,44 @@
 # yarrow-lsp
 
-Language server for `.yar` files. Speaks LSP over **stdio** and calls `yarrow-core` / `yarrow-fmt` in-process.
+Language server for `.yar` files. Speaks LSP over **stdio** (default) or **TCP** (`--listen`) and calls `yarrow-core` / `yarrow-fmt` in-process.
 
 ## Run
 
 ```bash
-# Dedicated binary
+# Dedicated binary (stdio)
 cargo run -p yarrow_lsp -- --stdio
 
 # Via the main CLI (same process)
 cargo run -- lsp
 # or, after install: yarrow lsp
+
+# TCP: accept one client (port 0 = ephemeral; prints bound address on stderr)
+cargo run -p yarrow_lsp -- --listen 127.0.0.1:0
+# or: yarrow lsp --listen 127.0.0.1:0
 ```
 
 Flags (binary and `yarrow lsp`):
 
 | Flag | Meaning |
 | ---- | ------- |
-| `--stdio` | Transport (default; only transport in v1) |
+| `--stdio` | Transport (default when `--listen` is omitted) |
+| `--listen HOST:PORT` | Accept one TCP client (port `0` picks an ephemeral port) |
 | `-L` / `--search-path DIR` | Extra module search root (repeatable) |
 | `--main NAME` | Entry function name (default `main`) |
 | `--no-format` | Do not advertise document / range formatting |
 | `--no-inlay` | Do not advertise inlay hints |
 | `--log-level off\|error\|warn\|info\|debug` | stderr process logs (default `info`) |
+
+## Protocol harness
+
+Scripted LSP checks without an editor. From the repo root:
+
+```bash
+node crates/yarrow-lsp/scripts/harness.mjs
+# same as: node crates/yarrow-lsp/scripts/harness.mjs pull-diagnostics
+```
+
+The harness starts `yarrow_lsp --listen 127.0.0.1:0`, connects over TCP, runs initialize → open fixture → assert (default: pull diagnostics `E373` on `docs/examples/invalid/01_use_after_move.yar`) → shutdown. Override the server command with `YARROW_LSP_BIN` (space-separated argv prefix).
 
 ## Editor setup
 

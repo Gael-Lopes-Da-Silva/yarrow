@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 18 adds
-//! pull diagnostics (`textDocument/diagnostic`) alongside push publish.
+//! Speaks LSP over stdio or TCP and delegates analysis to `yarrow_core`. Stage 19
+//! adds `--listen` TCP transport and an in-repo protocol harness.
 
 mod analysis;
 mod code_action;
@@ -22,9 +22,11 @@ mod symbols;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::net::TcpListener;
 use tower_lsp_server::jsonrpc::{Error as LspErrorRpc, Result as LspResult};
 use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
@@ -68,7 +70,7 @@ const CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 /// Errors from starting or running the language server.
 #[derive(Debug, thiserror::Error)]
 pub enum LspError {
-    /// Placeholder for transport or setup failures in later stages.
+    /// Transport bind / accept / runtime failures.
     #[error("{0}")]
     Message(String),
 }
@@ -106,7 +108,7 @@ pub fn run_stdio_blocking(config: LspConfig) -> Result<(), LspError> {
     rt.block_on(run_stdio_with(config))
 }
 
-/// Run the server over explicit async read/write streams (tests / embedding).
+/// Run the server over explicit async read/write streams (tests / embedding / TCP).
 pub async fn run_with_streams<I, O>(stdin: I, stdout: O, config: LspConfig) -> Result<(), LspError>
 where
     I: tokio::io::AsyncRead + Unpin,
@@ -115,6 +117,39 @@ where
     let (service, socket) = LspService::new(move |client| Backend::new(client, config));
     Server::new(stdin, stdout, socket).serve(service).await;
     Ok(())
+}
+
+/// Bind `addr` (`host:port`; port `0` = ephemeral), invoke `on_listen` with the
+/// real socket address, accept one client, then serve over that connection.
+pub async fn run_tcp_with<F>(addr: &str, config: LspConfig, on_listen: F) -> Result<(), LspError>
+where
+    F: FnOnce(SocketAddr),
+{
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| LspError::Message(format!("tcp bind {addr}: {e}")))?;
+    let local = listener
+        .local_addr()
+        .map_err(|e| LspError::Message(format!("tcp local_addr: {e}")))?;
+    on_listen(local);
+    let (stream, _) = listener
+        .accept()
+        .await
+        .map_err(|e| LspError::Message(format!("tcp accept: {e}")))?;
+    let (read, write) = tokio::io::split(stream);
+    run_with_streams(read, write, config).await
+}
+
+/// Blocking TCP entry for sync CLI wrappers (one client, then exit).
+pub fn run_tcp_blocking<F>(addr: &str, config: LspConfig, on_listen: F) -> Result<(), LspError>
+where
+    F: FnOnce(SocketAddr),
+{
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| LspError::Message(format!("tokio runtime: {e}")))?;
+    rt.block_on(run_tcp_with(addr, config, on_listen))
 }
 
 /// Last published / pulled diagnostics for one URI (keyed by document version).
