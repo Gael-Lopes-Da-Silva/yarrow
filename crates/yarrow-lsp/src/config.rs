@@ -1,6 +1,6 @@
 //! Process defaults and LSP `initializationOptions` for analysis.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use yarrow_core::{CompileOptions, DEFAULT_ENTRY_NAME, Session};
@@ -10,6 +10,11 @@ use yarrow_core::{CompileOptions, DEFAULT_ENTRY_NAME, Session};
 pub struct LspConfig {
     /// Extra module lookup roots (`-L` / init `searchPaths` / workspace folders).
     pub search_paths: Vec<PathBuf>,
+    /// Explicit multi-root project entry files (`initializationOptions.projectRoots`).
+    ///
+    /// Empty means single-file `check_source` (default). Non-empty enables
+    /// `Session::check_project` for those roots only (no folder crawl).
+    pub project_roots: Vec<PathBuf>,
     /// Top-level entry name (default `main`).
     pub entry_name: String,
     /// When false, do not advertise or serve document / range formatting.
@@ -22,6 +27,7 @@ impl Default for LspConfig {
     fn default() -> Self {
         Self {
             search_paths: Vec::new(),
+            project_roots: Vec::new(),
             entry_name: DEFAULT_ENTRY_NAME.to_string(),
             format_enable: true,
             inlay_hints_enable: true,
@@ -30,6 +36,11 @@ impl Default for LspConfig {
 }
 
 impl LspConfig {
+    /// Whether multi-root project analysis is active.
+    pub fn project_mode(&self) -> bool {
+        !self.project_roots.is_empty()
+    }
+
     /// Build [`CompileOptions`] for a document path.
     pub fn compile_options(&self, source_path: impl Into<String>) -> CompileOptions {
         let mut opts = CompileOptions::new(source_path);
@@ -55,6 +66,12 @@ impl LspConfig {
                     self.push_search_path(PathBuf::from(p));
                 }
             }
+            if let Some(roots) = &init.project_roots {
+                self.project_roots.clear();
+                for p in roots {
+                    self.push_project_root(PathBuf::from(p));
+                }
+            }
             if let Some(name) = &init.entry_name
                 && !name.is_empty()
             {
@@ -77,6 +94,23 @@ impl LspConfig {
             self.search_paths.push(path);
         }
     }
+
+    fn push_project_root(&mut self, path: PathBuf) {
+        let resolved = resolve_config_path(&path);
+        if !self.project_roots.iter().any(|e| e == &resolved) {
+            self.project_roots.push(resolved);
+        }
+    }
+}
+
+/// Resolve a config path: expand relative paths against the process cwd.
+fn resolve_config_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// JSON shape under `InitializeParams.initialization_options` (camelCase).
@@ -86,6 +120,12 @@ pub struct InitializationOptions {
     /// Extra module search directories (`-L` equivalent).
     #[serde(default)]
     pub search_paths: Option<Vec<String>>,
+    /// Explicit project root `.yar` paths (multi-root `check_project`).
+    ///
+    /// Omitted or empty keeps single-file analysis. Paths may be absolute or
+    /// cwd-relative; no workspace folder crawl.
+    #[serde(default)]
+    pub project_roots: Option<Vec<String>>,
     /// Entry function name (default `main`).
     #[serde(default)]
     pub entry_name: Option<String>,

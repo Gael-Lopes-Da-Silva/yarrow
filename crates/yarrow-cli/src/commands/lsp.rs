@@ -25,6 +25,7 @@ pub fn run_lsp(
     }
     let config = LspConfig {
         search_paths: search,
+        project_roots: Vec::new(),
         entry_name: entry_name.to_string(),
         format_enable,
         inlay_hints_enable,
