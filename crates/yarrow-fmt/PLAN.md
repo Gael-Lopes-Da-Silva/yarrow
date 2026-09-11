@@ -11,7 +11,7 @@ Library and binary that rewrite `.yar` source to match [`docs/STYLE_GUIDE.md`](.
 | **Layout / idiomatic form** | [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md)                                                               |
 | Language syntax             | [`docs/GRAMMAR.md`](../../docs/GRAMMAR.md), [`SYNTAX.md`](../../docs/SYNTAX.md)                                  |
 | Intended AST                | [`docs/AST.md`](../../docs/AST.md)                                                                               |
-| Corpus (format gates)       | `docs/examples/valid/**`, `crates/yarrow-core/lib/std/**` ([`scripts/fmt-check.sh`](../../scripts/fmt-check.sh)) |
+| Corpus (format gates)       | `docs/examples/{valid,warnings,project}/**`, `crates/yarrow-core/lib/std/**`, `fixtures/stage19_ignore_regions.yar` ([`scripts/fmt-check.sh`](../../scripts/fmt-check.sh)) |
 | Compiler API                | [`crates/yarrow-core/PLAN.md`](../yarrow-core/PLAN.md)                                                           |
 | Agent rules                 | [`AGENTS.md`](../../AGENTS.md)                                                                                   |
 
@@ -35,6 +35,7 @@ Mechanical rewrite of parseable source:
 - Best-effort hygiene on incomplete parse; selective construct reprint when recovery spans are trustworthy (Stage 18)
 - Diff-friendly ignore regions via `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` (Stage 19)
 - Parallel multi-file driver (Stage 20); per-file bytes unchanged vs sequential
+- Widened fmt-check corpus (Stage 21): `warnings/**`, `project/**`, stage19 fixture
 
 ### Out of scope
 
@@ -114,7 +115,7 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 ## Landed (v1)
 
-Stages 0–20 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 0–21 are complete. Historical stage write-ups were removed; git history keeps them.
 
 | Piece                        | Notes                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------ |
@@ -129,7 +130,7 @@ Stages 0–20 are complete. Historical stage write-ups were removed; git history
 | Library + binary             | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`            |
 | Shared driver                | `run_fmt` / `FmtInput` for binary and CLI                                      |
 | `yarrow fmt`                 | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))            |
-| Corpus gate                  | `docs/examples/valid/**` + `lib/std/**`; CI `fmt-check` (Stage 16)             |
+| Corpus gate                  | `valid` / `warnings` / `project` + `lib/std` + stage19 fixture; CI `fmt-check` (Stages 16, 21) |
 | LSP full-document format     | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source_best_effort` |
 | File layout reorder (opt-in) | Stage 13: `reorder_layout` / `--reorder-layout`                                |
 | Defaults polish              | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent                |
@@ -139,34 +140,19 @@ Stages 0–20 are complete. Historical stage write-ups were removed; git history
 | Selective construct reprint  | Stage 18: recovered top-level decls reprint when spans clear errors            |
 | Ignore regions               | Stage 19: `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end`              |
 | Parallel multi-file driver   | Stage 20: rayon over independent paths; sorted reporting                       |
+| Widened fmt-check corpus     | Stage 21: `warnings/**`, `project/**`, stage19 fixture on the CI gate          |
 
-**Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
+**Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check` on the Stage 21 path set) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
 ---
 
 ## Next
 
-Focus: corpus width. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
+Focus: optional CLI range surface. Do not invent layout rules absent from the style guide. Naming stays out of silent format (core / future lint).
 
-### Stage 20 - Parallel directory fmt ✅
+### Stage 21 - Widen fmt-check corpus ✅
 
-**Done:** Multi-file `run_fmt` formats independent `.yar` paths with rayon; stdin and single-file stay sequential. Per-file output bytes are identical to sequential formatting. `--check` / stderr messages and writes remain in sorted path order from `collect_yar_paths`. Exit-code aggregation unchanged (any `1` / `2` wins). No `format_source` API change. Parallel path is the default for multi-file.
-
----
-
-### Stage 21 - Widen fmt-check corpus
-
-Stage 16 gates `valid/**` + `lib/std`. Other parseable trees drift silently.
-
-1. Bootstrap-format and add to [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh) / CI any of these that parse cleanly today:
-   - `docs/examples/warnings/**`
-   - `docs/examples/project/**` (and nested helpers)
-   - fmt-owned fixtures under this crate once present
-2. Keep `docs/examples/invalid/**` excluded (expected parse failures).
-3. Document the gate set in this plan’s Landed corpus row and examples README if it lists fmt.
-4. Do not silently “fix” invalid examples by formatting them into validity.
-
-**Gate:** `./scripts/fmt-check.sh` exits `0` on the widened set; CI fails on drift. `cargo fmt && cargo check && cargo clippy` green.
+**Done:** Bootstrap-formatted and gated `docs/examples/warnings/**`, `docs/examples/project/**`, and `crates/yarrow-fmt/fixtures/stage19_ignore_regions.yar` alongside `valid/**` + `lib/std`. Restored [`scripts/fmt-check.sh`](../../scripts/fmt-check.sh) / [`.github/workflows/fmt-check.yml`](../../.github/workflows/fmt-check.yml) with that set. Still excludes `docs/examples/invalid/**` and `fixtures/stage18_selective_reprint.yar` (intentional incomplete parse).
 
 ---
 

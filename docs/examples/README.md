@@ -6,6 +6,8 @@ is still catching up; treat these as the intended language shape.
 
 Layout: [`valid/`](valid/) for well-formed programs (including [`valid/helpers/`](valid/helpers/)), [`invalid/`](invalid/) for cases a conforming checker should reject, [`warnings/`](warnings/) for programs that check successfully while emitting Stage 20 / 31 warnings, and [`project/`](project/) for multi-root Stage 28 fixtures (library `check_project` only).
 
+Formatter gate (`./scripts/fmt-check.sh` / `yarrow fmt --check`): [`valid/`](valid/), [`warnings/`](warnings/), [`project/`](project/), plus `crates/yarrow-core/lib/std` and the Stage 19 ignore-region fixture. [`invalid/`](invalid/) stays out of that gate (expected parse failures).
+
 ## How to read them
 
 - Each `.yar` file is a small, focused program with a short header comment.
