@@ -32,7 +32,7 @@ pub use session::{
     CheckedProgram, CompileOptions, ExecutableArtifact, ExecutionMode, ObjectArtifact, OptLevel,
     Session, SessionArtifact, SessionDiagnostics, render_batch,
 };
-pub use target::{TargetError, TargetTriple, supported_triples};
+pub use target::{TargetError, TargetTriple, supported_triple_names, supported_triples};
 pub use tokenizer::Token;
 pub use tokenizer::TokenKind;
 pub use tokenizer::Tokenizer;
