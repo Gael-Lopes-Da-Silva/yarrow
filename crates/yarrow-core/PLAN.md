@@ -119,7 +119,7 @@ Stage 34 landed object-only COFF / Mach-O on linux hosts (`E397` for exe). Finis
 
 **Gate:** on the documented host (or documented CI), `compile_executable_source` for that triple produces a runnable binary for `docs/examples/valid/01_hello.yar` (or equivalent). Host linux-gnu path unchanged. Object-only path for the other Stage 34 triples still works. `cargo clippy` green.
 
-**Landed:** Windows-gnu host→host PE link via MinGW `ld`/`lld` + CRT (`crt2.o` / `crtbegin.o` / `crtend.o`); `YARROW_AOT_CRT_DIR` / `YARROW_AOT_SYSROOT` still apply; linux hosts keep `E397` for Windows/Darwin exe (no fake link). Gate example `check_windows_exe`; CI [`.github/workflows/stage-39-windows-gnu-exe.yml`](../../.github/workflows/stage-39-windows-gnu-exe.yml) (MSYS2 MinGW64). Mach-O / Darwin host→host remains backlog.
+**Landed:** Windows-gnu host→host PE link via MinGW `ld`/`lld` + CRT (`crt2.o` / `crtbegin.o` / `crtend.o`); `YARROW_AOT_CRT_DIR` / `YARROW_AOT_SYSROOT` still apply; linux hosts keep `E397` for Windows/Darwin exe (no fake link). Gate example `check_windows_exe`; CI [`.github/workflows/stage-39-windows-gnu-exe.yml`](../../.github/workflows/stage-39-windows-gnu-exe.yml) (MSYS2 UCRT64). Mach-O / Darwin host→host remains backlog.
 
 ---
 

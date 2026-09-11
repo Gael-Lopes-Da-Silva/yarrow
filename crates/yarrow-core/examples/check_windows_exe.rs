@@ -78,6 +78,14 @@ fn gate_windows_gnu_host() {
         stdout.contains("Hello, Yarrow!"),
         "expected Hello, Yarrow! in stdout, got {stdout:?}"
     );
+    // STATUS_HEAP_CORRUPTION (0xC0000374) and friends still fail the gate even
+    // when stdout looks right; require a clean exit.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "hello.exe must exit 0 (got {:?}); stdout={stdout:?} stderr={stderr:?}",
+        output.status
+    );
 
     let _ = std::fs::remove_dir_all(&out_dir);
     println!("ok: Windows-gnu host→host exe for {rel}");

@@ -198,10 +198,15 @@ unsafe fn windows_crt_free(ptr: *mut libc::c_void) {
     }
 
     let f = *REAL_FREE.get_or_init(|| unsafe {
-        let module = LoadLibraryA(b"ucrtbase.dll\0".as_ptr());
+        // Prefer UCRT (MSYS2 UCRT64 / modern Rust). Fall back to msvcrt for
+        // older mingw64 toolchains so malloc/free stay on one CRT.
+        let mut module = LoadLibraryA(b"ucrtbase.dll\0".as_ptr());
+        if module.is_null() {
+            module = LoadLibraryA(b"msvcrt.dll\0".as_ptr());
+        }
         assert!(
             !module.is_null(),
-            "LoadLibraryA(ucrtbase.dll) failed for free trampoline"
+            "LoadLibraryA(ucrtbase.dll|msvcrt.dll) failed for free trampoline"
         );
         let sym = GetProcAddress(module, b"free\0".as_ptr());
         assert!(

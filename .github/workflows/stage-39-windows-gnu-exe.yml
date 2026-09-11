@@ -1,7 +1,8 @@
 # Stage 39 gate: Windows-gnu host→host AOT executable link.
 #
-# Runs on a native Windows-gnu toolchain (MSYS2 MinGW64). Does not fake PE
-# link on linux hosts.
+# Runs on a native Windows-gnu toolchain (MSYS2 UCRT64). Does not fake PE
+# link on linux hosts. UCRT64 keeps Rust/mingw on the same CRT as the
+# `free` trampoline (`ucrtbase.dll`).
 
 name: stage-39-windows-gnu-exe
 
@@ -21,13 +22,13 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-rust
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-pkgconf
 
       - name: Show toolchain
         run: |
