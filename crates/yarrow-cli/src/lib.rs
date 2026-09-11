@@ -109,8 +109,19 @@ fn dispatch(cli: Cli) -> ExitCode {
             }),
             None,
         ) => commands::compile_file(&file, target, emit, &main, output.as_deref(), &cli.global),
-        (Some(Cmd::Check { files, main }), None) => {
-            commands::check_files(&files, &main, &cli.global)
+        (
+            Some(Cmd::Check {
+                files,
+                corpus,
+                main,
+            }),
+            None,
+        ) => {
+            if let Some(dir) = corpus {
+                commands::check_corpus(&dir, &main, &cli.global)
+            } else {
+                commands::check_files(&files, &main, &cli.global)
+            }
         }
         (
             Some(Cmd::Interpret {
@@ -207,7 +218,7 @@ fn dispatch(cli: Cli) -> ExitCode {
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow check <file.yar> [file.yar...]\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp\n       yarrow clean"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow check <file.yar> [file.yar...]\n       yarrow check --corpus <dir>\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp\n       yarrow clean"
             );
             ExitCode::from(2)
         }

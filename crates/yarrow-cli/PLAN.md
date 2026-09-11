@@ -31,7 +31,7 @@ src/main.rs  →  yarrow_cli::run
 | ----------- | ------------------------------------------------------------------------------------- |
 | `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--`          |
 | `compile`   | Codegen only; default `./<stem>.o` / `./<stem>`; `-o` overrides; records `.yarrow-build/artifacts` |
-| `check`     | Semantic check; one file → `check_source`; two+ roots → `check_project` |
+| `check`     | Semantic check; one file → `check_source`; two+ roots → `check_project`; `--corpus DIR` → non-recursive `*.yar` batch |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit`         |
 | `lsp`       | Language server stdio / `--listen` (`yarrow_lsp`)                                     |
@@ -47,7 +47,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal, `101` internal compiler error (caught panic or `E999` / `SessionFailureKind::Ice`). Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–16 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–17 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -98,20 +98,11 @@ Command dispatch is wrapped in `std::panic::catch_unwind`: unexpected panics pri
 
 ---
 
-### Stage 17 - Corpus / `test` driver (no language invent)
+### Stage 17 - Corpus / `test` driver (no language invent) ✅
 
-There is no language-level `test` / `assert` story yet. Do not invent one in the CLI.
+`yarrow check --corpus DIR` walks immediate `*.yar` in `DIR` (non-recursive; nested helpers are not separate roots) and runs `check_source` on each. Aggregate: exit `0` if all succeed, `1` if any program diagnostics (`101` if any ICE); prints `N ok, M failed` unless `-q`. Honors `-L`, `--error-limit`, `--main`. Not a language-level test framework. Gate corpus: `docs/examples/valid`.
 
-1. Add a thin driver, named either `yarrow test` **or** `yarrow check --corpus DIR` (pick one; prefer a name that does not imply unit-test syntax):
-   - Walk a directory of `.yar` files (non-recursive or recursive; document which).
-   - For each file: `check_source` (or `check_project` when multiple roots are passed explicitly).
-   - Aggregate: exit `0` if all succeed; `1` if any program diagnostics; print a one-line summary (`N ok, M failed`) unless `-q`.
-2. Default corpus for the gate: `docs/examples/valid` (must all pass). Do **not** require `invalid/**` to pass; optional `--expect-fail` / separate mode is out of scope unless trivial.
-3. Skip or document non-`.yar` files; honor `-L`, `--error-limit`, `--main` as for `check`.
-4. When a real language test story lands in core / GRAMMAR, replace or extend this stage’s driver; until then the command is a **corpus check**, not a test framework.
-5. Update examples README with the one-liner agents should run.
-
-**Gate:** `yarrow test docs/examples/valid` (or the chosen alias) exits `0`. Pointing at a tree that includes a known-bad file exits `1` with at least one rendered diagnostic. `cargo fmt && cargo check && cargo clippy` green.
+**Gate:** `yarrow check --corpus docs/examples/valid` exits `0`; a tree with a known-bad file exits `1` with diagnostics.
 
 ---
 
@@ -119,7 +110,7 @@ There is no language-level `test` / `assert` story yet. Do not invent one in the
 
 | Item                     | Notes                                                                   |
 | ------------------------ | ----------------------------------------------------------------------- |
-| Language-level tests     | After Stage 17 corpus driver; needs GRAMMAR / core, not CLI invention   |
+| Language-level tests     | After Stage 17 corpus driver ✅; needs GRAMMAR / core, not CLI invention |
 | JIT / interpret argv     | Wire when core exposes language argv; Stage 10 already forwards OS argv |
 | Multi-root compile / run | After Stage 13 check-only; needs a defined multi-entry product story    |
 | LSP project workspace    | [`yarrow-lsp` Stage 21](../yarrow-lsp/PLAN.md); depends on Stage 13 UX + core graph |
