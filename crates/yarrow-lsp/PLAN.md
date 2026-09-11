@@ -23,11 +23,12 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 
 ## Scope
 
-### Landed (v1, Stages 0–17)
+### Landed (v1, Stages 0–18)
 
 - stdio Language Server Protocol (LSP 3.17-shaped)
 - Text document sync for `file://` `.yar` buffers
 - Publish diagnostics from `Session::check_source` (and parse failures)
+- Pull diagnostics (`textDocument/diagnostic`) with uri+version cache shared with push
 - Navigation: go-to-definition, find references (same file + `require` cross-file)
 - Hover (AST + typed via `CheckedProgram::type_at`) and document symbols
 - Completions: keywords + in-scope / imported names + `std.*` require paths
@@ -40,9 +41,8 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next, Stages 18+)
+### In scope (next, Stages 19+)
 
-- Pull diagnostics (LSP 3.17) alongside push
 - TCP transport and a reusable protocol test harness
 - Thin VS Code / Zed extension packaging (server stays editor-agnostic)
 
@@ -119,7 +119,7 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 | Piece              | Status | Notes                                              |
 | ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 17: range formatting                    |
+| `yarrow-lsp` crate | ✅     | Stage 18: pull diagnostics                         |
 | Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
 | Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
 | Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
@@ -129,9 +129,9 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ---
 
-## Landed (Stages 0–16)
+## Landed (Stages 0–17)
 
-Stages 0–16 are complete. Historical stage write-ups for 0–15 were removed; git history keeps them. Stage 16 remains below for context until the next plan collapse.
+Stages 0–17 are complete. Historical stage write-ups for 0–16 were removed; git history keeps them. Stage 17 remains below for context until the next plan collapse.
 
 | Stage | Capability |
 | ----- | ---------- |
@@ -152,26 +152,11 @@ Stages 0–16 are complete. Historical stage write-ups for 0–15 were removed; 
 | 14 | Semantic tokens (full document) from tokenizer + AST decls |
 | 15 | File-local rename (`prepareRename` + `rename`) |
 | 16 | Workspace symbols (`workspace/symbol` over open + requires) |
+| 17 | Range formatting via `format_range` (on-type deferred) |
 
 ---
 
 ## Stages
-
-### Stage 16 - Workspace symbols ✅
-
-Quick-open style search without a full project indexer.
-
-1. Advertise `workspaceSymbolProvider`.
-2. Query open documents in `DocumentStore` (and optionally last-checked `require` dependency ASTs already loaded for those docs) for top-level functions, types, and `implement` methods.
-3. Filter by simple case-insensitive substring / prefix on the symbol name; return `SymbolInformation` or `WorkspaceSymbol` with correct `Location`.
-4. Cap result count (e.g. 100) so huge buffers stay responsive.
-5. Do not crawl the filesystem beyond what analysis already resolved; document that closed, unchecked trees are invisible.
-
-**Gate:** with two `.yar` buffers open that define distinct top-level names, `workspace/symbol` query matching one name returns that symbol’s location. Empty query may return a bounded list or empty; either behavior is documented in the gate notes.
-
-**Done:** `workspace/symbol` over open buffers plus one-hop resolved `require` files; top-level functions / types / implement methods; case-insensitive substring filter (prefix preferred in sort); cap 100. Empty query returns a bounded list. Closed trees stay invisible. Scripted gate: two open buffers, query hits one name’s location.
-
----
 
 ### Stage 17 - Range format and on-type format ✅
 
@@ -189,7 +174,7 @@ Narrow formatting after full-document format is solid (Stage 8).
 
 ---
 
-### Stage 18 - Pull diagnostics (LSP 3.17)
+### Stage 18 - Pull diagnostics (LSP 3.17) ✅
 
 Support clients that prefer pull over (or in addition to) push.
 
@@ -200,6 +185,8 @@ Support clients that prefer pull over (or in addition to) push.
 5. Preserve diagnostic `code`, severity, and related information already mapped in Stage 2.
 
 **Gate:** scripted client requests `textDocument/diagnostic` on `docs/examples/invalid/01_use_after_move.yar` and receives at least one diagnostic with code `E373` (or the file’s known code) without relying on a prior `publishDiagnostics` wait. Push path still works for open.
+
+**Done:** `diagnosticProvider` identifier `yarrow`; `interFileDependencies` / `workspaceDiagnostics` false (workspace pull skipped). `textDocument/diagnostic` uses `check_document` and a uri+version cache shared with push (`result_id` = `v{version}`; matching `previousResultId` → unchanged). Push on open/change unchanged. Scripted gate: open fixture → pull → `E373` without waiting on publish.
 
 ---
 
@@ -251,8 +238,8 @@ Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains e
 | rename                                 | 15 ✅    | references / resolve               |
 | workspaceSymbol                        | 16 ✅        | open buffers + require ASTs        |
 | rangeFormatting / onTypeFormatting     | 17 ✅        | `yarrow-fmt` (`format_range`; on-type deferred) |
-| textDocument/diagnostic (pull)         | 18       | same as publish                    |
-| TCP + test harness                     | 19       | transport only                     |
+| textDocument/diagnostic (pull)         | 18 ✅        | same as publish + uri/version cache             |
+| TCP + test harness                     | 19           | transport only                     |
 | editor extensions                      | 20       | packaging                          |
 | DAP / debug                            | Out of scope | AOT/JIT debug                  |
 
