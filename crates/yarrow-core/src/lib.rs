@@ -11,7 +11,7 @@ pub mod session;
 pub mod target;
 pub mod tokenizer;
 
-pub use analysis::{TypeIndex, TypeProbe};
+pub use analysis::{DefIndex, DefKind, DefProbe, TypeIndex, TypeProbe};
 pub use compiler::{CompileError, Compiler, RunResult};
 pub use diagnostics::{
     ColorChoice, DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, ExplainEntry, Severity,

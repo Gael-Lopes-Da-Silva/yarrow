@@ -10,6 +10,7 @@
  *   node crates/yarrow-lsp/scripts/harness.mjs pull-diagnostics
  *   node crates/yarrow-lsp/scripts/harness.mjs project-roots
  *   node crates/yarrow-lsp/scripts/harness.mjs project-missing-root
+ *   node crates/yarrow-lsp/scripts/harness.mjs definition-require
  *
  * Env:
  *   YARROW_LSP_BIN  - server argv prefix (default: cargo run -q -p yarrow_lsp --)
@@ -29,6 +30,7 @@ const SCENARIOS = [
   "pull-diagnostics",
   "project-roots",
   "project-missing-root",
+  "definition-require",
 ];
 
 function usage() {
@@ -338,6 +340,58 @@ async function scenarioProjectMissingRoot(client) {
   client.notify("exit", null);
 }
 
+async function scenarioDefinitionRequire(client) {
+  const fixture = path.join(
+    REPO_ROOT,
+    "docs/examples/valid/12_modules.yar",
+  );
+  const greetPath = path.join(
+    REPO_ROOT,
+    "docs/examples/valid/helpers/greet.yar",
+  );
+  const text = fs.readFileSync(fixture, "utf8");
+  // Alias on: `"helpers.greet" greet require`
+  const aliasOffset = text.indexOf("greet require");
+  if (aliasOffset < 0) {
+    throw new Error("fixture missing 'greet require'");
+  }
+  const before = text.slice(0, aliasOffset);
+  const line = (before.match(/\n/g) || []).length;
+  const character = aliasOffset - (before.lastIndexOf("\n") + 1);
+
+  await client.request("initialize", {
+    processId: null,
+    clientInfo: { name: "yarrow-lsp-harness", version: "0.1" },
+    capabilities: {
+      general: { positionEncodings: ["utf-8"] },
+    },
+    rootUri: null,
+  });
+  client.notify("initialized", {});
+  const uri = await openFile(client, fixture);
+
+  const result = await client.request("textDocument/definition", {
+    textDocument: { uri },
+    position: { line, character },
+  });
+
+  const loc = Array.isArray(result) ? result[0] : result;
+  if (!loc || !loc.uri) {
+    throw new Error(
+      `expected definition Location for greet require; got: ${JSON.stringify(result)}`,
+    );
+  }
+  const target = decodeURIComponent(String(loc.uri).replace(/^file:\/\//, ""));
+  if (path.resolve(target) !== path.resolve(greetPath)) {
+    throw new Error(
+      `expected definition -> ${greetPath}; got uri=${loc.uri}`,
+    );
+  }
+
+  await client.request("shutdown", null);
+  client.notify("exit", null);
+}
+
 async function main() {
   const scenario = process.argv[2] || "pull-diagnostics";
   if (scenario === "-h" || scenario === "--help") usage();
@@ -359,6 +413,8 @@ async function main() {
       await scenarioProjectRoots(client);
     } else if (scenario === "project-missing-root") {
       await scenarioProjectMissingRoot(client);
+    } else if (scenario === "definition-require") {
+      await scenarioDefinitionRequire(client);
     }
 
     console.log(`harness ok: ${scenario} via tcp ${addr}`);

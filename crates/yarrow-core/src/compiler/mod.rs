@@ -23,7 +23,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use dwarf::DebugFnInfo;
 
-use crate::analysis::TypeIndex;
+use crate::analysis::{DefIndex, TypeIndex};
 use crate::diagnostics::{DEFAULT_ERROR_LIMIT, Diagnostic, DiagnosticBatch, Span};
 use crate::parser::ast::{
     BinOp, Expr, Function, MatchCase, MatchCaseKind, Mutability, ParamModifier, Primitive, Program,
@@ -86,6 +86,8 @@ struct RequireWarn {
 #[derive(Debug, Clone)]
 struct VarWarnInfo {
     span: Span,
+    /// Identifier span of the binding name (Stage 35 definition probes).
+    name_span: Span,
     mutability: Mutability,
     /// True when the binding was read, written, or moved from.
     used: bool,
@@ -320,10 +322,12 @@ pub struct Compiler {
     debug_info: bool,
     /// Functions defined in this object compile, for DWARF subprograms / lines.
     debug_fns: Vec<DebugFnInfo>,
-    /// Root-file source text for Stage 30 name-span probes.
+    /// Root-file source text for Stage 30 / 35 name-span probes.
     source_text: String,
     /// Typed sites in the root file (Stage 30).
     type_index: TypeIndex,
+    /// Definition / require sites in the root file (Stage 35).
+    def_index: DefIndex,
 }
 
 impl Compiler {
@@ -434,6 +438,7 @@ impl Compiler {
             debug_fns: Vec::new(),
             source_text: String::new(),
             type_index: TypeIndex::default(),
+            def_index: DefIndex::default(),
         })
     }
 
@@ -511,6 +516,11 @@ impl Compiler {
         std::mem::take(&mut self.type_index)
     }
 
+    /// Take Stage 35 definition / require sites from the last successful compile.
+    pub fn take_def_index(&mut self) -> DefIndex {
+        std::mem::take(&mut self.def_index)
+    }
+
     /// Add a directory searched for user modules (`"a.b"` -> `a/b.yar`).
     pub fn add_module_search_path(&mut self, path: impl Into<std::path::PathBuf>) {
         self.loader.add_search_path(path);
@@ -528,6 +538,7 @@ impl Compiler {
         self.warnings = DiagnosticBatch::unlimited();
         self.require_warns.clear();
         self.type_index.clear();
+        self.def_index.clear();
         match self.compile_inner(program) {
             Ok(()) => {
                 if self.errors.is_empty() {
@@ -537,6 +548,7 @@ impl Compiler {
                     // Warnings are only kept on a successful check path.
                     self.warnings = DiagnosticBatch::unlimited();
                     self.type_index.clear();
+                    self.def_index.clear();
                     Err(self.errors.take())
                 }
             }
@@ -544,6 +556,7 @@ impl Compiler {
                 self.report(e);
                 self.warnings = DiagnosticBatch::unlimited();
                 self.type_index.clear();
+                self.def_index.clear();
                 Err(self.errors.take())
             }
         }
@@ -1119,6 +1132,7 @@ impl Compiler {
         let Ok((module_path, item, _)) = self.resolve_require(path) else {
             return;
         };
+        self.record_require_def_sites(path, alias, span, &module_path, item.as_deref());
         self.require_warns.push(RequireWarn {
             span,
             alias: alias.clone(),
@@ -1126,6 +1140,70 @@ impl Compiler {
             item,
             used: false,
         });
+    }
+
+    /// Stage 35: index require alias / item name / path string for definition probes.
+    fn record_require_def_sites(
+        &mut self,
+        path: &str,
+        alias: &Option<String>,
+        span: Span,
+        module_path: &str,
+        item: Option<&str>,
+    ) {
+        let file_path = self
+            .loader
+            .resolve_file_path(module_path)
+            .map(|p| p.to_string_lossy().into_owned());
+        if let Some(name_span) = self.require_binding_span(span, path, alias, item) {
+            let binding_name = alias
+                .as_deref()
+                .or(item)
+                .unwrap_or_else(|| path.rsplit('.').next().unwrap_or(path));
+            self.def_index.push_require(
+                name_span,
+                binding_name,
+                name_span,
+                module_path,
+                file_path.clone(),
+            );
+        }
+        // Path string inside quotes (cursor on `"helpers.greet"`).
+        let quoted = format!("\"{path}\"");
+        if let Some(path_span) = self.name_span_in(span, &quoted) {
+            let inner = Span::new(path_span.lo + 1, path_span.hi.saturating_sub(1));
+            if inner.lo < inner.hi {
+                let label = path.rsplit('.').next().unwrap_or(path);
+                self.def_index
+                    .push_require(inner, label, inner, module_path, file_path);
+            }
+        }
+    }
+
+    /// Span of the require binding name (alias, item, or bare last segment), not
+    /// a same-named substring inside the quoted path.
+    fn require_binding_span(
+        &self,
+        span: Span,
+        path: &str,
+        alias: &Option<String>,
+        item: Option<&str>,
+    ) -> Option<Span> {
+        let name = alias
+            .as_deref()
+            .or(item)
+            .unwrap_or_else(|| path.rsplit('.').next().unwrap_or(path));
+        if name.is_empty() || span.lo > span.hi || span.hi > self.source_text.len() {
+            return None;
+        }
+        let slice = &self.source_text[span.lo..span.hi];
+        let quoted = format!("\"{path}\"");
+        let after_quote = slice.find(&quoted).map(|i| i + quoted.len()).unwrap_or(0);
+        let search = &slice[after_quote..];
+        let rel = search.find(name)?;
+        let lo = span.lo + after_quote + rel;
+        let hi = lo + name.len();
+        Some(Span::new(lo, hi))
     }
 
     fn load_requires_stmts(
@@ -2846,10 +2924,12 @@ impl Compiler {
                 };
                 st.vars.insert(name.clone(), (var, t, var_own));
                 if name != "self" {
+                    let name_span = self.name_span_in(s.span, name).unwrap_or(s.span);
                     st.var_warns.insert(
                         name.clone(),
                         VarWarnInfo {
                             span: s.span,
+                            name_span,
                             mutability: *mutability,
                             used: false,
                             written: false,
@@ -2859,6 +2939,7 @@ impl Compiler {
                 }
                 if st.module.is_none() && name != "self" {
                     self.record_binding_site(s.span, name, t);
+                    self.record_definition_site(s.span, name);
                 }
             }
 
@@ -3559,6 +3640,18 @@ impl Compiler {
         self.type_index.push_binding(span, name, ty_s);
     }
 
+    /// Stage 35: record a root-file binding / function definition name.
+    fn record_definition_site(&mut self, haystack: Span, name: &str) {
+        let Some(span) = self.name_span_in(haystack, name) else {
+            return;
+        };
+        if self.source_path.is_empty() {
+            return;
+        }
+        self.def_index
+            .push_definition(span, name, span, self.source_path.clone());
+    }
+
     fn format_fn_probe(&self, display_name: &str, f: &Function, fq: &str) -> String {
         let (params, rets) = self
             .sig_tys
@@ -3601,6 +3694,22 @@ impl Compiler {
         };
         let sig = self.format_fn_probe(display, f, fq);
         self.type_index.push_signature(name_span, display, sig);
+        if !self.source_path.is_empty() {
+            self.def_index
+                .push_definition(name_span, display, name_span, self.source_path.clone());
+        }
+    }
+
+    /// Stage 35: map a use-site identifier to its root-file definition span.
+    fn record_binding_use(&mut self, use_haystack: Span, name: &str, def_span: Span) {
+        let Some(hit) = self.name_span_in(use_haystack, name) else {
+            return;
+        };
+        if self.source_path.is_empty() {
+            return;
+        }
+        self.def_index
+            .push_definition(hit, name, def_span, self.source_path.clone());
     }
 
     fn format_stack_tys(&self, tys: &[Ty]) -> String {
@@ -4876,6 +4985,10 @@ impl Compiler {
                 if let Some((var, t, _own)) = st.vars.get(name).cloned() {
                     if st.module.is_none() {
                         self.record_binding_site(st.current_span, name, t);
+                        if let Some(info) = st.var_warns.get(name) {
+                            let def_span = info.name_span;
+                            self.record_binding_use(st.current_span, name, def_span);
+                        }
                     }
                     let v = b.use_var(var);
                     self.require_region_live(st, v)?;
