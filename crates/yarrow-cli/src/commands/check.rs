@@ -88,7 +88,7 @@ fn check_project(roots: &[std::path::PathBuf], entry_name: &str, global: &Global
                     eprint!("{}", render_batch(&root.warnings, &root.file, color));
                 }
             }
-            if global.verbose && !checked.graph.modules.is_empty() {
+            if global.progress() && !checked.graph.modules.is_empty() {
                 eprintln!("project modules: {}", checked.graph.modules.join(", "));
             }
             ExitCode::SUCCESS

@@ -42,11 +42,11 @@ src/main.rs  →  yarrow_cli::run
 
 **Defaults:** `yarrow <file.yar>` → `run --target object` (matches `CompileOptions` / `ExecutionMode::Object`). Entry name `main` unless `--main` is set. Use `--target jit` for in-process run.
 
-**Global flags:** `--color`, `--error-limit`, `-L` / `--search-path`, `-q`, `-v`.
+**Global flags:** `--color` (`auto` honors `NO_COLOR` / `CLICOLOR_FORCE` / `FORCE_COLOR`; explicit wins), `--error-limit`, `-L` / `--search-path`, `-q` (suppress driver chatter, never diagnostics / explain / dump payload), `-v` (stderr progress; no-op under `-q`).
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–13 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–14 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -73,17 +73,11 @@ Clap: `yarrow check FILE [FILE...]`. One path → `Session::check_source`; two o
 
 ---
 
-### Stage 14 - Color / quiet / env polish
+### Stage 14 - Color / quiet / env polish ✅
 
-Flags exist (`--color`, `-q`, `-v`) but policy is uneven across commands.
+Quiet: `-q` suppresses `wrote …`, repl banners/prompts, and `-v` progress (`GlobalArgs::progress`); never diagnostics or `explain` / `dump` stdout. Verbose: progress only; no exit-code changes. Color: `--color auto` via core `ColorChoice` (`NO_COLOR` → never; non-empty `CLICOLOR_FORCE` / `FORCE_COLOR` → always); explicit `always`/`never` wins. `fmt` / `lsp`: no color API; `lsp` honors `-q` for startup banner; `fmt` quiet/color are documented no-ops.
 
-1. Document and implement one quiet policy: `-q` suppresses driver chatter (`wrote …`, repl banners, verbose progress) and **never** suppresses diagnostics or `explain` / `dump` payload on stdout.
-2. Document verbose: `-v` may add progress on stderr; it must not change exit codes or hide errors.
-3. Honor common env for auto color when `--color auto`: `NO_COLOR` forces never; optional `CLICOLOR_FORCE` / `FORCE_COLOR` forces always only if already cheap with the core `ColorChoice` path. Explicit `--color always|never` always wins over env.
-4. Ensure `fmt` / `lsp` wrappers respect global `--color` / `-q` where those crates expose an equivalent (pass through or no-op with a short note if the child API has no color knob).
-5. Touch `--help` / this plan’s Landed exit-code / flag blurbs if behavior changes.
-
-**Gate:** `yarrow check -q docs/examples/valid/01_hello.yar` prints nothing on success; a deliberate invalid file still prints diagnostics on stderr. `NO_COLOR=1 yarrow check …` (with `--color auto`) produces uncolored diagnostic text. `cargo clippy` green.
+**Gate:** `yarrow check -q` success is silent; invalid still prints diagnostics; `NO_COLOR=1` + `--color auto` → uncolored text.
 
 ---
 

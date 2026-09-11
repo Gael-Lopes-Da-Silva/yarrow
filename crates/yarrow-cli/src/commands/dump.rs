@@ -21,7 +21,7 @@ pub fn dump_file(file: &Path, emit: EmitKind, global: &GlobalArgs) -> ExitCode {
         }
     };
 
-    if global.verbose {
+    if global.progress() {
         let kind = match emit {
             EmitKind::Tokens => "tokens",
             EmitKind::Ast => "ast",
