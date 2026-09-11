@@ -2,7 +2,7 @@
 
 How Yarrow source (`.yar`) should look. Language rules live in [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md); this document is about layout, naming, and idiomatic form.
 
-The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide. By default they sort top-level `require` lines (std first, then local); pass `--no-sort-requires` to keep source order. Soft wrap defaults to 100 columns (`--max-width`, minimum 20). Indent is always tabs.
+The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide. By default they sort top-level `require` lines (std first, then local); pass `--no-sort-requires` to keep source order. Soft wrap defaults to 100 columns (`--max-width`, minimum 20). Indent is always tabs. Diff-sensitive regions can opt out with paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` comments (see [Comments](#comments)).
 
 ---
 
@@ -86,6 +86,23 @@ end
 - Comments are sentences or short phrases. Prefer complete sentences for non-obvious rationale.
 - Do not use decorative comment banners in ordinary code. Reserve section banners for long illustrative files (as in the grammar tour).
 - Never use an em dash (`—`) in comments.
+- **Formatter ignore regions:** to keep a contiguous block byte-stable under `yarrow fmt` / `yarrow-fmt` (aside from source hygiene), wrap it in paired whole-line comments:
+
+```yarrow
+# yarrow-fmt-ignore-begin
+# Hand-aligned table for a doc example; do not reflow.
+messy   function   do
+  1    drop
+end
+# yarrow-fmt-ignore-end
+```
+
+  - Markers must be own-line comments; the directive is `yarrow-fmt-ignore-begin` / `yarrow-fmt-ignore-end` after `#` (optional trailing note after the directive is allowed).
+  - The region includes both marker lines and everything between them.
+  - Ignored text still gets source hygiene: LF endings, no trailing whitespace, final newline. Construct layout, indent, blank-line rules, require sorting, and file-layout reorder do not rewrite the interior.
+  - Prefer small regions. Do not use ignores to paper over formatter bugs in the shared corpus; fix the printer instead.
+  - Unmatched `begin` runs through end of file; a stray `end` is an ordinary comment. Nesting is not supported.
+  - `--reorder-layout` is skipped for a file that contains ignore markers so begin/end pairs stay intact. Require runs that intersect an ignore region are not sorted.
 
 ```yarrow
 # Literal u8 coerces to i32 at the declaration site.

@@ -5,14 +5,16 @@
 //! boundaries (and to a whole require run when sorting is on; to the whole file
 //! when `reorder_layout` is on or hygiene would shift offsets), then returns one
 //! contiguous replacement whose text matches the corresponding slice of the
-//! full-document format.
+//! full-document format. Stage 19: expansion stops at ignore-region boundaries;
+//! a selection wholly inside an ignore region yields a no-op edit for that cover.
 
 use yarrow_core::Span;
 use yarrow_core::diagnostics::SourceFile;
 use yarrow_core::parser::ast::{Stmt, StmtKind};
 
 use crate::{
-    FormatError, FormatIr, FormatOptions, apply_source_hygiene, build_format_ir, format_source,
+    FormatError, FormatIr, FormatOptions, apply_source_hygiene, build_format_ir, enclosing_ignore,
+    format_source, has_ignore_markers, trim_cover_around_ignores,
 };
 
 /// Inclusive-exclusive UTF-8 byte range into a source buffer.
@@ -83,6 +85,11 @@ impl FormatRangeEdit {
 /// Parses and formats the whole file via [`format_source`], then returns one
 /// contiguous edit for the (possibly expanded) region. Parse failures surface
 /// as [`FormatError::Parse`]. Binary / `yarrow fmt` do not expose range mode.
+///
+/// Ignore regions (Stage 19): a span wholly inside `# yarrow-fmt-ignore-begin` /
+/// `# yarrow-fmt-ignore-end` returns a no-op for that cover. Expansion otherwise
+/// stops at ignore boundaries; if an unselected ignore sits inside the only
+/// contiguous cover, falls back to a whole-file replace (still ignore-aware).
 pub fn format_range(
     source: &str,
     span: ByteRange,
@@ -102,7 +109,18 @@ pub fn format_range(
         });
     }
 
-    if options.reorder_layout {
+    if let Some(ign) = enclosing_ignore(source, requested) {
+        let slice = source.get(ign.start..ign.end).unwrap_or("").to_string();
+        return Ok(FormatRangeEdit {
+            range: ign,
+            new_text: slice,
+            expanded: ign.start < requested.start || ign.end > requested.end,
+        });
+    }
+
+    // Reorder with ignore markers is already a no-op in the printer; without
+    // markers, whole-file replace matches Stage 15.
+    if options.reorder_layout && !has_ignore_markers(source) {
         return Ok(FormatRangeEdit {
             range: ByteRange::new(0, source.len()),
             new_text: formatted,
@@ -112,6 +130,15 @@ pub fn format_range(
 
     let orig_ir = build_format_ir(source, "<input>")?;
     let (cover, expanded) = expand_to_toplevel(&orig_ir, requested, options.sort_requires);
+
+    let Some(cover) = trim_cover_around_ignores(source, cover, requested) else {
+        return Ok(FormatRangeEdit {
+            range: ByteRange::new(0, source.len()),
+            new_text: formatted,
+            expanded: true,
+        });
+    };
+    let expanded = expanded || cover.start < requested.start || cover.end > requested.end;
 
     if cover.is_empty() || formatted == source {
         return Ok(FormatRangeEdit {

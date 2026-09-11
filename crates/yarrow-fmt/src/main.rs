@@ -12,7 +12,7 @@ use yarrow_fmt::{
 #[derive(Debug, Parser)]
 #[command(
     name = "yarrow-fmt",
-    about = "Format Yarrow (.yar) source to match the style guide",
+    about = "Format Yarrow (.yar) source to match the style guide. Respects # yarrow-fmt-ignore-begin / # yarrow-fmt-ignore-end regions.",
     version
 )]
 struct Args {
