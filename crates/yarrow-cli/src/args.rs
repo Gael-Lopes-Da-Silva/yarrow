@@ -143,8 +143,10 @@ pub enum Cmd {
 
     /// Check + codegen without running the entry.
     ///
-    /// Default `--target object` writes a native artifact; use `--emit object`
-    /// (default, `stem.o`) or `--emit exe` (linked host binary, default `stem`).
+    /// Default `--target object` writes a native artifact next to the cwd:
+    /// `--emit object` (default) → `./<stem>.o`; `--emit exe` → `./<stem>`.
+    /// `-o PATH` overrides; only that path is the artifact. Successful writes
+    /// are recorded in `.yarrow-build/artifacts` for `yarrow clean`.
     /// `--target jit` finalizes JIT code in-process (no file written).
     Compile {
         /// Source file to compile.
@@ -164,10 +166,19 @@ pub enum Cmd {
         #[arg(long, value_name = "NAME", default_value = "main")]
         main: String,
 
-        /// Output path for `--target object` (`object` → `<stem>.o`, `exe` → `<stem>`).
+        /// Output path for `--target object` (default `object` → `./<stem>.o`,
+        /// `exe` → `./<stem>`). Overrides the default; recorded for `clean`.
         #[arg(short = 'o', long = "output", value_name = "PATH")]
         output: Option<std::path::PathBuf>,
     },
+
+    /// Remove artifacts recorded by this CLI's `compile`.
+    ///
+    /// Deletes only paths listed in `.yarrow-build/artifacts` (never a
+    /// recursive `*.o` wipe). Missing files or a missing manifest exit `0`.
+    /// Objects written outside this CLI (or before recording existed) are not
+    /// removed unless they appear in the manifest.
+    Clean,
 
     /// Check source without running `main`.
     ///

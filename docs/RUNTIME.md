@@ -2,7 +2,7 @@
 
 How a Yarrow program executes: evaluation stack, calls, errors, and modules. Complements [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`MEMORY_MODEL.md`](MEMORY_MODEL.md). Surface forms come from [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md).
 
-Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Internal compiler errors](#internal-compiler-errors-stage-40), [Modules](#modules), [Projects](#projects), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--38).
+Contents: [Execution model](#execution-model), [Stack](#stack), [Functions](#functions), [Errors](#errors), [Internal compiler errors](#internal-compiler-errors-stage-40), [Modules](#modules), [Projects](#projects), [CLI compile artifacts](#cli-compile-artifacts), [Session probes](#session-probes-stages-30--35), [Warnings](#warnings-stage-20--38).
 
 ## Execution model
 
@@ -435,6 +435,18 @@ Diagnostics:
 | `E383` | Missing / empty project root    |
 
 Single-file `Session::check_source` and nested `require` are unchanged. Drivers: `yarrow check root_a.yar root_b.yar` ([`yarrow-cli` Stage 13](../crates/yarrow-cli/PLAN.md)); LSP `initializationOptions.projectRoots` ([`yarrow-lsp` Stage 21](../crates/yarrow-lsp/PLAN.md)). Fixtures: [`docs/examples/project/`](examples/project/).
+
+## CLI compile artifacts
+
+Driver-only hygiene ([`yarrow-cli` Stage 15](../crates/yarrow-cli/PLAN.md)). Not a package manifest.
+
+| Output | Default path | Notes |
+| ------ | ------------ | ----- |
+| Relocatable object (`compile --emit object`) | `./<stem>.o` in the process cwd | `-o PATH` overrides; only that path is the artifact |
+| Linked executable (`compile --emit exe`) | `./<stem>` in the process cwd | Same `-o` rule |
+| JIT (`--target jit`) | (none) | In-process; nothing recorded |
+
+Successful object/exe writes append the path to `.yarrow-build/artifacts` (created under the cwd). `yarrow clean` deletes **only** paths listed there, then removes the empty manifest / directory when possible. It never globs `*.o` across the tree. Objects that predate recording, or were written outside this CLI, stay until listed (or removed by hand).
 
 ## Session probes (Stages 30 / 35)
 

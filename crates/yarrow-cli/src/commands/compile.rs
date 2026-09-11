@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use yarrow_core::{CompileOptions, ExecutionMode, Session};
 
 use crate::args::{CompileEmitKind, GlobalArgs, TargetKind};
+use crate::artifacts;
 use crate::diagnostics::render_batch;
 
 /// Check + codegen `file` without running the entry.
@@ -108,6 +109,13 @@ fn write_bytes(out: &Path, bytes: &[u8], executable: bool, global: &GlobalArgs) 
     if executable && let Err(e) = set_executable(out) {
         eprintln!(
             "error: cannot set execute permission on {}: {e}",
+            out.to_string_lossy()
+        );
+        return ExitCode::from(2);
+    }
+    if let Err(e) = artifacts::record(out) {
+        eprintln!(
+            "error: cannot record artifact {}: {e}",
             out.to_string_lossy()
         );
         return ExitCode::from(2);

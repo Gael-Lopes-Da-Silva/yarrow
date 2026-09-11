@@ -1,4 +1,5 @@
 mod check;
+mod clean;
 mod compile;
 mod dump;
 mod explain;
@@ -9,6 +10,7 @@ mod repl;
 mod run;
 
 pub use check::check_files;
+pub use clean::clean_artifacts;
 pub use compile::compile_file;
 pub use dump::dump_file;
 pub use explain::explain_code;
