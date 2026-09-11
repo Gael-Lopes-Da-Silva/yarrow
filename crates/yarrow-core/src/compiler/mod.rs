@@ -721,6 +721,45 @@ impl Compiler {
         );
     }
 
+    /// Stage 38: empty `case … end` bodies do nothing when selected.
+    fn warn_empty_match_arms(&mut self, cases: &[MatchCase]) {
+        for case in cases {
+            if case.body.is_empty() {
+                self.report_warning(
+                    Diagnostic::warning("W408", "empty match arm".to_string())
+                        .with_primary(case.span, "no statements in this case")
+                        .with_help(
+                            "add a body, handle the case in `else`, or remove the arm if unused",
+                        ),
+                );
+            }
+        }
+    }
+
+    /// Stage 38: empty `if` then-branch (else may be absent; do not warn on that).
+    fn warn_empty_if_then(&mut self, span: Span, then_branch: &[Stmt]) {
+        if then_branch.is_empty() {
+            self.report_warning(
+                Diagnostic::warning("W409", "empty `if` then branch".to_string())
+                    .with_primary(span, "no statements before `else` / `end`")
+                    .with_help("add a body, or invert the condition and use only the else branch"),
+            );
+        }
+    }
+
+    /// Stage 38: `unsafe … end` with no statements is a no-op escape hatch.
+    fn warn_empty_unsafe(&mut self, span: Span, body: &[Stmt]) {
+        if body.is_empty() {
+            self.report_warning(
+                Diagnostic::warning("W410", "empty `unsafe` block".to_string())
+                    .with_primary(span, "no statements inside")
+                    .with_help(
+                        "remove the block, or put the pointer / raw-memory ops that need it here",
+                    ),
+            );
+        }
+    }
+
     fn warn_dead_stack(&mut self, st: &FnState, stack: &[Slot]) {
         for slot in stack {
             if st.param_values.contains(&slot.value) {
@@ -3203,6 +3242,7 @@ impl Compiler {
                 then_branch,
                 else_branch,
             } => {
+                self.warn_empty_if_then(s.span, then_branch);
                 let prev = st.terminated;
                 self.emit_if(b, st, stack, condition, then_branch, else_branch)?;
                 // `emit_if` sets `terminated` when both branches return/break.
@@ -3216,6 +3256,7 @@ impl Compiler {
                 cases,
                 else_branch,
             } => {
+                self.warn_empty_match_arms(cases);
                 let prev = st.terminated;
                 self.emit_match(b, st, stack, value, cases, else_branch)?;
                 st.terminated = prev;
@@ -3258,6 +3299,7 @@ impl Compiler {
             StmtKind::Move { target, source } => self.emit_move(b, st, stack, target, source)?,
 
             StmtKind::Unsafe { body } => {
+                self.warn_empty_unsafe(s.span, body);
                 // Compile the body with an active unsafe context.
                 st.unsafe_depth += 1;
                 let result = self.compile_body(b, st, stack, body);

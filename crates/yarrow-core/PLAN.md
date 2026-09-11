@@ -25,7 +25,7 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                                                                                           |
 | Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)                                                                              |
-| Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings`                                    |
+| Warnings    | `W401`–`W410` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable / empty match arm / empty `if` then / empty `unsafe`); `CheckedProgram::warnings` |
 | Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `type_at` (30) + `definition_at` (35) |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
 | Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
@@ -45,7 +45,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
 | AOT        | Cross link needs matching archive + CRT; Mach-O / Windows executable link is Stage 39 (object-only today on linux hosts) |
 | Interpret  | `00_grammar_tour.yar` stays out of scope (mixed surface / `loop.break` and further tour forms); Stage 37 landed unsafe / pointers / move / fs |
-| Warnings   | `W401`–`W407` landed; empty `match` arm and further lints are Stage 38                                                   |
+| Warnings   | `W401`–`W410` landed (Stage 38: empty match arm / empty `if` then / empty `unsafe`)                                      |
 | Projects   | Multi-root check via `check_project`; CLI driver is [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md)                       |
 | Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                    |
 | LSP assist | Typed-at-span + definition / require probes landed (Stage 35); LSP consumption is [`yarrow-lsp` Stage 22](../yarrow-lsp/PLAN.md) |
@@ -55,7 +55,7 @@ Phases A–E (Stages 0–24) and Phase F–G (Stages 25–26, 28–34) are compl
 
 ## Next (Phase H)
 
-Focus: warning catalog follow-ups (Stage 38), then AOT executable link on non-ELF and ICE polish. Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
+Focus: AOT executable link on non-ELF (Stage 39), then ICE polish (Stage 40). Keep Stage 27 deferred unless PATH linkers become fragile. Do not invent language features. Project CLI stays in [`yarrow-cli` Stage 13](../yarrow-cli/PLAN.md). LSP Stage 22 consumes Stage 35 probes.
 
 ### Stage 35 - Require-path / definition probe API - **done**
 
@@ -92,7 +92,7 @@ Finish interpret parity for the rest of the JIT-runnable corpus, or document exp
 
 ---
 
-### Stage 38 - Warning catalog follow-ups
+### Stage 38 - Warning catalog follow-ups - **done**
 
 Stage 31 left empty `match` arms and further low-noise lints for later.
 
@@ -102,6 +102,8 @@ Stage 31 left empty `match` arms and further low-noise lints for later.
 4. Update RUNTIME warnings table; do not turn warnings into hard errors.
 
 **Gate:** new fixtures check with `Ok` and surface the new codes via `CheckedProgram::warnings`. `cargo run -p yarrow_core --example check_warnings` green. Existing `valid/**` / `invalid/**` unchanged. `cargo clippy` green.
+
+**Landed:** `W408` empty `match` case arm; `W409` empty `if` then branch; `W410` empty `unsafe` block; fixtures `05`–`06`; `check_warnings` gate restored.
 
 ---
 

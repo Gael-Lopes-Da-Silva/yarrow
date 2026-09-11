@@ -368,6 +368,8 @@ pub enum MatchCaseKind {
 pub struct MatchCase {
     pub kind: MatchCaseKind,
     pub body: Vec<Stmt>,
+    /// Span covering the case condition/type through its closing `end`.
+    pub span: Span,
 }
 
 /// A statement with its source span (keyword / name through the construct).
