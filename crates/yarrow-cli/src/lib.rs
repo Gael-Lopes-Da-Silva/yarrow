@@ -15,6 +15,7 @@
 //! ```
 
 mod args;
+mod artifacts;
 mod commands;
 mod diagnostics;
 
@@ -146,6 +147,7 @@ where
         }
         (Some(Cmd::Dump { file, emit }), None) => commands::dump_file(&file, emit, &cli.global),
         (Some(Cmd::Explain { code }), None) => commands::explain_code(&code, &cli.global),
+        (Some(Cmd::Clean), None) => commands::clean_artifacts(&cli.global),
         (Some(Cmd::Version), None) => {
             // Clap's built-in `--version` prints only the top-level crate version;
             // this subcommand matches `rustc -V` style UX.
@@ -162,7 +164,7 @@ where
             // `arg_required_else_help` isn't enough once everything is optional.
             // Print a concise usage and keep exit code consistent.
             eprintln!(
-                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow check <file.yar> [file.yar...]\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp"
+                "usage: yarrow <file.yar>\n       yarrow run [--target jit|object] <file.yar> [-- ARGS...]\n       yarrow compile [--target jit|object] <file.yar>\n       yarrow check <file.yar> [file.yar...]\n       yarrow interpret <file.yar> [-- ARGS...]\n       yarrow repl\n       yarrow fmt [--check] [PATH...]\n       yarrow lsp\n       yarrow clean"
             );
             ExitCode::from(2)
         }

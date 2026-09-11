@@ -30,7 +30,7 @@ src/main.rs  →  yarrow_cli::run
 | Command     | Behavior                                                                              |
 | ----------- | ------------------------------------------------------------------------------------- |
 | `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--`          |
-| `compile`   | Codegen only; default `object` writes `-o` / `stem.o`; `--emit exe` linked binary     |
+| `compile`   | Codegen only; default `./<stem>.o` / `./<stem>`; `-o` overrides; records `.yarrow-build/artifacts` |
 | `check`     | Semantic check; one file → `check_source`; two+ roots → `check_project` |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
 | `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit`         |
@@ -38,6 +38,7 @@ src/main.rs  →  yarrow_cli::run
 | `fmt`       | Format `.yar` in-process via `yarrow_fmt::run_fmt`                                    |
 | `dump`      | `--emit tokens\|ast\|ir`                                                              |
 | `explain`   | Long form for a diagnostic code                                                       |
+| `clean`     | Delete only paths listed in `.yarrow-build/artifacts` (idempotent; no `*.o` glob)     |
 | `version`   | Crate version (`-V` too)                                                              |
 
 **Defaults:** `yarrow <file.yar>` → `run --target object` (matches `CompileOptions` / `ExecutionMode::Object`). Entry name `main` unless `--main` is set. Use `--target jit` for in-process run.
@@ -46,7 +47,7 @@ src/main.rs  →  yarrow_cli::run
 
 **Exit codes:** `0` ok, `1` program diagnostics (incl. link), `2` usage / I/O / signal. Native `run --target object` propagates the child exit status when in `0..=255`.
 
-Stages 1–14 are complete. Historical stage write-ups were removed; git history keeps them.
+Stages 1–15 are complete. Historical stage write-ups were removed; git history keeps them.
 
 ---
 
@@ -81,24 +82,11 @@ Quiet: `-q` suppresses `wrote …`, repl banners/prompts, and `-v` progress (`Gl
 
 ---
 
-### Stage 15 - Artifact convention + `yarrow clean`
+### Stage 15 - Artifact convention + `yarrow clean` ✅
 
-Stage 12 skipped `clean`: default `stem.o` / bare `stem` in cwd is unsafe to delete without a documented convention.
+Defaults stay cwd: `./<stem>.o` (`--emit object`) and `./<stem>` (`--emit exe`); `-o PATH` overrides. Successful `compile` writes record the path in `.yarrow-build/artifacts`. `yarrow clean` deletes only those listed paths (never a recursive `*.o` wipe); missing files / missing manifest → exit `0`. Pre-manifest cwd objects are not auto-deleted.
 
-1. Document the compile output convention in `--help` and a short RUNTIME or CLI blurb:
-   - default object: `./<stem>.o` next to cwd (current behavior)
-   - default exe: `./<stem>`
-   - `-o PATH` overrides; only that path is the artifact
-2. Prefer a **manifest sidecar** or **known-safe delete list** over “rm every `*.o` in cwd”:
-   - e.g. `compile` writes `.yarrow-build/<stem>.o` (or records paths in `.yarrow-build/artifacts`) **or**
-   - `clean` only deletes paths listed in a manifest produced by this CLI’s `compile`, never recursive glob of the user’s tree.
-3. Add `yarrow clean` that removes only those documented artifacts; missing artifacts → exit `0` (idempotent); refuse unsafe globs.
-4. If changing default output dirs, keep a migration note: old cwd `stem.o` is not auto-deleted by `clean` unless it appears in the manifest.
-5. Do not invent a package manager or project file; this is compile-output hygiene only.
-
-**Gate:** `yarrow compile --target object docs/examples/valid/01_hello.yar` then `yarrow clean` removes the documented artifact and exits `0`; a second `clean` exits `0`. `yarrow --help` lists `clean`. No deletion of unrelated `*.o` outside the convention. `cargo fmt && cargo check && cargo clippy` green.
-
-**Blocked alternative:** if a manifest / build-dir change is too invasive, keep `clean` omitted and leave a Done note pointing here; do not ship a dangerous cwd wipe.
+**Gate:** `compile` then `clean` removes the recorded artifact; second `clean` exits `0`; unrelated `*.o` untouched.
 
 ---
 
