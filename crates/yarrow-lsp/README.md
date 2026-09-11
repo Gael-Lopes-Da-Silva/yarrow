@@ -68,3 +68,7 @@ After a successful check, `textDocument/inlayHint` places type annotations after
 ## Range formatting
 
 `textDocument/rangeFormatting` formats via `yarrow_fmt::format_range`: the selection expands to enclosing top-level item boundaries (same style as full-document format). Parse failure returns null (buffer unchanged). A second request on an already-formatted cover yields empty edits. Disabled with `--no-format` / init `format: false` (omits the capability). On-type formatting is not advertised: mid-edit parse failures and top-level expansion are unsafe for keystroke triggers.
+
+## Pull diagnostics
+
+`textDocument/diagnostic` returns the same diagnostics as push (`check_document`), with identifier `yarrow`. Results are cached by URI + document version (`resultId` = `v{version}`); a matching `previousResultId` yields an unchanged report so dual push+pull clients avoid flicker. Push on `didOpen` / `didChange` is unchanged. Workspace-wide pull is not advertised.

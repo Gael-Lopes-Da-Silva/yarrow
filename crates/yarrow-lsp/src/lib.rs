@@ -1,7 +1,7 @@
 //! Yarrow language server.
 //!
-//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 17 adds
-//! `textDocument/rangeFormatting` via `yarrow_fmt::format_range`.
+//! Speaks LSP over stdio and delegates analysis to `yarrow_core`. Stage 18 adds
+//! pull diagnostics (`textDocument/diagnostic`) alongside push publish.
 
 mod analysis;
 mod code_action;
@@ -28,17 +28,21 @@ use std::time::Duration;
 use tower_lsp_server::jsonrpc::{Error as LspErrorRpc, Result as LspResult};
 use tower_lsp_server::ls_types::{
     CodeActionParams, CodeActionProviderCapability, CodeActionResponse, CompletionOptions,
-    CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticOptions,
+    DiagnosticServerCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentDiagnosticParams, DocumentDiagnosticReport,
+    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentRangeFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintParams, LSPAny,
-    Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams, RenameOptions,
+    FullDocumentDiagnosticReport, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
+    InlayHintParams, LSPAny, Location, MessageType, OneOf, PrepareRenameResponse, ReferenceParams,
+    RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport, RenameOptions,
     RenameParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     SignatureHelp, SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
-    WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit,
+    UnchangedDocumentDiagnosticReport, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -113,12 +117,22 @@ where
     Ok(())
 }
 
+/// Last published / pulled diagnostics for one URI (keyed by document version).
+#[derive(Clone)]
+struct CachedDiagnostics {
+    version: i32,
+    result_id: String,
+    items: Vec<Diagnostic>,
+}
+
 struct ServerState {
     documents: Mutex<DocumentStore>,
     encoding: Mutex<PositionEncoding>,
     config: Mutex<LspConfig>,
     /// Per-URI generation counter; bumping cancels an in-flight debounce.
     analysis_gens: Mutex<HashMap<String, u64>>,
+    /// Push and pull share this cache so both paths stay in sync (uri → version).
+    diag_cache: Mutex<HashMap<String, CachedDiagnostics>>,
 }
 
 struct Backend {
@@ -135,6 +149,7 @@ impl Backend {
                 encoding: Mutex::new(PositionEncoding::Utf16),
                 config: Mutex::new(config),
                 analysis_gens: Mutex::new(HashMap::new()),
+                diag_cache: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -154,6 +169,83 @@ impl Backend {
         let entry = gens.entry(uri.as_str().to_string()).or_insert(0);
         *entry = entry.saturating_add(1);
         *entry
+    }
+
+    fn store_diagnostics(state: &ServerState, uri: &Uri, version: i32, items: Vec<Diagnostic>) {
+        let result_id = format!("v{version}");
+        if let Ok(mut cache) = state.diag_cache.lock() {
+            cache.insert(
+                uri.as_str().to_string(),
+                CachedDiagnostics {
+                    version,
+                    result_id,
+                    items,
+                },
+            );
+        }
+    }
+
+    fn clear_diagnostics_cache(state: &ServerState, uri: &Uri) {
+        if let Ok(mut cache) = state.diag_cache.lock() {
+            cache.remove(uri.as_str());
+        }
+    }
+
+    /// Diagnostics for the open buffer at `uri`, preferring the uri+version cache.
+    fn diagnostics_for(
+        state: &ServerState,
+        uri: &Uri,
+        previous_result_id: Option<&str>,
+    ) -> DocumentDiagnosticReport {
+        let (version, text) = {
+            let Ok(store) = state.documents.lock() else {
+                return empty_full_report(None);
+            };
+            let Some(doc) = store.get(uri) else {
+                return empty_full_report(None);
+            };
+            (doc.version, doc.text.clone())
+        };
+
+        if let Ok(cache) = state.diag_cache.lock()
+            && let Some(cached) = cache.get(uri.as_str())
+            && cached.version == version
+        {
+            if previous_result_id.is_some_and(|id| id == cached.result_id) {
+                return DocumentDiagnosticReport::Unchanged(
+                    RelatedUnchangedDocumentDiagnosticReport {
+                        related_documents: None,
+                        unchanged_document_diagnostic_report: UnchangedDocumentDiagnosticReport {
+                            result_id: cached.result_id.clone(),
+                        },
+                    },
+                );
+            }
+            return DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: Some(cached.result_id.clone()),
+                    items: cached.items.clone(),
+                },
+            });
+        }
+
+        let encoding = state
+            .encoding
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(PositionEncoding::Utf16);
+        let config = state.config.lock().map(|g| g.clone()).unwrap_or_default();
+        let items = check_document(uri, &text, encoding, &config);
+        let result_id = format!("v{version}");
+        Self::store_diagnostics(state, uri, version, items.clone());
+        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+            related_documents: None,
+            full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                result_id: Some(result_id),
+                items,
+            },
+        })
     }
 
     fn schedule_analysis(&self, uri: Uri, version: i32, debounce: bool) {
@@ -215,11 +307,22 @@ impl Backend {
                 }
             }
 
+            Backend::store_diagnostics(&state, &uri, version, diagnostics.clone());
             client
                 .publish_diagnostics(uri, diagnostics, Some(version))
                 .await;
         });
     }
+}
+
+fn empty_full_report(result_id: Option<String>) -> DocumentDiagnosticReport {
+    DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+        related_documents: None,
+        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+            result_id,
+            items: Vec::new(),
+        },
+    })
 }
 
 impl fmt::Debug for Backend {
@@ -325,6 +428,14 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                    DiagnosticOptions {
+                        identifier: Some("yarrow".into()),
+                        inter_file_dependencies: false,
+                        workspace_diagnostics: false,
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -343,6 +454,23 @@ impl LanguageServer for Backend {
 
     async fn shutdown(&self) -> LspResult<()> {
         Ok(())
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> LspResult<DocumentDiagnosticReportResult> {
+        let uri = params.text_document.uri;
+        if let Some(id) = params.identifier.as_deref()
+            && id != "yarrow"
+        {
+            return Ok(DocumentDiagnosticReportResult::Report(empty_full_report(
+                None,
+            )));
+        }
+        let report =
+            Backend::diagnostics_for(&self.state, &uri, params.previous_result_id.as_deref());
+        Ok(DocumentDiagnosticReportResult::Report(report))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -438,6 +566,7 @@ impl LanguageServer for Backend {
         };
 
         if closed {
+            Backend::clear_diagnostics_cache(&self.state, &uri);
             self.client.publish_diagnostics(uri, Vec::new(), None).await;
             self.client
                 .log_message(
