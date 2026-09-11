@@ -67,13 +67,19 @@ pub(crate) fn emit_dwarf(
         return Ok(());
     }
 
+    // Stage 34 Mach-O / COFF objects: skip DWARF until format-specific relocs
+    // are wired. Object emit still succeeds; ELF keeps Stage 25 debug info.
+    if product.object.format() != BinaryFormat::Elf {
+        return Ok(());
+    }
+
     let address_size = product
         .object
         .architecture()
         .address_size()
         .map(|s| s.bytes())
         .unwrap_or(8);
-    // write::Object does not expose endianness; linux-gnu AOT targets (Stage 25/26) are LE.
+    // write::Object does not expose endianness; linux AOT targets are LE.
     let endian = RunTimeEndian::Little;
 
     let encoding = Encoding {

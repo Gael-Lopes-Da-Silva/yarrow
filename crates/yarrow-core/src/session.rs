@@ -78,11 +78,12 @@ pub struct CompileOptions {
     /// Default `true`: AOT artifacts include compilation units and function
     /// names / line mappings when spans exist.
     pub debug_info: bool,
-    /// Object / executable target triple (Stage 26 / 33).
+    /// Object / executable target triple (Stage 26 / 33 / 34).
     ///
-    /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu` or
-    /// `x86_64-unknown-linux-musl` for a non-host object. JIT rejects non-host
-    /// triples (`E397`).
+    /// `None` means the host. Set to e.g. `aarch64-unknown-linux-gnu`,
+    /// `x86_64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, or
+    /// `x86_64-apple-darwin` for a non-host object. JIT rejects non-host
+    /// triples (`E397`). Mach-O / Windows are object-emit only on linux hosts.
     pub target: Option<crate::target::TargetTriple>,
 }
 
@@ -366,6 +367,22 @@ impl Session {
     ) -> Result<ExecutableArtifact, SessionDiagnostics> {
         let object = self.compile_object_source(source)?;
         let target = object.target.clone();
+        if !target.supports_executable_link() {
+            return Err(SessionDiagnostics {
+                file: object.file,
+                batch: crate::link::LinkError::new(
+                    "E397",
+                    format!(
+                        "AOT executable link is not available for '{}' on this host (Stage 34 is object emit only)",
+                        target.as_str()
+                    ),
+                )
+                .with_help(
+                    "use Session::compile_object_source for Mach-O / COFF; link executables on the target OS or stick to linux-gnu / linux-musl",
+                )
+                .into_batch(self.options.error_limit),
+            });
+        }
         let archive = match crate::linkable_archive_for(&target) {
             Ok(archive) => archive,
             Err(msg) => {
