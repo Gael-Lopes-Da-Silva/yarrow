@@ -228,6 +228,15 @@ pub enum Cmd {
         #[arg(long)]
         best_effort: bool,
 
+        /// Format a UTF-8 byte span `START:END` (exclusive end) via `format_range`.
+        ///
+        /// Requires `--stdin` or exactly one `.yar` file. Prints a
+        /// `yarrow-fmt-range-v1` edit encoding to stdout (does not write the
+        /// file). Incompatible with `--best-effort`. Editors should keep using
+        /// LSP range formatting.
+        #[arg(long, value_name = "START:END")]
+        range: Option<String>,
+
         /// Files or directories (directories recurse for `*.yar`). Required unless `--stdin`.
         #[arg(value_name = "PATH")]
         paths: Vec<std::path::PathBuf>,

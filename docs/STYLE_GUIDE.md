@@ -2,7 +2,7 @@
 
 How Yarrow source (`.yar`) should look. Language rules live in [`GRAMMAR.md`](GRAMMAR.md) and [`SYNTAX.md`](SYNTAX.md); this document is about layout, naming, and idiomatic form.
 
-The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide. By default they sort top-level `require` lines (std first, then local); pass `--no-sort-requires` to keep source order. Soft wrap defaults to 100 columns (`--max-width`, minimum 20). Indent is always tabs. Diff-sensitive regions can opt out with paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` comments (see [Comments](#comments)).
+The goal is one readable default style so programs look familiar and diffs stay small. Tools and formatters (`yarrow fmt`, `yarrow-fmt`) should target this guide. By default they sort top-level `require` lines (std first, then local); pass `--no-sort-requires` to keep source order. Soft wrap defaults to 100 columns (`--max-width`, minimum 20). Indent is always tabs. Diff-sensitive regions can opt out with paired `# yarrow-fmt-ignore-begin` / `# yarrow-fmt-ignore-end` comments (see [Comments](#comments)). Span edits for scripts use `--range START:END` (byte offsets); editors should keep using LSP range formatting.
 
 ---
 

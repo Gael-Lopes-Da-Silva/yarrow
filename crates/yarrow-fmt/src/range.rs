@@ -84,7 +84,9 @@ impl FormatRangeEdit {
 ///
 /// Parses and formats the whole file via [`format_source`], then returns one
 /// contiguous edit for the (possibly expanded) region. Parse failures surface
-/// as [`FormatError::Parse`]. Binary / `yarrow fmt` do not expose range mode.
+/// as [`FormatError::Parse`]. CLI `--range START:END` (Stage 22) prints the
+/// same edit via [`crate::encode_range_edit`]; editors should keep using LSP
+/// `rangeFormatting`.
 ///
 /// Ignore regions (Stage 19): a span wholly inside `# yarrow-fmt-ignore-begin` /
 /// `# yarrow-fmt-ignore-end` returns a no-op for that cover. Expansion otherwise
