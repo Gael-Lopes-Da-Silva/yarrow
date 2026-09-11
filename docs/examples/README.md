@@ -59,21 +59,20 @@ Interpreter (Stage 32): `01`–`07`, `10`, `12`, `13` interpret with stdout matc
 
 ## Multi-root project (Stage 28)
 
-| Path | Topic |
-| ---- | ----- |
+| Path                   | Topic                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
 | [`project/`](project/) | Two roots + shared helper; `check_project` / `ProjectOptions` (see [`project/README.md`](project/README.md)) |
 
 ## Warnings (check succeeds)
 
-| File                                                         | Expected warnings                                      |
-| ------------------------------------------------------------ | ------------------------------------------------------ |
-| [`warnings/01_unused.yar`](warnings/01_unused.yar)           | `W401` unused `const`, `W402` unused `require`, `W403` dead stack |
-| [`warnings/02_never_written_and_copy.yar`](warnings/02_never_written_and_copy.yar) | `W404` never-written `mutable`, `W405` redundant `copy` |
-| [`warnings/03_unreachable.yar`](warnings/03_unreachable.yar) | `W407` unreachable after `return`                      |
-| [`warnings/04_require_ambiguous.yar`](warnings/04_require_ambiguous.yar) | `W406` item-vs-module require ambiguity         |
+| File                                                                               | Expected warnings                                                 |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| [`warnings/01_unused.yar`](warnings/01_unused.yar)                                 | `W401` unused `const`, `W402` unused `require`, `W403` dead stack |
+| [`warnings/02_never_written_and_copy.yar`](warnings/02_never_written_and_copy.yar) | `W404` never-written `mutable`, `W405` redundant `copy`           |
+| [`warnings/03_unreachable.yar`](warnings/03_unreachable.yar)                       | `W407` unreachable after `return`                                 |
+| [`warnings/04_require_ambiguous.yar`](warnings/04_require_ambiguous.yar)           | `W406` item-vs-module require ambiguity                           |
 
 Gate: `cargo run -p yarrow_core --example check_warnings`.
-
 
 ## Related docs
 

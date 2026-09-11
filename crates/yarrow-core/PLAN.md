@@ -21,16 +21,16 @@ Prefer the docs when code and docs disagree. Do not invent language features abs
 
 ## Landed
 
-| Component   | Notes                                                                                                      |
-| ----------- | ---------------------------------------------------------------------------------------------------------- |
-| Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                      |
-| Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)         |
-| Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings` |
-| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30) |
+| Component   | Notes                                                                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Frontend    | Tokenizer + parser (flat postfix `Apply*`); rustc-style diagnostics; `Comment` tokens                                                                                           |
+| Checking    | Types, ownership, borrow, regions, unsafe; stack-effect notes; `LowerKind::Check` (no JIT install)                                                                              |
+| Warnings    | `W401`–`W407` (unused / dead stack / never-written mutable / redundant `copy` / require ambiguity / unreachable); `CheckedProgram::warnings`                                    |
+| Session API | `check` / `compile` (JIT, explicit mode) / `compile_object` / `compile_executable` / `interpret`; default `ExecutionMode::Object`; `CheckedProgram::type_at` (Stage 30)         |
 | AOT         | Runtime archive + Cranelift process `main` + `ld`/`lld` link (linux-gnu + static musl); DWARF + `OptLevel`; cross object emit (linux-gnu / linux-musl + Stage 34 COFF / Mach-O) |
-| Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`) |
-| Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                   |
-| Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393 |
+| Projects    | `ProjectOptions` / `check_project` / `ModuleGraph`; `E382` cycles; `E383` missing roots (`docs/examples/project/`)                                                              |
+| Runtime/std | Host heap, regions, lists/maps/strings; `std.io` / `std.string` / `std.fs` host wrappers                                                                                        |
+| Interpret   | Stage 32 gate of `docs/examples/valid/**` (stdout matches JIT): Stage 21 plus structs/enums/methods, unions, errors/`unwrap`/`handle`, lists/maps; regions / unsafe still E393  |
 
 **Gates:** `docs/examples/valid/**` compile and run (JIT); `invalid/**` fail for the stated reason; `warnings/**` check with `Ok` + warnings; `cargo fmt && cargo check && cargo clippy` green.
 
@@ -40,15 +40,15 @@ Phases A–E (Stages 0–24) and Phase F (Stages 25–26, 28–29) are complete.
 
 ## Known gaps
 
-| Area        | Gap                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------- |
-| AOT         | Cross link needs matching archive + CRT / linker emulation; Mach-O / Windows executable link later (Stage 34 object-only on linux hosts) |
-| Interpret   | No regions / defer, unsafe / raw pointers, field `set`, or full `valid/**` parity (remaining E393 after Stage 32) |
-| Warnings    | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later |
-| Projects    | Multi-root check via `check_project`; no CLI project driver yet                                               |
-| Linker      | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                         |
-| LSP assist  | Typed-at-span via `type_at`; no require-path index API yet (navigation stays LSP AST)                      |
-| Formatter   | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene via `parse_recovering` |
+| Area       | Gap                                                                                                                                      |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| AOT        | Cross link needs matching archive + CRT / linker emulation; Mach-O / Windows executable link later (Stage 34 object-only on linux hosts) |
+| Interpret  | No regions / defer, unsafe / raw pointers, field `set`, or full `valid/**` parity (remaining E393 after Stage 32)                        |
+| Warnings   | Unused / dead-stack / never-written mutable / redundant `copy` / require ambiguity / unreachable (`W401`–`W407`); more lints later       |
+| Projects   | Multi-root check via `check_project`; no CLI project driver yet                                                                          |
+| Linker     | System `ld`/`lld` only; Stage 27 bundled linker deferred (discovery remains reliable)                                                    |
+| LSP assist | Typed-at-span via `type_at`; no require-path index API yet (navigation stays LSP AST)                                                    |
+| Formatter  | Whitespace rebuilt by printer (`yarrow-fmt`); incomplete parse → hygiene via `parse_recovering`                                          |
 
 ---
 
@@ -140,13 +140,13 @@ Platform object formats beyond ELF, once the linux cross story is real.
 
 ## Later (backlog)
 
-| Item                         | Notes                                              |
-| ---------------------------- | -------------------------------------------------- |
+| Item                         | Notes                                                  |
+| ---------------------------- | ------------------------------------------------------ |
 | Mach-O / Windows executable  | Stage 34 landed object-only; `ld64` / `link.exe` later |
-| Require-path / def index API | If Stage 30 stretch is skipped; fuller LSP navigate |
-| Interpreter full `valid/**`  | Finish remaining E393 after Stage 32 gate           |
-| Bundled linker               | Revisit Stage 27 only if PATH `ld`/`lld` is fragile |
-| Project CLI driver           | Lives in `yarrow-cli`; core graph already landed    |
+| Require-path / def index API | If Stage 30 stretch is skipped; fuller LSP navigate    |
+| Interpreter full `valid/**`  | Finish remaining E393 after Stage 32 gate              |
+| Bundled linker               | Revisit Stage 27 only if PATH `ld`/`lld` is fragile    |
+| Project CLI driver           | Lives in `yarrow-cli`; core graph already landed       |
 
 ---
 

@@ -19,15 +19,15 @@ cargo run -p yarrow_lsp -- --listen 127.0.0.1:0
 
 Flags (binary and `yarrow lsp`):
 
-| Flag | Meaning |
-| ---- | ------- |
-| `--stdio` | Transport (default when `--listen` is omitted) |
-| `--listen HOST:PORT` | Accept one TCP client (port `0` picks an ephemeral port) |
-| `-L` / `--search-path DIR` | Extra module search root (repeatable) |
-| `--main NAME` | Entry function name (default `main`) |
-| `--no-format` | Do not advertise document / range formatting |
-| `--no-inlay` | Do not advertise inlay hints |
-| `--log-level off\|error\|warn\|info\|debug` | stderr process logs (default `info`) |
+| Flag                                        | Meaning                                                  |
+| ------------------------------------------- | -------------------------------------------------------- |
+| `--stdio`                                   | Transport (default when `--listen` is omitted)           |
+| `--listen HOST:PORT`                        | Accept one TCP client (port `0` picks an ephemeral port) |
+| `-L` / `--search-path DIR`                  | Extra module search root (repeatable)                    |
+| `--main NAME`                               | Entry function name (default `main`)                     |
+| `--no-format`                               | Do not advertise document / range formatting             |
+| `--no-inlay`                                | Do not advertise inlay hints                             |
+| `--log-level off\|error\|warn\|info\|debug` | stderr process logs (default `info`)                     |
 
 ## Protocol harness
 
@@ -48,10 +48,10 @@ Optional `initializationOptions` (JSON, camelCase):
 
 ```json
 {
-  "searchPaths": ["/extra/modules"],
-  "entryName": "main",
-  "format": true,
-  "inlayHints": true
+	"searchPaths": ["/extra/modules"],
+	"entryName": "main",
+	"format": true,
+	"inlayHints": true
 }
 ```
 

@@ -6,14 +6,14 @@ Library and binary that rewrite `.yar` source to match [`docs/STYLE_GUIDE.md`](.
 
 ## Source of truth
 
-| Role                        | Path                                                                            |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| **Layout / idiomatic form** | [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md)                              |
-| Language syntax             | [`docs/GRAMMAR.md`](../../docs/GRAMMAR.md), [`SYNTAX.md`](../../docs/SYNTAX.md) |
-| Intended AST                | [`docs/AST.md`](../../docs/AST.md)                                              |
+| Role                        | Path                                                                                                             |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Layout / idiomatic form** | [`docs/STYLE_GUIDE.md`](../../docs/STYLE_GUIDE.md)                                                               |
+| Language syntax             | [`docs/GRAMMAR.md`](../../docs/GRAMMAR.md), [`SYNTAX.md`](../../docs/SYNTAX.md)                                  |
+| Intended AST                | [`docs/AST.md`](../../docs/AST.md)                                                                               |
 | Corpus (format gates)       | `docs/examples/valid/**`, `crates/yarrow-core/lib/std/**` ([`scripts/fmt-check.sh`](../../scripts/fmt-check.sh)) |
-| Compiler API                | [`crates/yarrow-core/PLAN.md`](../yarrow-core/PLAN.md)                          |
-| Agent rules                 | [`AGENTS.md`](../../AGENTS.md)                                                  |
+| Compiler API                | [`crates/yarrow-core/PLAN.md`](../yarrow-core/PLAN.md)                                                           |
+| Agent rules                 | [`AGENTS.md`](../../AGENTS.md)                                                                                   |
 
 When the style guide and the formatter disagree, **change the formatter** (or amend the guide deliberately). Do not invent layout rules absent from the style guide.
 
@@ -35,13 +35,13 @@ Mechanical rewrite of parseable source:
 
 ### Out of scope
 
-| Concern                         | Why                                                              |
-| ------------------------------- | ---------------------------------------------------------------- |
-| Renaming (`PascalCase`, etc.)   | Naming is style/lint, not rewrite; core warnings / future lint   |
-| Idiom rewrites (`+`→`~`, etc.)  | Semantic / teachable; not silent format                          |
-| Type-check / borrow fixes       | Compiler / `yarrow check`                                        |
-| Tabs vs spaces as a config knob | Style guide fixes tabs; formatter always emits tabs              |
-| Editor format-on-save wiring    | Editor / LSP client; server already exposes full-doc format      |
+| Concern                         | Why                                                            |
+| ------------------------------- | -------------------------------------------------------------- |
+| Renaming (`PascalCase`, etc.)   | Naming is style/lint, not rewrite; core warnings / future lint |
+| Idiom rewrites (`+`→`~`, etc.)  | Semantic / teachable; not silent format                        |
+| Type-check / borrow fixes       | Compiler / `yarrow check`                                      |
+| Tabs vs spaces as a config knob | Style guide fixes tabs; formatter always emits tabs            |
+| Editor format-on-save wiring    | Editor / LSP client; server already exposes full-doc format    |
 
 **Idempotence:** `format(format(src)) == format(src)` for accepted inputs.
 
@@ -89,17 +89,17 @@ pub fn format_range(source: &str, span: ByteRange, options: &FormatOptions) -> R
 
 CLI (`yarrow-fmt` and `yarrow fmt`):
 
-| Mode                  | Behavior                                       |
-| --------------------- | ---------------------------------------------- |
-| default               | Format files in place                          |
-| `--check`             | Exit non-zero if any file would change         |
-| `--stdin`             | Read stdin, write formatted stdout             |
-| `--max-width N`       | Soft wrap width (default 100; min 20)          |
-| `--sort-requires`     | Force-on require sorting (default already on)  |
-| `--no-sort-requires`  | Keep top-level require source order            |
-| `--reorder-layout`    | Opt-in top-level file-layout reorder           |
-| `--best-effort`       | On parse failure, hygiene only (leave broken text) |
-| paths / dirs          | `.yar` files; recurse directories               |
+| Mode                 | Behavior                                           |
+| -------------------- | -------------------------------------------------- |
+| default              | Format files in place                              |
+| `--check`            | Exit non-zero if any file would change             |
+| `--stdin`            | Read stdin, write formatted stdout                 |
+| `--max-width N`      | Soft wrap width (default 100; min 20)              |
+| `--sort-requires`    | Force-on require sorting (default already on)      |
+| `--no-sort-requires` | Keep top-level require source order                |
+| `--reorder-layout`   | Opt-in top-level file-layout reorder               |
+| `--best-effort`      | On parse failure, hygiene only (leave broken text) |
+| paths / dirs         | `.yar` files; recurse directories                  |
 
 Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/format failure, `2` usage / I/O.
 
@@ -109,26 +109,26 @@ Exit codes: `0` ok / already formatted (`--check`), `1` would reformat or parse/
 
 Stages 0–12 are complete. Historical stage write-ups were removed; git history keeps them.
 
-| Piece                         | Notes                                                                 |
-| ----------------------------- | --------------------------------------------------------------------- |
-| Core comment tokens           | `TokenKind::Comment`; parser skips; printer rebuilds whitespace       |
-| Format IR                     | `FormatIr` + `TriviaMap` (leading / trailing / file trailing)         |
-| Hygiene                       | LF, strip trailing WS, final newline; `NotUtf8` on bad files          |
-| Indent / blanks               | Tab nesting; aligned `end`; top-level blanks; collapse doubles        |
-| Construct + control layout    | Requires, types, functions, `if`/`match`/`for`/`defer`/`unsafe`/`handle` |
-| Phrase wrap                   | Soft wrap before consuming words; continuation +1 tab                 |
-| Comments                      | Preserve text; `# ` / ` #` spacing                                    |
-| Require sort (default on)     | `sort_requires` / `--no-sort-requires` (Stage 14)                 |
-| Library + binary              | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`   |
-| Shared driver                 | `run_fmt` / `FmtInput` for binary and CLI                             |
-| `yarrow fmt`                  | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))   |
-| Corpus gate                   | `docs/examples/valid/**` + `lib/std/**`; CI `fmt-check` (Stage 16)    |
-| LSP full-document format      | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source_best_effort` |
-| File layout reorder (opt-in)  | Stage 13: `reorder_layout` / `--reorder-layout`                       |
-| Defaults polish               | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent       |
-| Range / span format API       | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)           |
-| Stdlib + CI `--check`         | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`  |
-| Best-effort incomplete parse  | Stage 17: hygiene subset + `Parser::parse_recovering`                 |
+| Piece                        | Notes                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| Core comment tokens          | `TokenKind::Comment`; parser skips; printer rebuilds whitespace                |
+| Format IR                    | `FormatIr` + `TriviaMap` (leading / trailing / file trailing)                  |
+| Hygiene                      | LF, strip trailing WS, final newline; `NotUtf8` on bad files                   |
+| Indent / blanks              | Tab nesting; aligned `end`; top-level blanks; collapse doubles                 |
+| Construct + control layout   | Requires, types, functions, `if`/`match`/`for`/`defer`/`unsafe`/`handle`       |
+| Phrase wrap                  | Soft wrap before consuming words; continuation +1 tab                          |
+| Comments                     | Preserve text; `# ` / ` #` spacing                                             |
+| Require sort (default on)    | `sort_requires` / `--no-sort-requires` (Stage 14)                              |
+| Library + binary             | `format_source` / `format_file`; `yarrow-fmt` `--check` / `--stdin`            |
+| Shared driver                | `run_fmt` / `FmtInput` for binary and CLI                                      |
+| `yarrow fmt`                 | In-process wrapper ([`yarrow-cli` Stage 12](../yarrow-cli/PLAN.md))            |
+| Corpus gate                  | `docs/examples/valid/**` + `lib/std/**`; CI `fmt-check` (Stage 16)             |
+| LSP full-document format     | [`yarrow-lsp` Stage 8](../yarrow-lsp/PLAN.md) uses `format_source_best_effort` |
+| File layout reorder (opt-in) | Stage 13: `reorder_layout` / `--reorder-layout`                                |
+| Defaults polish              | Stage 14: sort on by default; `MIN_MAX_WIDTH`; no spaces-indent                |
+| Range / span format API      | Stage 15: `format_range` / `FormatRangeEdit` (LSP Stage 17)                    |
+| Stdlib + CI `--check`        | Stage 16: `scripts/fmt-check.sh` / `.github/workflows/fmt-check.yml`           |
+| Best-effort incomplete parse | Stage 17: hygiene subset + `Parser::parse_recovering`                          |
 
 **Gates:** `./scripts/fmt-check.sh` (or `yarrow fmt --check docs/examples/valid crates/yarrow-core/lib/std`) exits `0`; `cargo fmt && cargo check && cargo clippy` green for `yarrow_fmt` / `yarrow_cli`.
 
@@ -231,23 +231,23 @@ Today v1 requires a successful parse. Editors often want hygiene / indent on bro
 
 ## Mapping: style guide → stages
 
-| Style guide section                    | Stages                                      |
-| -------------------------------------- | ------------------------------------------- |
-| Principles                             | Design only                                 |
-| Source files                           | Landed (3)                                  |
+| Style guide section                    | Stages                                            |
+| -------------------------------------- | ------------------------------------------------- |
+| Principles                             | Design only                                       |
+| Source files                           | Landed (3)                                        |
 | Indentation and line width             | Landed (4, 8); width floor / defaults Stage 14 ✅ |
-| Blank lines                            | Landed (5)                                  |
-| Comments                               | Landed (1, 9)                               |
-| Naming                                 | Out of scope (core / lint)                  |
-| File layout (order)                    | Stage 13 ✅ (opt-in)                        |
-| Modules and `require`                  | Landed (6, 10); default sort Stage 14 ✅    |
-| Visibility                             | Landed (print as written); Stage 13 order   |
-| Types / Functions / Variables          | Landed (6)                                  |
-| Stack phrases and operators            | Landed (8)                                  |
-| Literals and containers                | Landed (6)                                  |
-| Control flow / Defer / Unsafe / Errors | Landed (7)                                  |
-| Ownership / Stack hygiene              | Out of scope (semantics)                    |
-| Checklist                              | Landed layout rows; naming rows ignored     |
+| Blank lines                            | Landed (5)                                        |
+| Comments                               | Landed (1, 9)                                     |
+| Naming                                 | Out of scope (core / lint)                        |
+| File layout (order)                    | Stage 13 ✅ (opt-in)                              |
+| Modules and `require`                  | Landed (6, 10); default sort Stage 14 ✅          |
+| Visibility                             | Landed (print as written); Stage 13 order         |
+| Types / Functions / Variables          | Landed (6)                                        |
+| Stack phrases and operators            | Landed (8)                                        |
+| Literals and containers                | Landed (6)                                        |
+| Control flow / Defer / Unsafe / Errors | Landed (7)                                        |
+| Ownership / Stack hygiene              | Out of scope (semantics)                          |
+| Checklist                              | Landed layout rows; naming rows ignored           |
 
 ---
 

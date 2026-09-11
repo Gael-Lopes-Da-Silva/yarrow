@@ -10,13 +10,13 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 
 **Trivia:** The tokenizer emits `Comment` tokens for `#` … end of line (lexeme includes `#` and comment text; the terminating newline is not part of the lexeme). Whitespace and newlines are not tokens. The parser skips `Comment` tokens the same way it ignores whitespace; comments are not AST nodes. Tools that need comment text (formatters) should read the token stream before parse.
 
-| Backend      | Role                                                                |
-| ------------ | ------------------------------------------------------------------- |
+| Backend      | Role                                                                              |
+| ------------ | --------------------------------------------------------------------------------- |
 | `check`      | Type / ownership / stack / region analysis; CLIF lower without JIT/object product |
-| `jit`        | Cranelift in-process machine code; driver may run `main`            |
-| `object`     | Relocatable native object (ELF / Mach-O / COFF); link stays outside |
-| `executable` | Object emit + system `ld`/`lld` link with the runtime archive       |
-| `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)     |
+| `jit`        | Cranelift in-process machine code; driver may run `main`                          |
+| `object`     | Relocatable native object (ELF / Mach-O / COFF); link stays outside               |
+| `executable` | Object emit + system `ld`/`lld` link with the runtime archive                     |
+| `interpret`  | Tree-walk interpreter over the checked AST (file / future REPL)                   |
 
 `Session::interpret_source` covers the Stage 21 corpus plus Stage 32 fixtures (`06` structs/enums/methods, `07` unions, `10` errors/`unwrap`/`handle`, `13` lists/maps) with stdout matching JIT. Regions, unsafe/pointers, and remaining `valid/**` stay `E393` until later. Gate: `cargo run -p yarrow_core --example check_interpret`.
 
@@ -24,10 +24,10 @@ Pipeline: source `.yar` is tokenized, parsed to an AST, checked, then run or emi
 
 Product default is **object** (AOT), not JIT:
 
-| Surface | Default | Opt in to JIT |
-| ------- | ------- | ------------- |
+| Surface                                                                                                                       | Default                 | Opt in to JIT                   |
+| ----------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------- |
 | [`CompileOptions::new`](../../crates/yarrow-core/src/session.rs) / [`ExecutionMode`](../../crates/yarrow-core/src/session.rs) | `ExecutionMode::Object` | Set `mode = ExecutionMode::Jit` |
-| CLI `run` / `compile` / bare `yarrow <file.yar>` | `--target object` | `--target jit` |
+| CLI `run` / `compile` / bare `yarrow <file.yar>`                                                                              | `--target object`       | `--target jit`                  |
 
 `Session::compile_source` and `run_main` stay JIT-only: they require an explicit `ExecutionMode::Jit` (default `Object` yields `E391` pointing at `compile_object_source`). `check_source` / `interpret_source` are unchanged and do not follow the object default for their pipelines.
 
@@ -40,36 +40,36 @@ Product default is **object** (AOT), not JIT:
 
 Object emit (`Session::compile_object_source`) lowers `@name` / host calls to **`Linkage::Import`** symbols. Names and C ABIs come from the [`HOST_FNS`](../../crates/yarrow-runtime/src/lib.rs) table in `yarrow_runtime` (single source of truth with JIT `install_runtime`).
 
-| Layer          | Crate / API                          | Role                                                                                 |
-| -------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| Implementation | `yarrow_runtime` (rlib)              | Heap, `@print_*`, regions, `HOST_FNS`                                                |
-| JIT            | `runtime::install_runtime`           | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
-| AOT archive    | `yarrow_runtime_aot` (`staticlib`)   | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
-| Library access | `yarrow_core::linkable_archive` / `linkable_archive_for` | Reads `libyarrow_runtime_aot.a` (host or per-triple; see Stage 26) for AOT link |
-| Executable     | `Session::compile_executable_source` | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)               |
+| Layer          | Crate / API                                              | Role                                                                                 |
+| -------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Implementation | `yarrow_runtime` (rlib)                                  | Heap, `@print_*`, regions, `HOST_FNS`                                                |
+| JIT            | `runtime::install_runtime`                               | Registers `HOST_FNS` names → addresses in the in-process JIT linker                  |
+| AOT archive    | `yarrow_runtime_aot` (`staticlib`)                       | Same code, `aot-exports` feature adds linker-visible names (`alloc`, `print_str`, …) |
+| Library access | `yarrow_core::linkable_archive` / `linkable_archive_for` | Reads `libyarrow_runtime_aot.a` (host or per-triple; see Stage 26) for AOT link      |
+| Executable     | `Session::compile_executable_source`                     | Object emit + `link::link_executable` via system `ld`/`lld` (not `cc`)               |
 
 Build the archive: `cargo build -p yarrow_runtime_aot`. Program `.o` (with Cranelift process `main`) + runtime `.a` are linked by `compile_executable_source`. No C CRT source and no `cc` compile step; CRT object paths may be discovered with `cc -print-file-name` when present.
 
 **Imports in a typical program object** (all defined by the runtime archive):
 
-| Symbol                                                              | Role                                  |
-| ------------------------------------------------------------------- | ------------------------------------- |
-| `alloc`, `free`                                                     | Raw heap (`@alloc` / `@free`, unsafe) |
-| `str_new`, `str_len`, `str_join`, `str_cmp`                         | String heap helpers (`std.string`)    |
-| `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_last_error`         | File open / close / read / write (`std.fs`) |
-| `list_*`, `map_*`                                                   | List / hashmap helpers                |
-| `print_str`, `print_int`, `print_float`, `print_newline`            | `std.io` write / write_line / newline |
-| `print_array`, `print_list`, `print_hashmap`                        | Container debug print                 |
-| `free_value`, `register_struct_descs`, `register_union_descs`       | Drop / layout registration            |
-| `region_new`, `region_register`, `region_free`                      | Region lifetime                       |
+| Symbol                                                        | Role                                        |
+| ------------------------------------------------------------- | ------------------------------------------- |
+| `alloc`, `free`                                               | Raw heap (`@alloc` / `@free`, unsafe)       |
+| `str_new`, `str_len`, `str_join`, `str_cmp`                   | String heap helpers (`std.string`)          |
+| `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_last_error` | File open / close / read / write (`std.fs`) |
+| `list_*`, `map_*`                                             | List / hashmap helpers                      |
+| `print_str`, `print_int`, `print_float`, `print_newline`      | `std.io` write / write_line / newline       |
+| `print_array`, `print_list`, `print_hashmap`                  | Container debug print                       |
+| `free_value`, `register_struct_descs`, `register_union_descs` | Drop / layout registration                  |
+| `region_new`, `region_register`, `region_free`                | Region lifetime                             |
 
 **Std wrappers (safe Yarrow):**
 
-| Module       | API                                                                 | Host / builtin                                      |
-| ------------ | ------------------------------------------------------------------- | --------------------------------------------------- |
-| `std.io`     | `write`, `write_line`, `write_int`, `write_float`, `newline`        | `@print` / `@print_*` → `print_str` / `print_*`     |
-| `std.string` | `len`, `concat`, `join` (left, right, sep), `compare` (−1 / 0 / 1) | `@string_len`, `~`, `@string_join`, `@str_cmp`      |
-| `std.fs`     | `open_file`, `close_file`, `read_file`, `write_file`                | `@fs_open` / `@fs_close` / `@fs_read` / `@fs_write` / `@fs_last_error` |
+| Module       | API                                                                | Host / builtin                                                         |
+| ------------ | ------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `std.io`     | `write`, `write_line`, `write_int`, `write_float`, `newline`       | `@print` / `@print_*` → `print_str` / `print_*`                        |
+| `std.string` | `len`, `concat`, `join` (left, right, sep), `compare` (−1 / 0 / 1) | `@string_len`, `~`, `@string_join`, `@str_cmp`                         |
+| `std.fs`     | `open_file`, `close_file`, `read_file`, `write_file`               | `@fs_open` / `@fs_close` / `@fs_read` / `@fs_write` / `@fs_last_error` |
 
 Prefer alias `str` for `"std.string"` (`string` is a type keyword and cannot be a require scope name).
 
@@ -101,10 +101,10 @@ Exit mapping (process `main` trampoline):
 
 Object and executable products honor two [`CompileOptions`](../../crates/yarrow-core/src/session.rs) knobs (CLI wiring comes later):
 
-| Option | Default | Effect |
-| ------ | ------- | ------ |
-| `opt_level` | `OptLevel::None` | Cranelift `opt_level`: `none` / `speed` / `speed_and_size` (`OptLevel::Size`) |
-| `debug_info` | `true` | Emit DWARF (`.debug_info` / `.debug_line` / …) into the program object |
+| Option       | Default          | Effect                                                                        |
+| ------------ | ---------------- | ----------------------------------------------------------------------------- |
+| `opt_level`  | `OptLevel::None` | Cranelift `opt_level`: `none` / `speed` / `speed_and_size` (`OptLevel::Size`) |
+| `debug_info` | `true`           | Emit DWARF (`.debug_info` / `.debug_line` / …) into the program object        |
 
 DWARF includes a compilation unit for the source path, `DW_TAG_subprogram` entries for defined functions (Yarrow names plus process `main`), and coarse line mappings at function entries when spans exist. Inspect with `llvm-dwarfdump` or `readelf --debug-dump=info`.
 
@@ -114,13 +114,13 @@ JIT uses the same `opt_level` (default stays debug-friendly `None`). JIT does no
 
 Object emit and executable link take an optional [`CompileOptions::target`](../../crates/yarrow-core/src/session.rs) ([`TargetTriple`](../../crates/yarrow-core/src/target.rs)). `None` means the host.
 
-| Triple | Role |
-| ------ | ---- |
-| Host (`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`) | Default object / executable path |
-| The other of those two | Stage 26 cross: object emit always; link when archive + CRT are available |
-| `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` | Stage 33 musl: object emit always; static executable link when musl CRT + archive are available |
-| `x86_64-pc-windows-gnu` | Stage 34 COFF object emit (executable link `E397` on linux hosts) |
-| `x86_64-apple-darwin` / `aarch64-apple-darwin` | Stage 34 Mach-O object emit (executable link `E397` on linux hosts) |
+| Triple                                                           | Role                                                                                            |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Host (`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`) | Default object / executable path                                                                |
+| The other of those two                                           | Stage 26 cross: object emit always; link when archive + CRT are available                       |
+| `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`       | Stage 33 musl: object emit always; static executable link when musl CRT + archive are available |
+| `x86_64-pc-windows-gnu`                                          | Stage 34 COFF object emit (executable link `E397` on linux hosts)                               |
+| `x86_64-apple-darwin` / `aarch64-apple-darwin`                   | Stage 34 Mach-O object emit (executable link `E397` on linux hosts)                             |
 
 Unsupported triples (MSVC, WASM, other arches, …) fail with `E397` (no panic). JIT rejects a non-host `target` with `E397`. Object emit for aarch64 requires the `arm64` feature on `cranelift-codegen` (enabled by `yarrow_core`). DWARF debug info is emitted for ELF only; Mach-O / COFF objects skip DWARF for now.
 
@@ -140,11 +140,11 @@ Inspect: COFF objects start with machine `0x8664`; Mach-O 64-bit LE starts with 
 
 **Runtime archive layout** (same ABI / `HOST_FNS` as the host runtime; do not invent a second runtime):
 
-| How | Path / env |
-| --- | ---------- |
-| Host (always) | Built by `yarrow-core`’s `build.rs` → `YARROW_RUNTIME_AOT_ARCHIVE` |
+| How                     | Path / env                                                                                                                                                                                                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host (always)           | Built by `yarrow-core`’s `build.rs` → `YARROW_RUNTIME_AOT_ARCHIVE`                                                                                                                                                                                                     |
 | Optional cross at build | Set `YARROW_BUILD_CROSS_AOT=1` when building `yarrow-core` after installing the Rust target (`rustup target add …` or Nix equivalent). Successful builds appear in `YARROW_RUNTIME_AOT_ARCHIVE_TABLE` as `triple=path;…` (linux cross + optional Windows-gnu / Darwin) |
-| Manual / CI override | `YARROW_RUNTIME_AOT_ARCHIVE_<triple_with_underscores>` → `libyarrow_runtime_aot.a` (or `yarrow_runtime_aot.lib` on Windows) from `cargo build -p yarrow_runtime_aot --target <triple>` |
+| Manual / CI override    | `YARROW_RUNTIME_AOT_ARCHIVE_<triple_with_underscores>` → `libyarrow_runtime_aot.a` (or `yarrow_runtime_aot.lib` on Windows) from `cargo build -p yarrow_runtime_aot --target <triple>`                                                                                 |
 
 Example override for musl:
 
@@ -169,9 +169,9 @@ export YARROW_RUNTIME_AOT_ARCHIVE_x86_64_pc_windows_gnu=$PWD/target/x86_64-pc-wi
 
 **CRT / linker for cross executables:** host `ld` must support the target’s `-m` emulation (`elf_x86_64` / `aarch64linux`). CRT objects come from the usual `cc -print-file-name` path on the host, or for a non-host triple:
 
-| Env | Meaning |
-| --- | ------- |
-| `YARROW_AOT_CRT_DIR` | Directory containing `Scrt1.o` / `crt1.o` / `crti.o` / … for the target |
+| Env                  | Meaning                                                                      |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `YARROW_AOT_CRT_DIR` | Directory containing `Scrt1.o` / `crt1.o` / `crti.o` / … for the target      |
 | `YARROW_AOT_SYSROOT` | Sysroot / musl prefix searched under `usr/lib`, `lib`, and multiarch subdirs |
 
 linux-gnu cross links stay dynamic (PIE + glibc dynamic linker). linux-musl links use **`-static`** with musl `crt1.o` / `crti.o` / `crtn.o` and `libc.a` (no gcc `crtbegin` / `crtend`). Point `YARROW_AOT_SYSROOT` at a musl prefix whose `lib/` holds those files (for example a Nix `musl-static-*` store path).
@@ -396,11 +396,11 @@ A require cycle (A loads B which loads A again while A is still loading) is reje
 
 Stage 28 product shape: an **explicit set of root sources** that share module search paths. There is no project manifest or package-manager syntax in the language.
 
-| Piece | Role |
-| ----- | ---- |
-| Roots | One or more `.yar` files, each a compilation unit with its own `require` closure and optional entry |
-| Search paths | Shared `module_search_paths` plus each root’s directory (same rule as single-file sessions) |
-| Graph | Union of require edges across roots; shared modules appear once in graph metadata |
+| Piece        | Role                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| Roots        | One or more `.yar` files, each a compilation unit with its own `require` closure and optional entry |
+| Search paths | Shared `module_search_paths` plus each root’s directory (same rule as single-file sessions)         |
+| Graph        | Union of require edges across roots; shared modules appear once in graph metadata                   |
 
 Library API (`yarrow_core`):
 
@@ -409,11 +409,11 @@ Library API (`yarrow_core`):
 
 Diagnostics:
 
-| Code | Meaning |
-| ---- | ------- |
+| Code   | Meaning                         |
+| ------ | ------------------------------- |
 | `E380` | Unknown module (`require` path) |
-| `E382` | Module dependency cycle |
-| `E383` | Missing / empty project root |
+| `E382` | Module dependency cycle         |
+| `E383` | Missing / empty project root    |
 
 Single-file `Session::check_source` and nested `require` are unchanged. CLI / LSP project drivers come later; see [`docs/examples/project/`](examples/project/).
 
@@ -421,11 +421,11 @@ Single-file `Session::check_source` and nested `require` are unchanged. CLI / LS
 
 After a successful `Session::check_source`, [`CheckedProgram`](../crates/yarrow-core/src/session.rs) retains a [`TypeIndex`](../crates/yarrow-core/src/analysis.rs) of root-file sites collected during check-only lowering (no JIT / object product).
 
-| API | Role |
-| --- | ---- |
-| `CheckedProgram::type_at(offset)` | Innermost site whose span contains the byte offset |
-| `TypeProbe::ty` | Resolved binding type string (`i32`, `list<i32>`, …) |
-| `TypeProbe::signature` | Function summary plus `stack: […] → […]` when on a function name |
+| API                               | Role                                                             |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `CheckedProgram::type_at(offset)` | Innermost site whose span contains the byte offset               |
+| `TypeProbe::ty`                   | Resolved binding type string (`i32`, `list<i32>`, …)             |
+| `TypeProbe::signature`            | Function summary plus `stack: […] → […]` when on a function name |
 
 Misses (whitespace, comments, unindexed code) return `None`. Required modules are not indexed into the root probe; leave cross-file navigation to the LSP AST walk. Example: on `docs/examples/valid/03_variables_and_typeof.yar`, `type_at` on `answer` yields `ty = Some("i32")`.
 
@@ -433,14 +433,14 @@ Misses (whitespace, comments, unindexed code) return `None`. Required modules ar
 
 Successful `check_source` / `compile` may still populate [`CheckedProgram::warnings`](../crates/yarrow-core/src/session.rs). Warnings never fail the Session `Result`. Codes are explained via `explain_code` / CLI `yarrow explain`.
 
-| Code | Meaning |
-| ---- | ------- |
-| `W401` | Unused `const` / `mutable` / `static` binding |
-| `W402` | Unused `require` |
-| `W403` | Value left on the stack and discarded at scope exit |
-| `W404` | Scalar / enum `mutable` read but never `set` / `move`d into |
-| `W405` | Redundant parameter `copy` on a non-heap type |
-| `W406` | `require` path is both a nested module and a parent-module function (function wins) |
+| Code   | Meaning                                                                                         |
+| ------ | ----------------------------------------------------------------------------------------------- |
+| `W401` | Unused `const` / `mutable` / `static` binding                                                   |
+| `W402` | Unused `require`                                                                                |
+| `W403` | Value left on the stack and discarded at scope exit                                             |
+| `W404` | Scalar / enum `mutable` read but never `set` / `move`d into                                     |
+| `W405` | Redundant parameter `copy` on a non-heap type                                                   |
+| `W406` | `require` path is both a nested module and a parent-module function (function wins)             |
 | `W407` | Statement after divergent control flow (`return`, both-`if` returns, `loop.break` / `continue`) |
 
 Fixtures: [`docs/examples/warnings/`](examples/warnings/). Gate: `cargo run -p yarrow_core --example check_warnings`.

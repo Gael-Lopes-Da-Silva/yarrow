@@ -42,20 +42,21 @@ Prefer core diagnostics and spans over inventing LSP-only error messages. When p
 - File-local rename (`prepareRename` + `rename`; refuse unsafe cross-module edits)
 - Workspace symbols (`workspace/symbol` over open buffers + resolved requires)
 
-### In scope (next, Stages 20+)
+### In scope (next)
 
-- Thin VS Code / Zed extension packaging (server stays editor-agnostic)
+- No further LSP stages planned in this repo for now. Server Stages 0–19 are the v1 surface.
 
 ### Out of scope
 
-| Concern                        | Why                                                              |
-| ------------------------------ | ---------------------------------------------------------------- |
-| Full project / workspace index | Core is single-file + `require`; no multi-root project graph yet |
-| Incremental / salsa analysis   | Premature; re-check open docs on change is enough for now        |
-| Debug Adapter Protocol         | Separate product; AOT/JIT debug story is Phase F                 |
-| Silent semantic rename across crates | Needs stable name resolution API; never guess               |
-| Snippet / AI rewrite actions   | Not mechanical language support                                  |
-| Non-`.yar` / markdown embedded | Skip until requested                                             |
+| Concern                               | Why                                                              |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| Full project / workspace index        | Core is single-file + `require`; no multi-root project graph yet |
+| Incremental / salsa analysis          | Premature; re-check open docs on change is enough for now        |
+| Debug Adapter Protocol                | Separate product; AOT/JIT debug story is Phase F                 |
+| Silent semantic rename across crates  | Needs stable name resolution API; never guess                    |
+| Snippet / AI rewrite actions          | Not mechanical language support                                  |
+| Non-`.yar` / markdown embedded        | Skip until requested                                             |
+| Editor extensions (VS Code / Zed / …) | Live in separate repos later; not in the main compiler tree      |
 
 **Transport:** stdio is the default. TCP (`--listen`) is for tests / remote clients (Stage 19).
 
@@ -88,11 +89,11 @@ pub async fn run_with_streams(/* … */) -> Result<(), LspError>;
 
 Protocol stack:
 
-| Piece     | Choice                                                     |
-| --------- | ---------------------------------------------------------- |
-| LSP types | via `tower-lsp-server` (community fork of `tower-lsp`)     |
-| Runtime   | `tokio`                                                    |
-| Binary    | `crates/yarrow-lsp` + `yarrow lsp`                         |
+| Piece     | Choice                                                 |
+| --------- | ------------------------------------------------------ |
+| LSP types | via `tower-lsp-server` (community fork of `tower-lsp`) |
+| Runtime   | `tokio`                                                |
+| Binary    | `crates/yarrow-lsp` + `yarrow lsp`                     |
 
 Do **not** shell out to `yarrow check`; call `Session` in-process.
 
@@ -119,15 +120,15 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 ## Current state
 
-| Piece              | Status | Notes                                              |
-| ------------------ | ------ | -------------------------------------------------- |
-| `yarrow-lsp` crate | ✅     | Stage 19: TCP + protocol harness                   |
-| Core Session API   | ✅     | `parse_source` / `check_source` + spans            |
-| Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table  |
-| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)          |
-| Cross-file resolve | ⚠      | Works via `require` paths; no project index API    |
+| Piece              | Status | Notes                                                                  |
+| ------------------ | ------ | ---------------------------------------------------------------------- |
+| `yarrow-lsp` crate | ✅     | Stage 19: TCP + protocol harness                                       |
+| Core Session API   | ✅     | `parse_source` / `check_source` + spans                                |
+| Core diagnostics   | ✅     | `Diagnostic` / `Severity` / codes / explain table                      |
+| Typed hover data   | ✅     | `CheckedProgram::type_at` (core Stage 30)                              |
+| Cross-file resolve | ⚠      | Works via `require` paths; no project index API                        |
 | `yarrow-fmt`       | ✅     | Full-doc `format_source_best_effort`; `format_range` (fmt Stage 15/17) |
-| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                    |
+| CLI `yarrow lsp`   | ✅     | In-process `run_stdio_blocking`                                        |
 
 ---
 
@@ -135,26 +136,26 @@ No background whole-workspace crawl. Open documents + transitive `require` resol
 
 Stages 0–17 are complete. Historical stage write-ups for 0–16 were removed; git history keeps them. Stage 17 remains below for context until the next plan collapse.
 
-| Stage | Capability |
-| ----- | ---------- |
-| 0 | Crate + stdio hello (`initialize` / `shutdown`) |
-| 1 | Document sync (`DocumentStore`, full sync) |
-| 2 | Position map + publish diagnostics (debounce) |
-| 3 | Hierarchical `documentSymbol` |
-| 4 | Same-file `definition` |
-| 5 | AST hover + explain blurb on diagnostic spans |
-| 6 | Completions (keywords, scoped names, `std.*` require) |
-| 7 | Same-file `references` + cross-file def via `require` |
-| 8 | Full-document `formatting` via `yarrow-fmt` |
-| 9 | Typed hover via `CheckedProgram::type_at` |
-| 10 | `LspConfig` / init options + `yarrow lsp` wrapper |
-| 11 | `codeAction` Explain Exxx + `yarrow.explain` command |
-| 12 | `signatureHelp` for postfix `name call` |
-| 13 | Inlay hints from `TypeIndex` probes |
-| 14 | Semantic tokens (full document) from tokenizer + AST decls |
-| 15 | File-local rename (`prepareRename` + `rename`) |
-| 16 | Workspace symbols (`workspace/symbol` over open + requires) |
-| 17 | Range formatting via `format_range` (on-type deferred) |
+| Stage | Capability                                                  |
+| ----- | ----------------------------------------------------------- |
+| 0     | Crate + stdio hello (`initialize` / `shutdown`)             |
+| 1     | Document sync (`DocumentStore`, full sync)                  |
+| 2     | Position map + publish diagnostics (debounce)               |
+| 3     | Hierarchical `documentSymbol`                               |
+| 4     | Same-file `definition`                                      |
+| 5     | AST hover + explain blurb on diagnostic spans               |
+| 6     | Completions (keywords, scoped names, `std.*` require)       |
+| 7     | Same-file `references` + cross-file def via `require`       |
+| 8     | Full-document `formatting` via `yarrow-fmt`                 |
+| 9     | Typed hover via `CheckedProgram::type_at`                   |
+| 10    | `LspConfig` / init options + `yarrow lsp` wrapper           |
+| 11    | `codeAction` Explain Exxx + `yarrow.explain` command        |
+| 12    | `signatureHelp` for postfix `name call`                     |
+| 13    | Inlay hints from `TypeIndex` probes                         |
+| 14    | Semantic tokens (full document) from tokenizer + AST decls  |
+| 15    | File-local rename (`prepareRename` + `rename`)              |
+| 16    | Workspace symbols (`workspace/symbol` over open + requires) |
+| 17    | Range formatting via `format_range` (on-type deferred)      |
 
 ---
 
@@ -208,57 +209,49 @@ Make automated LSP gates reliable without ad-hoc one-off scripts each stage.
 
 ---
 
-### Stage 20 - Editor extension packaging (VS Code / Zed)
+### Stage 20 - Editor extension packaging (VS Code / Zed) ❌ canceled
 
-Thin client extensions that launch `yarrow lsp` / `yarrow-lsp`; server remains editor-agnostic.
-
-1. VS Code: minimal extension (`activationEvents` on `.yar`, language id `yarrow`) that starts the server via `yarrow lsp` on `PATH` or a config `yarrow.lsp.path`.
-2. Contribute language configuration (comments `#`, brackets) only; syntax highlighting may stay TextMate-basic or defer to semantic tokens (Stage 14).
-3. Zed: equivalent language + LSP entry if packaging cost is low; otherwise VS Code first and note Zed as follow-up in Done.
-4. Ship extension sources under something like `editors/vscode/` (or `crates/yarrow-lsp/editors/`); do not embed the Rust server inside the extension binary.
-5. Document install / “set command path” in the extension README; keep `crates/yarrow-lsp/README.md` as the server source of truth.
-
-**Gate:** documented steps open a `.yar` file in the packaged editor and see diagnostics from the language server (screenshot or scripted smoke optional). Extension does not vendor a second formatter or checker.
+Canceled: editor extensions and other external packaging will live in separate repos created later, not in this compiler tree. The language server stays editor-agnostic (`yarrow lsp` / `yarrow-lsp`); clients are out of scope here.
 
 ---
 
 ## Mapping: LSP features → stages
 
-| LSP capability                         | Stages   | Core / fmt dependency              |
-| -------------------------------------- | -------- | ---------------------------------- |
-| initialize / shutdown                  | 0 ✅     | -                                  |
-| textDocument sync                      | 1 ✅     | -                                  |
-| publishDiagnostics                     | 2 ✅     | `check_source`, spans              |
-| documentSymbol                         | 3 ✅     | AST spans                          |
-| definition                             | 4, 7 ✅  | AST + require resolution            |
-| hover                                  | 5, 9 ✅  | AST; `type_at`                     |
-| completion                             | 6 ✅     | grammar keywords + AST names       |
-| references                             | 7 ✅     | binding / name index               |
-| formatting                             | 8 ✅     | `yarrow-fmt`                       |
-| codeAction / explain                   | 11 ✅    | `explain_code`                     |
-| signatureHelp                          | 12 ✅    | AST + `type_at`                    |
-| inlayHint                              | 13 ✅    | `TypeIndex` probes                 |
-| semanticTokens                         | 14 ✅    | tokens + AST                       |
-| rename                                 | 15 ✅    | references / resolve               |
-| workspaceSymbol                        | 16 ✅        | open buffers + require ASTs        |
-| rangeFormatting / onTypeFormatting     | 17 ✅        | `yarrow-fmt` (`format_range`; on-type deferred) |
-| textDocument/diagnostic (pull)         | 18 ✅        | same as publish + uri/version cache             |
-| TCP + test harness                     | 19 ✅        | transport only                     |
-| editor extensions                      | 20       | packaging                          |
-| DAP / debug                            | Out of scope | AOT/JIT debug                  |
+| LSP capability                     | Stages         | Core / fmt dependency                           |
+| ---------------------------------- | -------------- | ----------------------------------------------- |
+| initialize / shutdown              | 0 ✅           | -                                               |
+| textDocument sync                  | 1 ✅           | -                                               |
+| publishDiagnostics                 | 2 ✅           | `check_source`, spans                           |
+| documentSymbol                     | 3 ✅           | AST spans                                       |
+| definition                         | 4, 7 ✅        | AST + require resolution                        |
+| hover                              | 5, 9 ✅        | AST; `type_at`                                  |
+| completion                         | 6 ✅           | grammar keywords + AST names                    |
+| references                         | 7 ✅           | binding / name index                            |
+| formatting                         | 8 ✅           | `yarrow-fmt`                                    |
+| codeAction / explain               | 11 ✅          | `explain_code`                                  |
+| signatureHelp                      | 12 ✅          | AST + `type_at`                                 |
+| inlayHint                          | 13 ✅          | `TypeIndex` probes                              |
+| semanticTokens                     | 14 ✅          | tokens + AST                                    |
+| rename                             | 15 ✅          | references / resolve                            |
+| workspaceSymbol                    | 16 ✅          | open buffers + require ASTs                     |
+| rangeFormatting / onTypeFormatting | 17 ✅          | `yarrow-fmt` (`format_range`; on-type deferred) |
+| textDocument/diagnostic (pull)     | 18 ✅          | same as publish + uri/version cache             |
+| TCP + test harness                 | 19 ✅          | transport only                                  |
+| editor extensions                  | 20 ❌ canceled | separate repos later                            |
+| DAP / debug                        | Out of scope   | AOT/JIT debug                                   |
 
 ---
 
 ## Later (backlog)
 
-| Item                              | Notes                                                      |
-| --------------------------------- | ---------------------------------------------------------- |
-| Full project / multi-root index   | Blocked on core project graph; do not fake in LSP          |
-| Cross-crate silent rename         | Explicitly refused; Stage 15 stays conservative            |
-| Incremental / salsa analysis      | Only if check latency becomes a real pain                  |
-| Virtual `yarrow-std:` URIs        | Only if embedded std has no on-disk `lib/std` path         |
-| DAP / debug adapter               | Separate product                                           |
-| Markdown / embedded `.yar`        | Skip until requested                                       |
+| Item                            | Notes                                              |
+| ------------------------------- | -------------------------------------------------- |
+| Full project / multi-root index | Blocked on core project graph; do not fake in LSP  |
+| Cross-crate silent rename       | Explicitly refused; Stage 15 stays conservative    |
+| Incremental / salsa analysis    | Only if check latency becomes a real pain          |
+| Virtual `yarrow-std:` URIs      | Only if embedded std has no on-disk `lib/std` path |
+| DAP / debug adapter             | Separate product                                   |
+| Markdown / embedded `.yar`      | Skip until requested                               |
 
 ---
 

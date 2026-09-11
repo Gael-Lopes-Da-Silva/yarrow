@@ -27,18 +27,18 @@ src/main.rs  →  yarrow_cli::run
                   └── yarrow_core::Session
 ```
 
-| Command     | Behavior                                                     |
-| ----------- | ------------------------------------------------------------ |
-| `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--` |
-| `compile`   | Codegen only; default `object` writes `-o` / `stem.o`; `--emit exe` linked binary |
-| `check`     | Semantic check only                                          |
+| Command     | Behavior                                                                              |
+| ----------- | ------------------------------------------------------------------------------------- |
+| `run`       | `--target object` (default, link + exec) or `jit`; `--main`; args after `--`          |
+| `compile`   | Codegen only; default `object` writes `-o` / `stem.o`; `--emit exe` linked binary     |
+| `check`     | Semantic check only                                                                   |
 | `interpret` | Stack VM via `interpret_source`; `--main`; args after `--` (rejected until core argv) |
-| `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit` |
-| `lsp`       | Language server stdio (`yarrow_lsp::run_stdio_blocking`)     |
-| `fmt`       | Format `.yar` in-process via `yarrow_fmt::run_fmt`           |
-| `dump`      | `--emit tokens\|ast\|ir`                                     |
-| `explain`   | Long form for a diagnostic code                              |
-| `version`   | Crate version (`-V` too)                                     |
+| `repl`      | Line-oriented `EvalContext` loop; wraps snippets as `main`; EOF/`exit`/`quit`         |
+| `lsp`       | Language server stdio (`yarrow_lsp::run_stdio_blocking`)                              |
+| `fmt`       | Format `.yar` in-process via `yarrow_fmt::run_fmt`                                    |
+| `dump`      | `--emit tokens\|ast\|ir`                                                              |
+| `explain`   | Long form for a diagnostic code                                                       |
+| `version`   | Crate version (`-V` too)                                                              |
 
 **Defaults:** `yarrow <file.yar>` → `run --target object` (Stage 29; matches `CompileOptions` / `ExecutionMode::Object`). Entry name `main` unless `--main` is set. Use `--target jit` for in-process run.
 
@@ -52,9 +52,9 @@ Stages 1–12 are complete. Historical stage write-ups were removed; git history
 
 ## Targets (reference)
 
-| Value    | `run`                  | `compile`              |
-| -------- | ---------------------- | ---------------------- |
-| `jit`    | JIT + execute entry    | JIT lower; do not run  |
+| Value    | `run`                  | `compile`                                           |
+| -------- | ---------------------- | --------------------------------------------------- |
+| `jit`    | JIT + execute entry    | JIT lower; do not run                               |
 | `object` | Link executable + exec | Write relocatable `.o` or linked `exe` via `--emit` |
 
 `interpret` is not a `--target`.
@@ -97,12 +97,12 @@ Interactive loop on `EvalContext`. Line-oriented: snippets without top-level `fu
 
 ## Later (backlog)
 
-| Item                      | Notes                                                    |
-| ------------------------- | -------------------------------------------------------- |
-| `yarrow clean`            | Only if a build-artifact convention is documented        |
-| `test` subcommand         | Needs a language-level test story                        |
-| ICE exit `101`            | Optional once core distinguishes ICE                     |
-| Color / quiet polish      | Only if real UX pain shows up                            |
+| Item                 | Notes                                             |
+| -------------------- | ------------------------------------------------- |
+| `yarrow clean`       | Only if a build-artifact convention is documented |
+| `test` subcommand    | Needs a language-level test story                 |
+| ICE exit `101`       | Optional once core distinguishes ICE              |
+| Color / quiet polish | Only if real UX pain shows up                     |
 
 ---
 
